@@ -1,0 +1,29 @@
+# Binaries
+/bin/
+/dist/
+/rehearsal
+*.exe
+*.test
+*.out
+
+# Generated reports / evidence
+/out/
+/evidence/
+*.html
+!docs/**/*.html
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Go
+vendor/
+coverage.out
+coverage.html
+
+# Python (if added later)
+.venv/
+__pycache__/
+*.pyc

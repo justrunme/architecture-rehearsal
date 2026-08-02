@@ -1,0 +1,51 @@
+{
+  "id": "prod-cluster-baseline-cni",
+  "name": "fourier-prod CNI capacity snapshot",
+  "source": "k8s-snapshot+aws-cni",
+  "phase": "baseline",
+  "createdAt": "2026-08-01T12:00:00Z",
+  "meta": {
+    "pod_ip_capacity_available": 22,
+    "cni": "aws-vpc-cni",
+    "prefix_delegation": false
+  },
+  "nodes": [
+    {
+      "id": "cluster/fourier-prod",
+      "kind": "Cluster",
+      "name": "fourier-prod"
+    },
+    {
+      "id": "ns/payments",
+      "kind": "Namespace",
+      "name": "payments"
+    },
+    {
+      "id": "workload/payments/api",
+      "kind": "Workload",
+      "name": "payments-api",
+      "namespace": "payments",
+      "attributes": {
+        "type": "Deployment",
+        "replicas": 6
+      }
+    },
+    {
+      "id": "workload/payments/worker",
+      "kind": "Workload",
+      "name": "payments-worker",
+      "namespace": "payments",
+      "attributes": {
+        "type": "Deployment",
+        "replicas": 4
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "workload/payments/worker",
+      "to": "workload/payments/api",
+      "rel": "DEPENDS_ON"
+    }
+  ]
+}

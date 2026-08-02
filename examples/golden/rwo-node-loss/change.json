@@ -1,0 +1,16 @@
+{
+  "id": "change-node-loss-12-44",
+  "title": "Worker node ip-10-0-12-44 lost / drained",
+  "kind": "node-failure",
+  "description": "Simulated node failure with RWO volume still bound to the lost node.",
+  "seeds": ["node/ip-10-0-12-44", "workload/gitlab/gitaly"],
+  "removedNodes": ["node/ip-10-0-12-44"],
+  "facts": {
+    "scenario": "rwo-node-loss",
+    "event": "node_loss",
+    "lost_node": "node/ip-10-0-12-44",
+    "replacement_capacity_available": false,
+    "replacement_zone_compatible": true,
+    "rollback_available": true
+  }
+}

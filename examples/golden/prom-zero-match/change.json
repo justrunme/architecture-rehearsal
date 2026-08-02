@@ -1,0 +1,15 @@
+{
+  "id": "change-prom-rule-cluster-label",
+  "title": "Add PrometheusRule with cluster=fourier-prod selector",
+  "kind": "prometheus-rule",
+  "description": "Rule is valid PromQL but cluster label is not present on observed series.",
+  "seeds": ["alert/KubePodNotReady"],
+  "facts": {
+    "scenario": "prom-zero-match",
+    "metric": "kube_pod_status_ready",
+    "expr": "kube_pod_status_ready{condition=\"false\",cluster=\"fourier-prod\"} > 0",
+    "label_matchers": {
+      "cluster": "fourier-prod"
+    }
+  }
+}

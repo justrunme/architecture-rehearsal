@@ -1,0 +1,23 @@
+{
+  "id": "change-helm-scale-payments",
+  "title": "Helm upgrade: scale payments stack (+34 pods surge)",
+  "kind": "helm-upgrade",
+  "description": "Replica increase and surge during rolling update exceeds VPC CNI free IPs.",
+  "seeds": ["workload/payments/api", "workload/payments/worker"],
+  "facts": {
+    "scenario": "cni-ip-capacity",
+    "pods_requested": 34,
+    "pod_ip_capacity_available": 22,
+    "rollback_available": true
+  },
+  "patchNodes": [
+    {
+      "id": "workload/payments/api",
+      "attributes": { "replicas": 18 }
+    },
+    {
+      "id": "workload/payments/worker",
+      "attributes": { "replicas": 12 }
+    }
+  ]
+}
