@@ -1,0 +1,21 @@
+{
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "ArchitectureSnapshot",
+  "id": "acme-prod-observed-after-node-loss",
+  "name": "acme-prod post-incident",
+  "source": "k8s-snapshot",
+  "phase": "observed",
+  "createdAt": "2026-08-01T13:00:00Z",
+  "meta": {
+    "observed_failures": ["rwo-node-loss", "pdb-disruption"]
+  },
+  "nodes": [
+    { "id": "cluster/acme-prod", "kind": "Cluster", "name": "acme-prod" },
+    { "id": "node/ip-10-0-13-18", "kind": "Node", "name": "ip-10-0-13-18", "attributes": { "zone": "eu-central-1b" } },
+    { "id": "workload/gitops/gitaly", "kind": "Workload", "name": "gitaly", "namespace": "gitops", "attributes": { "replicas": 1, "phase": "Pending", "unschedulable": true } },
+    { "id": "pvc/gitops/gitaly-data", "kind": "PVC", "name": "gitaly-data", "namespace": "gitops", "attributes": { "accessMode": "ReadWriteOnce", "boundNode": "ip-10-0-12-44", "zone": "eu-central-1a" } }
+  ],
+  "edges": [
+    { "from": "workload/gitops/gitaly", "to": "pvc/gitops/gitaly-data", "rel": "BINDS_VOLUME" }
+  ]
+}

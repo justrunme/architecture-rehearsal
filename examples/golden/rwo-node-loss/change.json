@@ -1,9 +1,10 @@
 {
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "node-failure",
   "id": "change-node-loss-12-44",
   "title": "Worker node ip-10-0-12-44 lost / drained",
-  "kind": "node-failure",
   "description": "Simulated node failure with RWO volume still bound to the lost node.",
-  "seeds": ["node/ip-10-0-12-44", "workload/gitlab/gitaly"],
+  "seeds": ["node/ip-10-0-12-44", "workload/gitops/gitaly"],
   "removedNodes": ["node/ip-10-0-12-44"],
   "facts": {
     "scenario": "rwo-node-loss",

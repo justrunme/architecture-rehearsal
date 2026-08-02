@@ -1,19 +1,32 @@
 package analyze
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
 	"github.com/justrunme/architecture-rehearsal/internal/scenario"
+	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-const Version = "0.1.0"
+const Version = "1.0.0"
 
-// Run builds a proposed graph, executes deterministic scenarios, returns a Report.
-func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) *Report {
+// Run builds proposed graph, validates, runs scenarios, returns Report.
+func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
+	if err := validate.Snapshot(base); err != nil {
+		return nil, err
+	}
+	if err := validate.ChangeAgainstBaseline(base, ch); err != nil {
+		return nil, err
+	}
+
+	// Capture baseline hash before apply to prove immutability in tests.
 	proposed := loader.ApplyChange(base, ch)
 	baseIdx := graph.BuildIndex(base)
 	propIdx := graph.BuildIndex(proposed)
@@ -26,18 +39,30 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) *Report {
 		PropIdx:  propIdx,
 	}
 	findings := scenario.RunAll(ctx, scenario.DefaultRunners())
+	sort.SliceStable(findings, func(i, j int) bool {
+		if findings[i].Scenario != findings[j].Scenario {
+			return findings[i].Scenario < findings[j].Scenario
+		}
+		return findings[i].ID < findings[j].ID
+	})
+
+	cov := computeCoverage(base, ch, findings)
+	insufficient := len(cov.RequiredMissing) > 0
 
 	rep := &Report{
-		Version:            Version,
-		Generated:          time.Now().UTC(),
-		ChangeID:           ch.ID,
-		ChangeTitle:        ch.Title,
-		ChangeKind:         ch.Kind,
-		BaselineID:         base.ID,
-		Findings:           findings,
-		RollbackAvailable:  true,
-		PredictedFailures:  []string{},
-		CoverageGaps:       coverageGaps(base),
+		APIVersion:        graph.APIVersionV1Alpha1,
+		Kind:              graph.DocKindReport,
+		Version:           Version,
+		Generated:         time.Now().UTC(),
+		ChangeID:          ch.ID,
+		ChangeTitle:       ch.Title,
+		ChangeKind:        ch.EffectiveKind(),
+		BaselineID:        base.ID,
+		Findings:          findings,
+		Coverage:          cov,
+		CoverageGaps:      cov.Gaps,
+		Rollback:          RollbackUnknown,
+		PredictedFailures: []string{},
 	}
 
 	risk := RiskNone
@@ -45,11 +70,17 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) *Report {
 	criticalPaths := 0
 	affected := map[string]bool{}
 	var cascades [][]string
+	rollback := RollbackUnknown
 
 	for _, f := range findings {
 		risk = MaxRisk(risk, f.Risk)
-		if !f.RollbackOK {
-			rep.RollbackAvailable = false
+		switch f.Rollback {
+		case scenario.RollbackUnavailable:
+			rollback = RollbackUnavailable
+		case scenario.RollbackAvailable:
+			if rollback != RollbackUnavailable {
+				rollback = RollbackAvailable
+			}
 		}
 		if f.SLOImpact != "" {
 			sloViolations++
@@ -63,24 +94,34 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) *Report {
 		if len(f.Cascade) > 0 {
 			cascades = append(cascades, f.Cascade)
 		}
-		// failure ids
 		rep.PredictedFailures = append(rep.PredictedFailures, f.Scenario)
 	}
+	if len(findings) == 0 {
+		rollback = RollbackUnknown
+	}
 	rep.Risk = risk
-	rep.Decision = DecisionFromRisk(risk)
+	if insufficient {
+		rep.Risk = RiskUnknown
+	}
+	rep.Decision = DecisionFromFindings(risk, findings, cov, insufficient)
 	rep.AffectedComponents = len(affected)
 	rep.CriticalPaths = criticalPaths
 	rep.SLOViolations = sloViolations
 	rep.Cascades = cascades
+	rep.Rollback = rollback
 	rep.PredictedFailures = uniqueStrings(rep.PredictedFailures)
 	rep.Summary = summarize(rep, ch)
-
-	return rep
+	rep.SemanticDigest = semanticDigest(rep)
+	return rep, nil
 }
 
 func summarize(r *Report, ch *loader.ChangeEnvelope) string {
+	if r.Decision == DecisionUnknown {
+		return fmt.Sprintf("Insufficient evidence for a safe gate decision on %q. Missing: %s",
+			ch.Title, strings.Join(r.Coverage.RequiredMissing, ", "))
+	}
 	if len(r.Findings) == 0 {
-		return fmt.Sprintf("No deterministic risk patterns matched for change %q. Graph coverage may be incomplete — see coverage_gaps.", ch.Title)
+		return fmt.Sprintf("No deterministic risk patterns matched for change %q. Review coverage gaps before treating this as safe.", ch.Title)
 	}
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%d finding(s), risk=%s, decision=%s", len(r.Findings), r.Risk, r.Decision))
@@ -90,30 +131,141 @@ func summarize(r *Report, ch *loader.ChangeEnvelope) string {
 	return strings.Join(parts, " · ")
 }
 
-func coverageGaps(base *graph.Snapshot) []string {
-	var gaps []string
-	if base == nil {
-		return []string{"no baseline snapshot"}
+func computeCoverage(base *graph.Snapshot, ch *loader.ChangeEnvelope, findings []scenario.Finding) Coverage {
+	cov := Coverage{
+		Domains: map[string]float64{
+			"kubernetes":    0,
+			"network":       0,
+			"iam":           0,
+			"observability": 0,
+		},
+		Gaps: []string{},
 	}
 	kinds := map[graph.Kind]bool{}
 	for _, n := range base.Nodes {
 		kinds[n.Kind] = true
 	}
-	if !kinds[graph.KindNode] {
-		gaps = append(gaps, "no Node objects — capacity/topology scenarios limited")
-	}
-	if !kinds[graph.KindPVC] {
-		gaps = append(gaps, "no PVC objects — RWO/node-loss path not fully modeled unless fixtures include them")
-	}
-	if base.Meta == nil || base.Meta["metric_labels"] == nil {
-		gaps = append(gaps, "no Prometheus label schema in meta.metric_labels — prom-zero-match needs that snapshot")
-	}
-	if len(gaps) == 0 {
-		gaps = append(gaps, "partial graph: IAM, multi-cluster, and cross-region edges not modeled in v0.1")
+	// kubernetes domain
+	kScore := 0.0
+	if kinds[graph.KindNode] {
+		kScore += 0.35
 	} else {
-		gaps = append(gaps, "partial graph: IAM, multi-cluster, and cross-region edges not modeled in v0.1")
+		cov.Gaps = append(cov.Gaps, "no Node objects — topology/capacity limited")
 	}
-	return gaps
+	if kinds[graph.KindWorkload] {
+		kScore += 0.35
+	} else {
+		cov.Gaps = append(cov.Gaps, "no Workload objects")
+	}
+	if kinds[graph.KindPVC] {
+		kScore += 0.15
+	}
+	if kinds[graph.KindService] {
+		kScore += 0.15
+	}
+	cov.Domains["kubernetes"] = kScore
+
+	// observability
+	oScore := 0.0
+	if base.Meta != nil {
+		if _, ok := base.Meta["metric_labels"]; ok {
+			oScore += 0.7
+		} else {
+			cov.Gaps = append(cov.Gaps, "no meta.metric_labels — prom scenarios limited")
+		}
+		if _, ok := base.Meta["metrics"]; ok {
+			oScore += 0.3
+		}
+	} else {
+		cov.Gaps = append(cov.Gaps, "no observability meta")
+	}
+	cov.Domains["observability"] = oScore
+
+	// network / capacity
+	nScore := 0.0
+	if base.Meta != nil {
+		if _, ok := base.Meta["pod_ip_capacity_available"]; ok {
+			nScore = 0.8
+		}
+	}
+	if kinds[graph.KindNode] {
+		nScore = maxF(nScore, 0.4)
+	}
+	cov.Domains["network"] = nScore
+	cov.Domains["iam"] = 0
+	if !kinds[graph.KindIAMRole] && !kinds[graph.KindServiceAccount] {
+		cov.Gaps = append(cov.Gaps, "IAM/IRSA not modeled — iam domain coverage 0")
+	}
+
+	// Required missing for active scenario intents
+	kind := ch.EffectiveKind()
+	facts := ch.Facts
+	if kind == "node-failure" || kind == "node-drain" || loader.FactString(facts, "scenario", "") == "rwo-node-loss" {
+		if !kinds[graph.KindPVC] {
+			cov.RequiredMissing = append(cov.RequiredMissing, "pvc")
+		}
+		if !kinds[graph.KindNode] {
+			cov.RequiredMissing = append(cov.RequiredMissing, "node")
+		}
+	}
+	if kind == "prometheus-rule" || loader.FactString(facts, "scenario", "") == "prom-zero-match" {
+		if base.Meta == nil || base.Meta["metric_labels"] == nil {
+			cov.RequiredMissing = append(cov.RequiredMissing, "metric_labels")
+		}
+	}
+	if kind == "helm-upgrade" || kind == "scale-up" || loader.FactString(facts, "scenario", "") == "cni-ip-capacity" {
+		if base.Meta == nil || base.Meta["pod_ip_capacity_available"] == nil {
+			// can still derive from nodes sometimes — only require if no node capacity attrs
+			hasNodeCap := false
+			for _, n := range base.Nodes {
+				if n.Kind == graph.KindNode && n.AttrInt("allocatablePods") > 0 {
+					hasNodeCap = true
+					break
+				}
+			}
+			if !hasNodeCap {
+				cov.RequiredMissing = append(cov.RequiredMissing, "pod_ip_capacity")
+			}
+		}
+	}
+
+	sum := 0.0
+	for _, v := range cov.Domains {
+		sum += v
+	}
+	if len(cov.Domains) > 0 {
+		cov.Overall = sum / float64(len(cov.Domains))
+	}
+	cov.Gaps = append(cov.Gaps, "partial graph: multi-cluster/IAM cost not fully modeled")
+	_ = findings
+	return cov
+}
+
+func semanticDigest(r *Report) string {
+	// Clone without runtime timestamp for stable hash.
+	type dig struct {
+		Version            string             `json:"version"`
+		ChangeID           string             `json:"changeId"`
+		BaselineID         string             `json:"baselineId"`
+		Risk               string             `json:"risk"`
+		Decision           string             `json:"decision"`
+		AffectedComponents int                `json:"affected_components"`
+		CriticalPaths      int                `json:"critical_paths"`
+		SLOViolations      int                `json:"slo_violations"`
+		Rollback           string             `json:"rollback"`
+		PredictedFailures  []string           `json:"predicted_failures"`
+		Findings           []scenario.Finding `json:"findings"`
+		Coverage           Coverage           `json:"coverage"`
+	}
+	d := dig{
+		Version: r.Version, ChangeID: r.ChangeID, BaselineID: r.BaselineID,
+		Risk: r.Risk, Decision: r.Decision, AffectedComponents: r.AffectedComponents,
+		CriticalPaths: r.CriticalPaths, SLOViolations: r.SLOViolations, Rollback: r.Rollback,
+		PredictedFailures: r.PredictedFailures, Findings: r.Findings, Coverage: r.Coverage,
+	}
+	raw, _ := json.Marshal(d)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func uniqueStrings(in []string) []string {
@@ -127,4 +279,11 @@ func uniqueStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+func maxF(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }

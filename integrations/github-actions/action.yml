@@ -1,0 +1,25 @@
+name: Architecture Rehearsal Analyze
+description: Gate infrastructure changes with deterministic blast-radius analysis
+inputs:
+  baseline:
+    description: Path to baseline ArchitectureSnapshot JSON
+    required: true
+  change:
+    description: Path to ChangeEnvelope JSON
+    required: true
+  out:
+    description: Evidence output directory
+    required: false
+    default: out
+runs:
+  using: docker
+  image: docker://ghcr.io/justrunme/architecture-rehearsal:1.0.0
+  args:
+    - analyze
+    - --baseline
+    - ${{ inputs.baseline }}
+    - --change
+    - ${{ inputs.change }}
+    - --out
+    - ${{ inputs.out }}
+    - --quiet
