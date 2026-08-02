@@ -1,4 +1,3 @@
-// Package analyze produces change impact reports from graph + scenarios.
 package analyze
 
 import (
@@ -14,19 +13,40 @@ const (
 	RiskMedium   = "medium"
 	RiskHigh     = "high"
 	RiskCritical = "critical"
+	RiskUnknown  = "unknown"
 )
 
-// Decision is the gate recommendation.
+// Decision gate recommendations.
 const (
 	DecisionApprove = "approve"
 	DecisionWarn    = "warn"
 	DecisionBlock   = "block"
+	DecisionUnknown = "unknown"
 )
 
-// Report is the full analyze output (JSON + HTML source of truth).
+// RollbackStatus is ternary — never claim yes without evidence.
+const (
+	RollbackAvailable   = "available"
+	RollbackUnavailable = "unavailable"
+	RollbackUnknown     = "unknown"
+)
+
+// Coverage summarizes domain completeness (not an AI score).
+type Coverage struct {
+	Overall        float64            `json:"overall"`
+	Domains        map[string]float64 `json:"domains,omitempty"`
+	RequiredMissing []string          `json:"requiredMissing,omitempty"`
+	Gaps           []string           `json:"gaps,omitempty"`
+}
+
+// Report is the full analyze output.
 type Report struct {
-	Version   string    `json:"version"`
-	Generated time.Time `json:"generatedAt"`
+	APIVersion string    `json:"apiVersion,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
+	Version    string    `json:"version"`
+	Generated  time.Time `json:"generatedAt"`
+	// SemanticDigest excludes runtime timestamps for deterministic compare.
+	SemanticDigest string `json:"semanticDigest,omitempty"`
 
 	ChangeID    string `json:"changeId"`
 	ChangeTitle string `json:"changeTitle"`
@@ -40,21 +60,29 @@ type Report struct {
 	AffectedComponents int      `json:"affected_components"`
 	CriticalPaths      int      `json:"critical_paths"`
 	SLOViolations      int      `json:"slo_violations"`
-	RollbackAvailable  bool     `json:"rollback_available"`
+	Rollback           string   `json:"rollback"` // available|unavailable|unknown
 	PredictedFailures  []string `json:"predicted_failures"`
 
 	Findings []scenario.Finding `json:"findings"`
-	// CoverageGaps are honest unknowns (partial graph).
-	CoverageGaps []string `json:"coverage_gaps,omitempty"`
+	Coverage Coverage           `json:"coverage"`
+	Cascades [][]string         `json:"cascades,omitempty"`
 
-	// Cascades are human-readable failure chains.
-	Cascades [][]string `json:"cascades,omitempty"`
+	// Deprecated: prefer Coverage.Gaps
+	CoverageGaps []string `json:"coverage_gaps,omitempty"`
 }
 
 // MaxRisk returns the higher of two risk levels.
 func MaxRisk(a, b string) string {
 	order := map[string]int{
-		RiskNone: 0, RiskLow: 1, RiskMedium: 2, RiskHigh: 3, RiskCritical: 4,
+		RiskNone: 0, RiskLow: 1, RiskMedium: 2, RiskHigh: 3, RiskCritical: 4, RiskUnknown: 5,
+	}
+	// unknown elevates decision but not always above critical for display —
+	// keep critical as highest display risk; unknown handled in DecisionFrom.
+	if a == RiskUnknown {
+		return b
+	}
+	if b == RiskUnknown {
+		return a
 	}
 	if order[b] > order[a] {
 		return b
@@ -62,13 +90,27 @@ func MaxRisk(a, b string) string {
 	return a
 }
 
-// DecisionFromRisk maps risk to approve/warn/block.
-func DecisionFromRisk(risk string) string {
+// DecisionFromFindings maps findings + coverage to a gate decision.
+// Missing required data never becomes approve.
+func DecisionFromFindings(risk string, findings []scenario.Finding, cov Coverage, insufficient bool) string {
+	if insufficient || len(cov.RequiredMissing) > 0 {
+		return DecisionUnknown
+	}
+	for _, f := range findings {
+		if f.Risk == RiskUnknown || f.Confidence == "low" && f.Risk != RiskNone {
+			// low confidence high impact → unknown rather than false approve
+			if f.Risk == RiskCritical || f.Risk == RiskHigh {
+				return DecisionUnknown
+			}
+		}
+	}
 	switch risk {
 	case RiskCritical, RiskHigh:
 		return DecisionBlock
 	case RiskMedium:
 		return DecisionWarn
+	case RiskUnknown:
+		return DecisionUnknown
 	default:
 		return DecisionApprove
 	}

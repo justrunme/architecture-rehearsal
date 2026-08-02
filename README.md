@@ -2,26 +2,26 @@
 
 **Know what breaks before you deploy.**
 
-Operational architecture twin that predicts the **blast radius** of infrastructure changes before deployment and verifies the result afterward.
-
-> Status: **v0.1.0** — snapshot-first golden scenarios (RWO node loss, CNI/IP capacity, Prometheus zero-match). Not a multi-cloud EA platform. Not an AI that manages clusters.
+Self-hosted **change gate** for Kubernetes and cloud infrastructure:
 
 ```text
-Proposed change → live dependency graph → deterministic simulation
-→ predicted blast radius → decision → (deploy) → verification evidence
+IaC / Kubernetes change
+  → architecture graph
+  → deterministic impact analysis
+  → CI decision (approve | warn | block | unknown)
+  → deploy outside Rehearsal
+  → post-deploy verification
+  → immutable evidence (SHA-256)
 ```
 
-**Graph and rules decide. AI (optional, later) only explains.**
+> **Graph and rules decide. AI only explains** (optional, not in the risk path).  
+> **Missing data never becomes a false approve.**
 
----
+[![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-## Why
-
-CI can lint YAML and run unit tests. It rarely answers:
-
-> What fails if I merge this MR, drain this node, scale this Helm chart, or ship this Prometheus rule?
-
-Architecture Rehearsal turns **IaC + Kubernetes topology + observability schema** into a temporal graph and runs **deterministic failure patterns** against a proposed change.
+**Status: v1.0 / v2.0 multi-cluster merge** — production-lean CLI & container for GitHub Actions, GitLab CI, GitOps pipelines. Not a SaaS. Not a Kubernetes operator. Not an AI that manages clusters.
 
 ---
 
@@ -33,8 +33,6 @@ cd architecture-rehearsal
 make demo
 ```
 
-Or one scenario:
-
 ```bash
 make build
 ./bin/rehearsal analyze \
@@ -43,89 +41,114 @@ make build
   --html out/rwo-report.html
 ```
 
-Exit codes: `0` approve · `1` warn · `3` block (high/critical).
+### Exit codes (CI)
+
+| Code | Meaning |
+| ---: | ------- |
+| 0 | approve / verified |
+| 1 | warn / diverged |
+| 2 | usage or validation error |
+| 3 | block |
+| 4 | **unknown** (insufficient evidence) |
+| 5 | internal error |
+
+Treat **3 and 4 as gate failures** unless you explicitly allow them.
 
 ---
 
-## Golden scenarios (v0.1)
+## What is supported
 
-| Scenario | What it models |
-| -------- | -------------- |
-| **RWO + node loss** | Stateful workload, RWO PVC bound to lost node, dependents go dark |
-| **CNI / IP capacity** | Pod IP exhaustion → FailedCreatePodSandbox → Helm timeout cascade |
-| **Prom zero-match** | Rule is valid PromQL but selectors match **zero** observed series |
-
-These are sanitized forms of real operational failure classes (stateful reattach, AWS VPC CNI capacity, observability drift).
+| Area | Support |
+| ---- | ------- |
+| Snapshot graph + change envelope | **Supported** |
+| Deterministic scenarios (RWO, CNI, Prom, PDB, routing, volume AZ) | **Supported** |
+| Evidence bundle + SHA-256 | **Supported** |
+| `rehearsal verify` closed loop | **Supported** |
+| Manifest / Terraform plan → change | **Supported** (offline) |
+| K8s YAML directory → snapshot | **Supported** (read-only, no Secret values) |
+| Multi-cluster merge | **Supported** (v2 API `MergeSnapshots`) |
+| Live kubeconfig collector | Reference (use `kubectl get -o yaml` + `snapshot k8s`) |
+| Web UI / LLM / auto-deploy | **Not supported** |
 
 ---
 
-## Architecture (v0.1)
+## Golden scenarios
 
-```text
-examples/golden/*/baseline.json   # Deployed + observed snapshot
-examples/golden/*/change.json     # Proposed change envelope
-        │
-        ▼
-  graph load + apply change
-        │
-        ▼
-  scenario engine (rules)
-        │
-        ▼
-  report.json + report.html + evidence bundle
-```
-
-### Four conceptual states
-
-| State | In v0.1 |
-| ----- | ------- |
-| Intended | (next) ADR / SLO as first-class nodes |
-| Desired | change envelope (plan/diff facts) |
-| Deployed | baseline snapshot nodes/edges |
-| Observed | meta: metrics, label schema, capacity |
+1. **RWO + node loss** — stateful PVC cannot reattach; dependents cascade  
+2. **CNI / IP capacity** — derived from baseline→proposed replicas + maxSurge  
+3. **Prometheus zero-match** — metric-specific label schema; valid PromQL, 0 series  
+4. **PDB disruption** — minAvailable violated by node loss  
+5. **Service routing** — backends all removed  
+6. **Volume AZ** — PVC zone has no remaining nodes  
 
 ---
 
 ## CLI
 
 ```bash
-rehearsal analyze --baseline FILE --change FILE [--out DIR] [--html PATH] [--quiet]
+rehearsal analyze  --baseline FILE --change FILE [--out DIR] [--html PATH] [--quiet]
+rehearsal verify   --report report.json --observed post.json
+rehearsal snapshot k8s --dir manifests/ --cluster acme-prod --out baseline.json
+rehearsal change   manifests --baseline baseline.json --dir rendered/ --out change.json
+rehearsal change   terraform --plan plan.json --out change.json
 rehearsal version
 ```
 
-Example JSON (shape):
+Container:
 
-```json
-{
-  "risk": "critical",
-  "decision": "block",
-  "affected_components": 5,
-  "predicted_failures": ["rwo-node-loss"],
-  "findings": [ ... ],
-  "coverage_gaps": [ "partial graph: IAM ..." ]
-}
+```bash
+docker run --rm -v "$PWD:/work" -w /work \
+  ghcr.io/justrunme/architecture-rehearsal:1.0.0 \
+  analyze --baseline baseline.json --change change.json --out evidence --quiet
 ```
 
 ---
 
-## What this is not (v0.1)
+## Architecture
 
-- Not multi-cloud inventory
-- Not a Kubernetes operator
-- Not a GitHub App / auto-merge bot
-- Not a full Enterprise Architecture catalog
-- Not “AI decides risk”
+```text
+baseline snapshot (deployed + observed facts)
+change envelope (desired / plan / diff)
+        │
+        ▼
+  validate (fail-closed)
+  ApplyChange (deep-copy — baseline immutable)
+        │
+        ▼
+  scenario engine (rules only)
+        │
+        ▼
+  report + decision + semantic digest
+  evidence-manifest.json (sha256 per file)
+        │
+        ▼
+  [external deploy]
+        │
+        ▼
+  verify(prediction, observed snapshot)
+  → verified | diverged | inconclusive
+```
 
-Honest coverage gaps are always printed. **Incomplete graphs must not claim certainty.**
+### Multi-cluster (v2)
+
+```go
+merged := graph.MergeSnapshots("fleet", clusterA, clusterB)
+```
+
+Node IDs become `clusterId::nodeId` so repositories/clusters can be analyzed together without collisions.
 
 ---
 
-## Roadmap (thin)
+## Production definition
 
-1. `rehearsal verify` — post-deploy snapshot vs prediction score  
-2. Real importers: `kubectl` snapshot, Terraform plan JSON, Prometheus labels API  
-3. More scenarios: PDB + disruption, HPA thrash, IRSA/IAM blast radius  
-4. Optional LLM layer for change summary / ADR draft only  
+- Baseline immutable under `ApplyChange`  
+- Invalid graphs rejected (duplicate IDs, dangling edges)  
+- Incomplete coverage → `unknown`, never silent approve  
+- Evidence writes are fail-closed with hashes  
+- Non-root distroless image  
+- No Secret value collection  
+
+See [docs/security.md](docs/security.md), [docs/upgrade.md](docs/upgrade.md), [docs/adr/0001-decision-model.md](docs/adr/0001-decision-model.md).
 
 ---
 

@@ -1,9 +1,9 @@
 BIN ?= bin/rehearsal
 GO ?= go
 
-.PHONY: all build test demo demo-rwo demo-cni demo-prom tidy clean
+.PHONY: all build test race vet demo tidy clean docker image verify-example
 
-all: test build
+all: vet test build
 
 build:
 	$(GO) build -o $(BIN) ./cmd/rehearsal
@@ -11,35 +11,31 @@ build:
 test:
 	$(GO) test ./...
 
+race:
+	$(GO) test -race ./...
+
+vet:
+	$(GO) vet ./...
+
 tidy:
 	$(GO) mod tidy
 
-demo: build demo-rwo demo-cni demo-prom
-	@echo "All golden demos written under ./out"
+demo: build
+	bash scripts/demo.sh
 
-demo-rwo: build
-	-$(BIN) analyze \
+docker image:
+	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.0.0 -f Dockerfile .
+
+verify-example: build
+	$(BIN) analyze \
 	  --baseline examples/golden/rwo-node-loss/baseline.json \
 	  --change examples/golden/rwo-node-loss/change.json \
-	  --out out \
-	  --html out/rwo-report.html \
-	  --quiet
-
-demo-cni: build
-	-$(BIN) analyze \
-	  --baseline examples/golden/cni-ip-capacity/baseline.json \
-	  --change examples/golden/cni-ip-capacity/change.json \
-	  --out out \
-	  --html out/cni-report.html \
-	  --quiet
-
-demo-prom: build
-	-$(BIN) analyze \
-	  --baseline examples/golden/prom-zero-match/baseline.json \
-	  --change examples/golden/prom-zero-match/change.json \
-	  --out out \
-	  --html out/prom-report.html \
-	  --quiet
+	  --out out --quiet || true
+	@# post-deploy observed fixture claims the predicted failure happened
+	$(BIN) verify \
+	  --report out/latest-report.json \
+	  --observed examples/golden/rwo-node-loss/observed.json \
+	  --out out/verify.json
 
 clean:
 	rm -rf bin out

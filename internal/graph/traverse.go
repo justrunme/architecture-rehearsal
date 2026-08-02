@@ -1,7 +1,6 @@
 package graph
 
-// WalkForward returns all node IDs reachable from seeds following Out edges
-// (optionally filtered by allowed relations). Depth-limited BFS.
+// WalkForward returns node IDs reachable from seeds following Out edges.
 func WalkForward(idx *Index, seeds []string, allowed map[Relation]bool, maxDepth int) []string {
 	if maxDepth <= 0 {
 		maxDepth = 8
@@ -41,7 +40,7 @@ func WalkForward(idx *Index, seeds []string, allowed map[Relation]bool, maxDepth
 	return order
 }
 
-// WalkReverse returns ancestors (nodes that depend on seeds) via In edges.
+// WalkReverse returns ancestors via In edges.
 func WalkReverse(idx *Index, seeds []string, allowed map[Relation]bool, maxDepth int) []string {
 	if maxDepth <= 0 {
 		maxDepth = 8
@@ -81,14 +80,15 @@ func WalkReverse(idx *Index, seeds []string, allowed map[Relation]bool, maxDepth
 	return order
 }
 
-// DependentsOf returns workloads/services that DEPENDS_ON or transitively depend on seed.
+// DependentsOf returns nodes that depend on seed.
 func DependentsOf(idx *Index, seed string) []string {
 	allowed := map[Relation]bool{
-		RelDependsOn:   true,
-		RelObservedBy:  true,
+		RelDependsOn:  true,
+		RelObservedBy: true,
 		RelProtectedBy: true,
+		RelRoutesTo:   true,
+		RelScales:     true,
 	}
-	// Reverse DEPENDS_ON: who points at me?
 	ids := WalkReverse(idx, []string{seed}, allowed, 6)
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -98,4 +98,13 @@ func DependentsOf(idx *Index, seed string) []string {
 		out = append(out, id)
 	}
 	return out
+}
+
+// TotalWorkloadReplicas sums replicas across Workload nodes.
+func TotalWorkloadReplicas(idx *Index) int {
+	sum := 0
+	for _, n := range idx.ByKind[KindWorkload] {
+		sum += n.WorkloadReplicas()
+	}
+	return sum
 }

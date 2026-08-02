@@ -6,30 +6,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
+	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-// ChangeEnvelope describes a proposed infrastructure change (Terraform plan,
-// Helm diff, manifest patch, etc.) in a tool-agnostic form for v0.1.
+// ChangeEnvelope describes a proposed infrastructure change.
+// Kind is the change type (node-failure, helm-upgrade, prometheus-rule, …).
 type ChangeEnvelope struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Kind        string         `json:"kind"` // terraform-plan | helm-diff | k8s-manifest | prometheus-rule
-	Description string         `json:"description,omitempty"`
-	// Seeds are node IDs primarily affected by the change.
-	Seeds []string `json:"seeds,omitempty"`
-	// Facts are scenario inputs (capacity deltas, rule selectors, etc.).
-	Facts map[string]any `json:"facts,omitempty"`
-	// Added / Removed / Updated node IDs for simple plan application.
-	AddedNodes   []graph.Node `json:"addedNodes,omitempty"`
-	RemovedNodes []string     `json:"removedNodes,omitempty"`
-	// PatchNodes merges attributes into existing nodes by ID.
-	PatchNodes []graph.Node `json:"patchNodes,omitempty"`
-	AddedEdges []graph.Edge `json:"addedEdges,omitempty"`
+	APIVersion   string         `json:"apiVersion,omitempty"`
+	Kind         string         `json:"kind"` // change type (v0.1+)
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Description  string         `json:"description,omitempty"`
+	Seeds        []string       `json:"seeds,omitempty"`
+	Facts        map[string]any `json:"facts,omitempty"`
+	AddedNodes   []graph.Node   `json:"addedNodes,omitempty"`
+	RemovedNodes []string       `json:"removedNodes,omitempty"`
+	PatchNodes   []graph.Node   `json:"patchNodes,omitempty"`
+	AddedEdges   []graph.Edge   `json:"addedEdges,omitempty"`
 }
 
-// LoadSnapshot reads a Snapshot JSON file.
+// EffectiveKind returns the change type.
+func (c *ChangeEnvelope) EffectiveKind() string {
+	if c == nil {
+		return ""
+	}
+	return c.Kind
+}
+
+func (c *ChangeEnvelope) GetID() string              { return c.ID }
+func (c *ChangeEnvelope) GetTitle() string           { return c.Title }
+func (c *ChangeEnvelope) GetSeeds() []string         { return c.Seeds }
+func (c *ChangeEnvelope) GetRemovedNodes() []string  { return c.RemovedNodes }
+func (c *ChangeEnvelope) GetPatchNodes() []graph.Node { return c.PatchNodes }
+func (c *ChangeEnvelope) GetAddedNodes() []graph.Node { return c.AddedNodes }
+func (c *ChangeEnvelope) GetAddedEdges() []graph.Edge { return c.AddedEdges }
+
+// LoadSnapshot reads a Snapshot JSON file and validates it.
 func LoadSnapshot(path string) (*graph.Snapshot, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -45,10 +60,19 @@ func LoadSnapshot(path string) (*graph.Snapshot, error) {
 	if s.Phase == "" {
 		s.Phase = graph.PhaseBaseline
 	}
+	if s.APIVersion == "" {
+		s.APIVersion = graph.APIVersionV1Alpha1
+	}
+	if s.Kind == "" {
+		s.Kind = graph.DocKindSnapshot
+	}
+	if err := validate.Snapshot(&s); err != nil {
+		return nil, fmt.Errorf("validate snapshot %s: %w", path, err)
+	}
 	return &s, nil
 }
 
-// LoadChange reads a ChangeEnvelope JSON file.
+// LoadChange reads a ChangeEnvelope JSON file and validates it.
 func LoadChange(path string) (*ChangeEnvelope, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -61,30 +85,41 @@ func LoadChange(path string) (*ChangeEnvelope, error) {
 	if c.ID == "" {
 		c.ID = filepath.Base(path)
 	}
+	if c.APIVersion == "" {
+		c.APIVersion = graph.APIVersionV1Alpha1
+	}
+	if err := validate.Change(&c); err != nil {
+		return nil, fmt.Errorf("validate change %s: %w", path, err)
+	}
+	// Full baseline-relative checks happen in analyze after both load.
 	return &c, nil
 }
 
-// ApplyChange builds a proposed snapshot from baseline + change envelope.
-// Deterministic: no live API calls.
+// ApplyChange builds a proposed snapshot from baseline + change without mutating baseline.
 func ApplyChange(base *graph.Snapshot, ch *ChangeEnvelope) *graph.Snapshot {
+	// Work on deep copy of baseline first so base is never mutated.
+	src := graph.CloneSnapshot(base)
 	out := &graph.Snapshot{
-		ID:        base.ID + "+" + ch.ID,
-		Name:      base.Name + " + " + ch.Title,
-		Source:    "proposed:" + ch.Kind,
-		Phase:     graph.PhaseProposed,
-		CreatedAt: base.CreatedAt,
-		Labels:    map[string]string{},
-		Meta:      map[string]any{},
+		APIVersion: graph.APIVersionV1Alpha1,
+		Kind:       graph.DocKindSnapshot,
+		ID:         src.ID + "+" + ch.ID,
+		Name:       src.Name + " + " + ch.Title,
+		Source:     "proposed:" + ch.EffectiveKind(),
+		Phase:      graph.PhaseProposed,
+		CreatedAt:  src.CreatedAt,
+		Labels:     map[string]string{},
+		Meta:       graph.CloneMap(src.Meta),
+		Cluster:    src.Cluster,
+		Warnings:   append([]string{}, src.Warnings...),
 	}
-	for k, v := range base.Labels {
+	for k, v := range src.Labels {
 		out.Labels[k] = v
 	}
 	out.Labels["change"] = ch.ID
-	for k, v := range base.Meta {
-		out.Meta[k] = v
-	}
-	// Overlay change facts into meta.
 	if ch.Facts != nil {
+		if out.Meta == nil {
+			out.Meta = map[string]any{}
+		}
 		for k, v := range ch.Facts {
 			out.Meta[k] = v
 		}
@@ -99,18 +134,16 @@ func ApplyChange(base *graph.Snapshot, ch *ChangeEnvelope) *graph.Snapshot {
 		patches[p.ID] = p
 	}
 
-	for _, n := range base.Nodes {
+	for _, n := range src.Nodes {
 		if removed[n.ID] {
 			continue
 		}
 		if p, ok := patches[n.ID]; ok {
-			merged := n
+			merged := graph.CloneNode(n)
 			if p.Name != "" {
 				merged.Name = p.Name
 			}
-			if p.Kind != "" {
-				merged.Kind = p.Kind
-			}
+			// Kind identity must not change via patch (validated separately).
 			if p.Namespace != "" {
 				merged.Namespace = p.Namespace
 			}
@@ -123,21 +156,37 @@ func ApplyChange(base *graph.Snapshot, ch *ChangeEnvelope) *graph.Snapshot {
 			out.Nodes = append(out.Nodes, merged)
 			continue
 		}
-		out.Nodes = append(out.Nodes, n)
+		out.Nodes = append(out.Nodes, graph.CloneNode(n))
 	}
-	out.Nodes = append(out.Nodes, ch.AddedNodes...)
+	for _, n := range ch.AddedNodes {
+		out.Nodes = append(out.Nodes, graph.CloneNode(n))
+	}
 
-	for _, e := range base.Edges {
+	for _, e := range src.Edges {
 		if removed[e.From] || removed[e.To] {
 			continue
 		}
-		out.Edges = append(out.Edges, e)
+		out.Edges = append(out.Edges, graph.CloneEdge(e))
 	}
-	out.Edges = append(out.Edges, ch.AddedEdges...)
+	for _, e := range ch.AddedEdges {
+		out.Edges = append(out.Edges, graph.CloneEdge(e))
+	}
+
+	// Stable ordering for deterministic digests.
+	sort.SliceStable(out.Nodes, func(i, j int) bool { return out.Nodes[i].ID < out.Nodes[j].ID })
+	sort.SliceStable(out.Edges, func(i, j int) bool {
+		if out.Edges[i].From != out.Edges[j].From {
+			return out.Edges[i].From < out.Edges[j].From
+		}
+		if out.Edges[i].To != out.Edges[j].To {
+			return out.Edges[i].To < out.Edges[j].To
+		}
+		return string(out.Edges[i].Rel) < string(out.Edges[j].Rel)
+	})
 	return out
 }
 
-// FactInt reads an int from change facts or snapshot meta.
+// FactInt reads an int from a map.
 func FactInt(m map[string]any, key string, def int) int {
 	if m == nil {
 		return def
@@ -160,6 +209,17 @@ func FactString(m map[string]any, key, def string) string {
 		return def
 	}
 	if v, ok := m[key].(string); ok && v != "" {
+		return v
+	}
+	return def
+}
+
+// FactBool reads a bool fact.
+func FactBool(m map[string]any, key string, def bool) bool {
+	if m == nil {
+		return def
+	}
+	if v, ok := m[key].(bool); ok {
 		return v
 	}
 	return def

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,29 +16,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
+      - name: Vet
+        run: go vet ./...
       - name: Test
         run: go test ./...
+      - name: Race
+        run: go test -race ./...
       - name: Build
         run: go build -o bin/rehearsal ./cmd/rehearsal
-      - name: Golden demos
+      - name: Demo (expect block)
+        run: bash scripts/demo.sh
+      - name: Verify loop
         run: |
-          set +e
           ./bin/rehearsal analyze \
             --baseline examples/golden/rwo-node-loss/baseline.json \
             --change examples/golden/rwo-node-loss/change.json \
-            --out out --quiet
-          code=$?
-          test "$code" -eq 3 || exit 1
-          ./bin/rehearsal analyze \
-            --baseline examples/golden/cni-ip-capacity/baseline.json \
-            --change examples/golden/cni-ip-capacity/change.json \
-            --out out --quiet
-          code=$?
-          test "$code" -eq 3 || exit 1
-          ./bin/rehearsal analyze \
-            --baseline examples/golden/prom-zero-match/baseline.json \
-            --change examples/golden/prom-zero-match/change.json \
-            --out out --quiet
-          code=$?
-          test "$code" -eq 3 || exit 1
+            --out out --quiet || true
+          # analyze returns 3; still write latest-report
           test -f out/latest-report.json
+          ./bin/rehearsal verify \
+            --report out/latest-report.json \
+            --observed examples/golden/rwo-node-loss/observed.json \
+            --out out/verify.json
