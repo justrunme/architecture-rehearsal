@@ -2,93 +2,145 @@ package scenario
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
-	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/graph"
 )
 
-// CNICapacity detects AWS VPC CNI (or similar) pod IP exhaustion leading to
-// FailedCreatePodSandbox → readiness timeout → Helm pending-install.
+// CNICapacity detects pod IP exhaustion from baseline→proposed replica deltas.
 type CNICapacity struct{}
 
 func (CNICapacity) Name() string { return "cni-ip-capacity" }
 
 func (CNICapacity) Run(ctx Context) []Finding {
 	ch := ctx.Change
-	if ch == nil {
+	if ch == nil || ctx.BaseIdx == nil || ctx.PropIdx == nil {
 		return nil
 	}
-	if ch.Kind != "scale-up" && ch.Kind != "helm-upgrade" && ch.Kind != "terraform-plan" {
-		if loaderFactString(ch.Facts, "scenario", "") != "cni-ip-capacity" {
+	kind := ch.EffectiveKind()
+	if kind != "scale-up" && kind != "helm-upgrade" && kind != "terraform-plan" && kind != "k8s-manifest" {
+		if factString(ch.Facts, "scenario", "") != "cni-ip-capacity" {
 			return nil
 		}
 	}
 
-	// Prefer change facts; fall back to baseline meta.
-	meta := map[string]any{}
-	if ctx.Baseline != nil && ctx.Baseline.Meta != nil {
-		for k, v := range ctx.Baseline.Meta {
-			meta[k] = v
-		}
-	}
-	if ch.Facts != nil {
-		for k, v := range ch.Facts {
-			meta[k] = v
-		}
+	baseRep := graph.TotalWorkloadReplicas(ctx.BaseIdx)
+	propRep := graph.TotalWorkloadReplicas(ctx.PropIdx)
+	delta := propRep - baseRep
+	if delta < 0 {
+		delta = 0
 	}
 
-	requested := loader.FactInt(meta, "pods_requested", 0)
-	available := loader.FactInt(meta, "pod_ip_capacity_available", 0)
+	// Rollout surge: sum maxSurge from patched/proposed workloads (default 25% or 1).
+	surge := 0
+	for _, n := range ctx.PropIdx.ByKind[graph.KindWorkload] {
+		ms := n.AttrString("maxSurge")
+		rep := n.WorkloadReplicas()
+		if ms == "" {
+			// only count surge for workloads that grew
+			bn := ctx.BaseIdx.ByID[n.ID]
+			baseR := 0
+			if bn != nil {
+				baseR = bn.WorkloadReplicas()
+			}
+			if rep > baseR {
+				surge += maxInt(1, rep/4) // ~25%
+			}
+			continue
+		}
+		if strings.HasSuffix(ms, "%") {
+			p, _ := strconv.Atoi(strings.TrimSuffix(ms, "%"))
+			surge += maxInt(1, rep*p/100)
+		} else {
+			v, _ := strconv.Atoi(ms)
+			surge += v
+		}
+	}
+	// Allow explicit override for advanced tests only.
+	if v := factInt(ch.Facts, "rollout_surge", -1); v >= 0 {
+		surge = v
+	}
+
+	requested := delta + surge
+	// Prefer derived; fall back to explicit only if no replica graph.
 	if requested == 0 {
-		// Derive from replica delta if present.
-		requested = loader.FactInt(meta, "replica_delta", 0)
+		requested = factInt(ch.Facts, "pods_requested", 0)
+	}
+
+	available := factInt(ctx.Baseline.Meta, "pod_ip_capacity_available", -1)
+	if available < 0 {
+		available = factInt(ch.Facts, "pod_ip_capacity_available", -1)
+	}
+	if available < 0 {
+		// derive from node allocatablePods - current pods if present
+		alloc := 0
+		for _, n := range ctx.BaseIdx.ByKind[graph.KindNode] {
+			alloc += n.AttrInt("allocatablePods")
+		}
+		if alloc > 0 {
+			available = alloc - baseRep
+			if available < 0 {
+				available = 0
+			}
+		}
 	}
 	if requested <= 0 || available < 0 {
 		return nil
 	}
 	if requested <= available {
-		return nil // no exhaustion
+		return nil
 	}
 	deficit := requested - available
-
-	cascade := []string{
-		fmt.Sprintf("pods requested: %d", requested),
-		fmt.Sprintf("available pod IP capacity: %d", available),
-		fmt.Sprintf("predicted unschedulable / sandbox failures: %d", deficit),
-		"IP exhaustion",
-		"FailedCreatePodSandbox",
-		"delayed pod startup",
-		"readiness probe timeouts",
-		"Helm pending-install / upgrade timeout",
-		"deployment job failure",
-	}
-
-	comps := append([]string{}, ch.Seeds...)
 	risk := "high"
-	if deficit >= requested/2 || deficit >= 10 {
+	if deficit >= maxInt(1, requested/2) || deficit >= 10 {
 		risk = "critical"
 	}
-
+	rb := RollbackUnknown
+	if ch.Facts != nil {
+		if v, ok := ch.Facts["rollback_available"].(bool); ok {
+			if v {
+				rb = RollbackAvailable
+			} else {
+				rb = RollbackUnavailable
+			}
+		}
+	}
 	return []Finding{{
 		ID:       "cni-ip-capacity",
 		Scenario: "cni-ip-capacity",
 		Risk:     risk,
 		Title:    "Pod IP capacity exhaustion (CNI / VPC)",
 		Summary: fmt.Sprintf(
-			"Change requests %d new pods but only %d pod IPs remain. Predict %d FailedCreatePodSandbox events and Helm install timeout risk.",
-			requested, available, deficit,
+			"Replica delta %d + rollout surge %d = %d additional pod IPs needed; only %d available (deficit %d). baseline_replicas=%d proposed_replicas=%d",
+			delta, surge, requested, available, deficit, baseRep, propRep,
 		),
-		Components: comps,
-		Cascade:    cascade,
+		Components: ch.Seeds,
+		Cascade: []string{
+			fmt.Sprintf("baseline workload replicas: %d", baseRep),
+			fmt.Sprintf("proposed workload replicas: %d", propRep),
+			fmt.Sprintf("rollout surge estimate: %d", surge),
+			fmt.Sprintf("additional IPs requested: %d", requested),
+			fmt.Sprintf("available pod IP capacity: %d", available),
+			fmt.Sprintf("predicted sandbox failures: %d", deficit),
+			"IP exhaustion → FailedCreatePodSandbox → readiness timeout → Helm pending-install",
+		},
 		Controls: []string{
 			"increase max-pods / prefix delegation before scale",
 			"add nodes or warm IP inventory",
-			"lower replica surge / maxUnavailable carefully",
-			"extend Helm --timeout only after capacity fix (not as primary fix)",
-			"validate AWS VPC CNI warm pool settings",
+			"reduce maxSurge during rollout",
+			"extend Helm timeout only after capacity fix",
 		},
 		SLOImpact:  "rollout latency / availability during deploy window",
-		Evidence:   []string{fmt.Sprintf("pods_requested=%d", requested), fmt.Sprintf("pod_ip_capacity_available=%d", available)},
-		RollbackOK: loaderFactBool(ch.Facts, "rollback_available", true),
+		Evidence:   []string{fmt.Sprintf("baseline_replicas=%d", baseRep), fmt.Sprintf("proposed_replicas=%d", propRep), fmt.Sprintf("surge=%d", surge), fmt.Sprintf("available=%d", available)},
+		Rollback:   rb,
 		Confidence: "high",
 	}}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

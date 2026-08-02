@@ -1,0 +1,15 @@
+# Example GitLab CI job — include from your pipeline.
+architecture-rehearsal:
+  image:
+    name: ghcr.io/justrunme/architecture-rehearsal:1.0.0
+    entrypoint: [""]
+  stage: test
+  script:
+    - rehearsal analyze --baseline "$BASELINE" --change "$CHANGE" --out evidence --quiet
+  artifacts:
+    when: always
+    paths:
+      - evidence/
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"

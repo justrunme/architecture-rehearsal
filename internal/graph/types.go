@@ -1,68 +1,115 @@
-// Package graph defines the temporal architecture graph model.
+// Package graph defines the architecture graph model.
 //
-// Four conceptual states:
-//   Intended  — ADR / SLO / policy constraints
-//   Desired   — Terraform / Helm / manifests
-//   Deployed  — live Kubernetes / cloud resources
-//   Observed  — metrics, incidents, cost
+// States: Intended · Desired · Deployed · Observed
+// Phases: baseline · proposed · deployed · observed
 package graph
 
 import "time"
 
+// API versions for versioned contracts.
+const (
+	APIVersionV1Alpha1 = "rehearsal.io/v1alpha1"
+	DocKindSnapshot    = "ArchitectureSnapshot"
+	DocKindChange      = "ChangeEnvelope"
+	DocKindReport      = "ImpactReport"
+	DocKindEvidence    = "EvidenceManifest"
+)
+
 // Snapshot is a frozen architecture graph at a point in time.
 type Snapshot struct {
+	APIVersion string `json:"apiVersion,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
-	Source    string            `json:"source,omitempty"` // e.g. k8s-snapshot, terraform-plan
+	Source    string            `json:"source,omitempty"`
 	Phase     Phase             `json:"phase"`
 	CreatedAt time.Time         `json:"createdAt"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	Nodes     []Node            `json:"nodes"`
 	Edges     []Edge            `json:"edges"`
-	// Meta holds scenario-specific capacity / inventory facts.
-	Meta map[string]any `json:"meta,omitempty"`
+	Meta      map[string]any    `json:"meta,omitempty"`
+
+	// Collection provenance (v0.3+).
+	Cluster  *ClusterInfo `json:"cluster,omitempty"`
+	Warnings []string     `json:"warnings,omitempty"`
+}
+
+// ClusterInfo describes collection context.
+type ClusterInfo struct {
+	Name            string    `json:"name,omitempty"`
+	UID             string    `json:"uid,omitempty"`
+	ServerVersion   string    `json:"serverVersion,omitempty"`
+	CollectedFrom   time.Time `json:"collectedFrom,omitempty"`
+	CollectedUntil  time.Time `json:"collectedUntil,omitempty"`
+	CollectorVersion string   `json:"collectorVersion,omitempty"`
 }
 
 // Phase situates the snapshot in the change lifecycle.
 type Phase string
 
 const (
-	PhaseBaseline Phase = "baseline" // deployed + observed before change
-	PhaseProposed Phase = "proposed" // desired after change (plan/diff applied)
-	PhaseDeployed Phase = "deployed" // after apply
-	PhaseObserved Phase = "observed" // post-deploy verification evidence
+	PhaseBaseline Phase = "baseline"
+	PhaseProposed Phase = "proposed"
+	PhaseDeployed Phase = "deployed"
+	PhaseObserved Phase = "observed"
 )
 
-// Kind enumerates first-class architecture nodes (v0.1 subset).
+// Kind enumerates architecture nodes.
 type Kind string
 
 const (
-	KindCluster   Kind = "Cluster"
-	KindNode      Kind = "Node"
-	KindNamespace Kind = "Namespace"
-	KindWorkload  Kind = "Workload"
-	KindService   Kind = "Service"
-	KindPVC       Kind = "PVC"
-	KindVolume    Kind = "Volume"
-	KindAlert     Kind = "Alert"
-	KindSLO       Kind = "SLO"
-	KindTeam      Kind = "Team"
-	KindChange    Kind = "Change"
+	KindCluster        Kind = "Cluster"
+	KindNode           Kind = "Node"
+	KindNamespace      Kind = "Namespace"
+	KindWorkload       Kind = "Workload"
+	KindPod            Kind = "Pod"
+	KindService        Kind = "Service"
+	KindIngress        Kind = "Ingress"
+	KindPVC            Kind = "PVC"
+	KindPV             Kind = "PV"
+	KindPDB            Kind = "PDB"
+	KindHPA            Kind = "HPA"
+	KindServiceAccount Kind = "ServiceAccount"
+	KindAlert          Kind = "Alert"
+	KindSLO            Kind = "SLO"
+	KindTeam           Kind = "Team"
+	KindChange         Kind = "Change"
+	KindIAMRole        Kind = "IAMRole"
 )
+
+// KnownKinds for validation.
+var KnownKinds = map[Kind]bool{
+	KindCluster: true, KindNode: true, KindNamespace: true, KindWorkload: true,
+	KindPod: true, KindService: true, KindIngress: true, KindPVC: true, KindPV: true,
+	KindPDB: true, KindHPA: true, KindServiceAccount: true, KindAlert: true,
+	KindSLO: true, KindTeam: true, KindChange: true, KindIAMRole: true,
+}
 
 // Relation enumerates edge types.
 type Relation string
 
 const (
-	RelDependsOn    Relation = "DEPENDS_ON"
-	RelRunsOn       Relation = "RUNS_ON"
-	RelProtectedBy  Relation = "PROTECTED_BY"
-	RelObservedBy   Relation = "OBSERVED_BY"
-	RelOwnedBy      Relation = "OWNED_BY"
-	RelDeployedWith Relation = "DEPLOYED_WITH"
-	RelBindsVolume  Relation = "BINDS_VOLUME"
-	RelSchedulesOn  Relation = "SCHEDULES_ON"
+	RelDependsOn     Relation = "DEPENDS_ON"
+	RelRunsOn        Relation = "RUNS_ON"
+	RelProtectedBy   Relation = "PROTECTED_BY"
+	RelObservedBy    Relation = "OBSERVED_BY"
+	RelOwnedBy       Relation = "OWNED_BY"
+	RelDeployedWith  Relation = "DEPLOYED_WITH"
+	RelBindsVolume   Relation = "BINDS_VOLUME"
+	RelSchedulesOn   Relation = "SCHEDULES_ON"
+	RelRoutesTo      Relation = "ROUTES_TO"
+	RelScales        Relation = "SCALES"
+	RelUsesIdentity  Relation = "USES_IDENTITY"
+	RelOwns          Relation = "OWNS"
 )
+
+// KnownRelations for validation.
+var KnownRelations = map[Relation]bool{
+	RelDependsOn: true, RelRunsOn: true, RelProtectedBy: true, RelObservedBy: true,
+	RelOwnedBy: true, RelDeployedWith: true, RelBindsVolume: true, RelSchedulesOn: true,
+	RelRoutesTo: true, RelScales: true, RelUsesIdentity: true, RelOwns: true,
+}
 
 // Node is a graph vertex.
 type Node struct {
@@ -71,23 +118,26 @@ type Node struct {
 	Name       string         `json:"name"`
 	Namespace  string         `json:"namespace,omitempty"`
 	Attributes map[string]any `json:"attributes,omitempty"`
+	// Provenance (optional).
+	Source    string `json:"source,omitempty"`
+	SourceRef string `json:"sourceRef,omitempty"`
 }
 
 // Edge is a directed relation between nodes.
 type Edge struct {
-	ID     string         `json:"id,omitempty"`
-	From   string         `json:"from"`
-	To     string         `json:"to"`
-	Rel    Relation       `json:"rel"`
-	Attrs  map[string]any `json:"attributes,omitempty"`
+	ID    string         `json:"id,omitempty"`
+	From  string         `json:"from"`
+	To    string         `json:"to"`
+	Rel   Relation       `json:"rel"`
+	Attrs map[string]any `json:"attributes,omitempty"`
 }
 
 // Index provides O(1) lookups over a Snapshot.
 type Index struct {
-	Snap  *Snapshot
-	ByID  map[string]*Node
-	Out   map[string][]Edge // from -> edges
-	In    map[string][]Edge // to -> edges
+	Snap   *Snapshot
+	ByID   map[string]*Node
+	Out    map[string][]Edge
+	In     map[string][]Edge
 	ByKind map[Kind][]*Node
 }
 
@@ -145,4 +195,18 @@ func (n *Node) AttrInt(key string) int {
 	default:
 		return 0
 	}
+}
+
+// WorkloadReplicas returns replica count for a workload node.
+func (n *Node) WorkloadReplicas() int {
+	if n == nil {
+		return 0
+	}
+	if r := n.AttrInt("replicas"); r > 0 {
+		return r
+	}
+	if r := n.AttrInt("desiredReplicas"); r > 0 {
+		return r
+	}
+	return 0
 }

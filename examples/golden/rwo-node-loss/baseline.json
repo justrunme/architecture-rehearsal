@@ -1,130 +1,33 @@
 {
-  "id": "prod-cluster-baseline",
-  "name": "fourier-prod (sanitized)",
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "ArchitectureSnapshot",
+  "id": "acme-prod-baseline",
+  "name": "acme-prod (example)",
   "source": "k8s-snapshot",
   "phase": "baseline",
   "createdAt": "2026-08-01T12:00:00Z",
-  "labels": {
-    "env": "prod",
-    "cluster": "fourier-prod"
-  },
-  "meta": {
-    "pod_ip_capacity_available": 40
-  },
+  "labels": { "env": "prod", "cluster": "acme-prod" },
+  "meta": { "pod_ip_capacity_available": 40 },
   "nodes": [
-    {
-      "id": "cluster/fourier-prod",
-      "kind": "Cluster",
-      "name": "fourier-prod"
-    },
-    {
-      "id": "node/ip-10-0-12-44",
-      "kind": "Node",
-      "name": "ip-10-0-12-44",
-      "attributes": {
-        "zone": "eu-central-1a",
-        "instanceType": "m6i.2xlarge",
-        "schedulable": true
-      }
-    },
-    {
-      "id": "node/ip-10-0-13-18",
-      "kind": "Node",
-      "name": "ip-10-0-13-18",
-      "attributes": {
-        "zone": "eu-central-1b",
-        "instanceType": "m6i.2xlarge",
-        "schedulable": true
-      }
-    },
-    {
-      "id": "ns/gitlab",
-      "kind": "Namespace",
-      "name": "gitlab"
-    },
-    {
-      "id": "workload/gitlab/gitaly",
-      "kind": "Workload",
-      "name": "gitaly",
-      "namespace": "gitlab",
-      "attributes": {
-        "type": "StatefulSet",
-        "replicas": 1,
-        "stateful": true
-      }
-    },
-    {
-      "id": "workload/gitlab/webservice",
-      "kind": "Workload",
-      "name": "webservice",
-      "namespace": "gitlab",
-      "attributes": {
-        "type": "Deployment",
-        "replicas": 3
-      }
-    },
-    {
-      "id": "pvc/gitlab/gitaly-data",
-      "kind": "PVC",
-      "name": "gitaly-data",
-      "namespace": "gitlab",
-      "attributes": {
-        "accessMode": "ReadWriteOnce",
-        "boundNode": "ip-10-0-12-44",
-        "storageClass": "gp3",
-        "zone": "eu-central-1a"
-      }
-    },
-    {
-      "id": "svc/gitlab/gitaly",
-      "kind": "Service",
-      "name": "gitaly",
-      "namespace": "gitlab"
-    },
-    {
-      "id": "slo/gitlab-availability",
-      "kind": "SLO",
-      "name": "gitlab-availability",
-      "attributes": {
-        "target": "99.9%"
-      }
-    },
-    {
-      "id": "team/platform",
-      "kind": "Team",
-      "name": "platform"
-    }
+    { "id": "cluster/acme-prod", "kind": "Cluster", "name": "acme-prod" },
+    { "id": "node/ip-10-0-12-44", "kind": "Node", "name": "ip-10-0-12-44", "attributes": { "zone": "eu-central-1a", "instanceType": "m6i.2xlarge", "schedulable": true, "allocatablePods": 29 } },
+    { "id": "node/ip-10-0-13-18", "kind": "Node", "name": "ip-10-0-13-18", "attributes": { "zone": "eu-central-1b", "instanceType": "m6i.2xlarge", "schedulable": true, "allocatablePods": 29 } },
+    { "id": "ns/gitops", "kind": "Namespace", "name": "gitops" },
+    { "id": "workload/gitops/gitaly", "kind": "Workload", "name": "gitaly", "namespace": "gitops", "attributes": { "type": "StatefulSet", "replicas": 1, "stateful": true } },
+    { "id": "workload/gitops/webservice", "kind": "Workload", "name": "webservice", "namespace": "gitops", "attributes": { "type": "Deployment", "replicas": 3 } },
+    { "id": "pvc/gitops/gitaly-data", "kind": "PVC", "name": "gitaly-data", "namespace": "gitops", "attributes": { "accessMode": "ReadWriteOnce", "boundNode": "ip-10-0-12-44", "storageClass": "gp3", "zone": "eu-central-1a" } },
+    { "id": "svc/gitops/gitaly", "kind": "Service", "name": "gitaly", "namespace": "gitops" },
+    { "id": "pdb/gitops/gitaly", "kind": "PDB", "name": "gitaly", "namespace": "gitops", "attributes": { "minAvailable": 1 } },
+    { "id": "slo/gitops-availability", "kind": "SLO", "name": "gitops-availability", "attributes": { "target": "99.9%" } },
+    { "id": "team/platform", "kind": "Team", "name": "platform" }
   ],
   "edges": [
-    {
-      "from": "workload/gitlab/gitaly",
-      "to": "node/ip-10-0-12-44",
-      "rel": "RUNS_ON"
-    },
-    {
-      "from": "workload/gitlab/gitaly",
-      "to": "pvc/gitlab/gitaly-data",
-      "rel": "BINDS_VOLUME"
-    },
-    {
-      "from": "svc/gitlab/gitaly",
-      "to": "workload/gitlab/gitaly",
-      "rel": "DEPENDS_ON"
-    },
-    {
-      "from": "workload/gitlab/webservice",
-      "to": "svc/gitlab/gitaly",
-      "rel": "DEPENDS_ON"
-    },
-    {
-      "from": "workload/gitlab/gitaly",
-      "to": "slo/gitlab-availability",
-      "rel": "PROTECTED_BY"
-    },
-    {
-      "from": "workload/gitlab/gitaly",
-      "to": "team/platform",
-      "rel": "OWNED_BY"
-    }
+    { "from": "workload/gitops/gitaly", "to": "node/ip-10-0-12-44", "rel": "RUNS_ON" },
+    { "from": "workload/gitops/gitaly", "to": "pvc/gitops/gitaly-data", "rel": "BINDS_VOLUME" },
+    { "from": "svc/gitops/gitaly", "to": "workload/gitops/gitaly", "rel": "ROUTES_TO" },
+    { "from": "workload/gitops/webservice", "to": "svc/gitops/gitaly", "rel": "DEPENDS_ON" },
+    { "from": "workload/gitops/gitaly", "to": "pdb/gitops/gitaly", "rel": "PROTECTED_BY" },
+    { "from": "workload/gitops/gitaly", "to": "slo/gitops-availability", "rel": "PROTECTED_BY" },
+    { "from": "workload/gitops/gitaly", "to": "team/platform", "rel": "OWNED_BY" }
   ]
 }

@@ -1,42 +1,33 @@
 {
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "ArchitectureSnapshot",
   "id": "obs-baseline",
-  "name": "Prometheus label schema snapshot",
+  "name": "Prometheus metric-specific label schema",
   "source": "prometheus-metadata",
   "phase": "baseline",
   "createdAt": "2026-08-01T12:00:00Z",
   "meta": {
-    "metrics": [
-      "up",
-      "kube_pod_status_ready",
-      "http_request_duration_seconds_count"
-    ],
+    "metrics": ["up", "kube_pod_status_ready", "http_request_duration_seconds_count"],
     "metric_labels": {
-      "job": ["kubernetes-pods", "kubernetes-nodes", "gitlab"],
-      "namespace": ["gitlab", "payments", "monitoring"],
-      "region": ["eu-central-1"]
+      "kube_pod_status_ready": {
+        "condition": ["true", "false"],
+        "namespace": ["gitops", "payments", "monitoring"]
+      },
+      "up": {
+        "cluster": ["acme-prod"],
+        "job": ["prometheus", "kubernetes-pods"]
+      },
+      "http_request_duration_seconds_count": {
+        "job": ["payments-api"],
+        "namespace": ["payments"]
+      }
     }
   },
   "nodes": [
-    {
-      "id": "alert/KubePodNotReady",
-      "kind": "Alert",
-      "name": "KubePodNotReady",
-      "attributes": {
-        "label:job": "kubernetes-pods",
-        "label:namespace": "gitlab"
-      }
-    },
-    {
-      "id": "slo/api-latency",
-      "kind": "SLO",
-      "name": "api-latency"
-    }
+    { "id": "alert/KubePodNotReady", "kind": "Alert", "name": "KubePodNotReady" },
+    { "id": "slo/api-latency", "kind": "SLO", "name": "api-latency" }
   ],
   "edges": [
-    {
-      "from": "alert/KubePodNotReady",
-      "to": "slo/api-latency",
-      "rel": "OBSERVED_BY"
-    }
+    { "from": "alert/KubePodNotReady", "to": "slo/api-latency", "rel": "OBSERVED_BY" }
   ]
 }
