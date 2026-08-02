@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -o bin/rehearsal ./cmd/rehearsal
+      - name: Golden demos
+        run: |
+          set +e
+          ./bin/rehearsal analyze \
+            --baseline examples/golden/rwo-node-loss/baseline.json \
+            --change examples/golden/rwo-node-loss/change.json \
+            --out out --quiet
+          code=$?
+          test "$code" -eq 3 || exit 1
+          ./bin/rehearsal analyze \
+            --baseline examples/golden/cni-ip-capacity/baseline.json \
+            --change examples/golden/cni-ip-capacity/change.json \
+            --out out --quiet
+          code=$?
+          test "$code" -eq 3 || exit 1
+          ./bin/rehearsal analyze \
+            --baseline examples/golden/prom-zero-match/baseline.json \
+            --change examples/golden/prom-zero-match/change.json \
+            --out out --quiet
+          code=$?
+          test "$code" -eq 3 || exit 1
+          test -f out/latest-report.json
