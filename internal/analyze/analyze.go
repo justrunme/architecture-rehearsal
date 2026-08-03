@@ -15,7 +15,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-const Version = "1.0.1"
+const Version = "1.1.0"
 
 // Run builds proposed graph, validates, runs scenarios, returns Report.
 func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
@@ -26,8 +26,22 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 		return nil, err
 	}
 
+	// Content digests before mutation/apply (v1.1 binding).
+	baseDig, err := digestAny(base)
+	if err != nil {
+		return nil, err
+	}
+	changeDig, err := digestAny(ch)
+	if err != nil {
+		return nil, err
+	}
+
 	// Capture baseline hash before apply to prove immutability in tests.
 	proposed := loader.ApplyChange(base, ch)
+	propDig, err := digestAny(proposed)
+	if err != nil {
+		return nil, err
+	}
 	baseIdx := graph.BuildIndex(base)
 	propIdx := graph.BuildIndex(proposed)
 
@@ -80,6 +94,9 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 		ChangeTitle:       ch.Title,
 		ChangeKind:        ch.EffectiveKind(),
 		BaselineID:        base.ID,
+		BaselineDigest:    baseDig,
+		ChangeDigest:      changeDig,
+		ProposedDigest:    propDig,
 		Findings:          findings,
 		Coverage:          cov,
 		CoverageGaps:      cov.Gaps,
@@ -266,10 +283,14 @@ func computeCoverage(base *graph.Snapshot, ch *loader.ChangeEnvelope, findings [
 
 func semanticDigest(r *Report) string {
 	// Clone without runtime timestamp for stable hash.
+	// Includes content digests so the report is bound to exact baseline/change.
 	type dig struct {
 		Version            string             `json:"version"`
 		ChangeID           string             `json:"changeId"`
 		BaselineID         string             `json:"baselineId"`
+		BaselineDigest     string             `json:"baselineDigest"`
+		ChangeDigest       string             `json:"changeDigest"`
+		ProposedDigest     string             `json:"proposedDigest"`
 		Risk               string             `json:"risk"`
 		Decision           string             `json:"decision"`
 		AffectedComponents int                `json:"affected_components"`
@@ -282,6 +303,7 @@ func semanticDigest(r *Report) string {
 	}
 	d := dig{
 		Version: r.Version, ChangeID: r.ChangeID, BaselineID: r.BaselineID,
+		BaselineDigest: r.BaselineDigest, ChangeDigest: r.ChangeDigest, ProposedDigest: r.ProposedDigest,
 		Risk: r.Risk, Decision: r.Decision, AffectedComponents: r.AffectedComponents,
 		CriticalPaths: r.CriticalPaths, SLOViolations: r.SLOViolations, Rollback: r.Rollback,
 		PredictedFailures: r.PredictedFailures, Findings: r.Findings, Coverage: r.Coverage,
@@ -289,6 +311,49 @@ func semanticDigest(r *Report) string {
 	raw, _ := json.Marshal(d)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+func digestAny(v any) (string, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	// canonical re-encode
+	var anyV any
+	if err := json.Unmarshal(raw, &anyV); err != nil {
+		sum := sha256.Sum256(raw)
+		return hex.EncodeToString(sum[:]), nil
+	}
+	raw2, err := json.Marshal(anyV)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw2)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// AssertBindings checks that report was produced for the given baseline/change digests.
+func AssertBindings(rep *Report, baselineDigest, changeDigest string) error {
+	if rep == nil {
+		return fmt.Errorf("nil report")
+	}
+	if rep.BaselineDigest == "" || rep.ChangeDigest == "" {
+		return fmt.Errorf("report missing content digests (need analyze ≥1.1.0)")
+	}
+	if baselineDigest != "" && rep.BaselineDigest != baselineDigest {
+		return fmt.Errorf("baselineDigest mismatch: report=%s live=%s", short(rep.BaselineDigest), short(baselineDigest))
+	}
+	if changeDigest != "" && rep.ChangeDigest != changeDigest {
+		return fmt.Errorf("changeDigest mismatch: report=%s live=%s", short(rep.ChangeDigest), short(changeDigest))
+	}
+	return nil
+}
+
+func short(s string) string {
+	if len(s) < 12 {
+		return s
+	}
+	return s[:12]
 }
 
 func uniqueStrings(in []string) []string {

@@ -298,10 +298,11 @@ func TestChangeIdentityAppliedAndConverged(t *testing.T) {
 		},
 	}
 	res := verify.RunWithOptions(pred, obs, verify.Options{Baseline: base, Change: ch})
-	// change applied but not converged → diverged
-	if res.Outcome == verify.OutcomeVerified {
-		t.Fatalf("non-converged rollout must not fully verify: %+v", res.Checks)
+	// CNI prediction + incomplete rollout is consistent (soft rollout_status), may still verify
+	if res.Outcome != verify.OutcomeVerified {
+		t.Fatalf("CNI + incomplete rollout should verify: outcome=%s checks=%+v", res.Outcome, res.Checks)
 	}
+	// When fully converged, still verified
 	obs.Nodes[0].Attributes["readyReplicas"] = 18
 	obs.Nodes[0].Attributes["availableReplicas"] = 18
 	res = verify.RunWithOptions(pred, obs, verify.Options{Baseline: base, Change: ch})

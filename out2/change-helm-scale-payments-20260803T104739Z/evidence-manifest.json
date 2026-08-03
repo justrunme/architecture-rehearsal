@@ -1,0 +1,33 @@
+{
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "EvidenceManifest",
+  "tool": "architecture-rehearsal",
+  "version": "1.1.0",
+  "changeId": "change-helm-scale-payments",
+  "risk": "high",
+  "decision": "block",
+  "semanticDigest": "3133fbf8a1ee1725f52e9b26c222f008defcca62bc7b8e9e6e8e8b4f5f5ba93c",
+  "generatedAt": "2026-08-03T10:47:39.647861Z",
+  "files": [
+    {
+      "name": "report.json",
+      "sha256": "38f4eccbf4b2980df8d1e4a3536c05679de4e10f5799f378d5e6c4112a7737a9",
+      "bytes": 2909
+    },
+    {
+      "name": "report.html",
+      "sha256": "c0d34f5da24948f076cb844b4e4df6499f0176396f2590f12439d9ecd6ca5a06",
+      "bytes": 4461
+    },
+    {
+      "name": "baseline.json",
+      "sha256": "bd03b6a1d05735b2a47548f1c2968bf323da9cda0331c0a5216c0cb58dd57345",
+      "bytes": 1009
+    },
+    {
+      "name": "change.json",
+      "sha256": "6bfedfb169255e1da77baab37837ef3f83992e2d227060c307d351be125134ba",
+      "bytes": 616
+    }
+  ]
+}

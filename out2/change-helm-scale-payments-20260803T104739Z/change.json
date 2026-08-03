@@ -1,0 +1,16 @@
+{
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "helm-upgrade",
+  "id": "change-helm-scale-payments",
+  "title": "Helm upgrade: scale payments stack",
+  "description": "Replica increase derived from baseline→proposed; surge estimated from maxSurge.",
+  "seeds": ["workload/payments/api", "workload/payments/worker"],
+  "facts": {
+    "scenario": "cni-ip-capacity",
+    "rollback_available": true
+  },
+  "patchNodes": [
+    { "id": "workload/payments/api", "attributes": { "replicas": 18, "maxSurge": "25%" } },
+    { "id": "workload/payments/worker", "attributes": { "replicas": 12, "maxSurge": "1" } }
+  ]
+}

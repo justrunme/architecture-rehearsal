@@ -65,6 +65,10 @@ type Spec struct {
 	ObservedRef string   `json:"observedRef,omitempty"`
 	Scenarios   []string `json:"scenarios,omitempty"`
 	Gate        GateSpec `json:"gate,omitempty"`
+	// PolicyPath optional organization policy YAML (v1.1 wired into gate).
+	PolicyPath string `json:"policyPath,omitempty"`
+	// OutDir stores chain/report artifacts when set.
+	OutDir string `json:"outDir,omitempty"`
 	// Timeout for the whole run.
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 }
@@ -77,14 +81,18 @@ type GateSpec struct {
 
 // Status is observed run state.
 type Status struct {
-	Phase    Phase     `json:"phase"`
-	Decision string    `json:"decision,omitempty"`
-	Risk     string    `json:"risk,omitempty"`
-	Message  string    `json:"message,omitempty"`
-	Attempts int       `json:"attempts"`
-	Lease    *Lease    `json:"lease,omitempty"`
-	History  []Event   `json:"history,omitempty"`
-	Deadline *time.Time `json:"deadline,omitempty"`
+	Phase            Phase      `json:"phase"`
+	Decision         string     `json:"decision,omitempty"`
+	Risk             string     `json:"risk,omitempty"`
+	Message          string     `json:"message,omitempty"`
+	Attempts         int        `json:"attempts"`
+	Lease            *Lease     `json:"lease,omitempty"`
+	History          []Event    `json:"history,omitempty"`
+	Deadline         *time.Time `json:"deadline,omitempty"`
+	// ChainPath is where evidence-chain.json was written (v1.1).
+	ChainPath        string     `json:"chainPath,omitempty"`
+	VerifyOutcome    string     `json:"verifyOutcome,omitempty"`
+	PredictedFailures []string  `json:"predictedFailures,omitempty"`
 }
 
 // Lease is a distributed-style exclusive lock (single-node for now).
