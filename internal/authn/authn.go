@@ -169,9 +169,38 @@ func (s *StaticToken) Authenticate(r *http.Request) (Principal, error) {
 		}
 	}
 
-	// OIDC: explicitly refuse stub JWT acceptance.
-	if os.Getenv("REHEARSAL_OIDC_ISSUER") != "" {
-		return Principal{}, fmt.Errorf("OIDC is not implemented: remove REHEARSAL_OIDC_ISSUER or integrate a real JWT/JWKS verifier (unsigned JWT rejected)")
-	}
 	return Principal{}, fmt.Errorf("invalid token")
+}
+
+// FromEnvAuthenticator returns StaticToken and optional OIDC chain for serve.
+// When REHEARSAL_OIDC_ISSUER is set, JWTs are verified against JWKS (RS256).
+// Static tokens still work for self-hosted. Unsigned/malformed JWT fails verification.
+func FromEnvAuthenticator(cfg Config) (Authenticator, error) {
+	static, err := FromEnv(cfg)
+	if err != nil {
+		// OIDC-only mode: allow empty static if issuer set
+		if os.Getenv("REHEARSAL_OIDC_ISSUER") == "" {
+			return nil, err
+		}
+		static = nil
+	}
+	issuer := strings.TrimSpace(os.Getenv("REHEARSAL_OIDC_ISSUER"))
+	if issuer == "" {
+		if static == nil {
+			return nil, fmt.Errorf("no authenticator")
+		}
+		return static, nil
+	}
+	jwks := strings.TrimSpace(os.Getenv("REHEARSAL_OIDC_JWKS_URL"))
+	aud := strings.TrimSpace(os.Getenv("REHEARSAL_OIDC_AUDIENCE"))
+	oidc, err := NewOIDCVerifier(OIDCConfig{Issuer: issuer, JWKSURL: jwks, Audience: aud})
+	if err != nil {
+		return nil, err
+	}
+	var auths []Authenticator
+	if static != nil {
+		auths = append(auths, static)
+	}
+	auths = append(auths, oidc)
+	return &ChainAuthenticator{Auths: auths}, nil
 }

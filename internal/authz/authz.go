@@ -24,6 +24,9 @@ const (
 	ActionClusterWrite Action = "cluster.write"
 	ActionPolicyWrite  Action = "policy.write"
 	ActionPolicyRead   Action = "policy.read"
+	ActionJobRead      Action = "job.read"
+	ActionJobWrite     Action = "job.write"
+	ActionAuditRead    Action = "audit.read"
 	ActionAdmin        Action = "admin"
 )
 
@@ -43,11 +46,11 @@ type Authorizer struct {
 // Default role matrix.
 func Default() *Authorizer {
 	return &Authorizer{RoleGrants: map[string][]Action{
-		"viewer":            {ActionRunRead, ActionEvidenceRead, ActionClusterRead, ActionPolicyRead},
-		"developer":         {ActionRunRead, ActionRunCreate, ActionEvidenceRead, ActionClusterRead, ActionPolicyRead},
-		"operator":          {ActionRunRead, ActionRunCreate, ActionRunWrite, ActionEvidenceRead, ActionClusterRead, ActionClusterWrite, ActionPolicyRead},
-		"security-reviewer": {ActionRunRead, ActionEvidenceRead, ActionPolicyWrite, ActionPolicyRead, ActionClusterRead},
-		"platform-admin":    {ActionRunRead, ActionRunCreate, ActionRunWrite, ActionEvidenceRead, ActionClusterRead, ActionClusterWrite, ActionPolicyWrite, ActionPolicyRead, ActionAdmin},
+		"viewer":            {ActionRunRead, ActionEvidenceRead, ActionClusterRead, ActionPolicyRead, ActionJobRead, ActionAuditRead},
+		"developer":         {ActionRunRead, ActionRunCreate, ActionEvidenceRead, ActionClusterRead, ActionPolicyRead, ActionJobRead},
+		"operator":          {ActionRunRead, ActionRunCreate, ActionRunWrite, ActionEvidenceRead, ActionClusterRead, ActionClusterWrite, ActionPolicyRead, ActionJobRead, ActionJobWrite, ActionAuditRead},
+		"security-reviewer": {ActionRunRead, ActionEvidenceRead, ActionPolicyWrite, ActionPolicyRead, ActionClusterRead, ActionAuditRead},
+		"platform-admin":    {ActionRunRead, ActionRunCreate, ActionRunWrite, ActionEvidenceRead, ActionClusterRead, ActionClusterWrite, ActionPolicyWrite, ActionPolicyRead, ActionJobRead, ActionJobWrite, ActionAuditRead, ActionAdmin},
 	}}
 }
 

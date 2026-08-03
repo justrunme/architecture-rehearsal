@@ -20,7 +20,7 @@ jobs:
         with:
           go-version: "1.26.x"
       - name: Install rehearsal
-        run: go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v1.0.0
+        run: go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v1.4.0
       - name: Render (example)
         run: |
           # helm template myapp ./charts/myapp > /tmp/rendered.yaml
@@ -40,6 +40,14 @@ jobs:
       - name: Policy
         run: |
           rehearsal policy --risk high --decision block || true
+      - name: Publish GitHub commit status
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rehearsal status github --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --exit-code "${{ steps.analyze.outputs.code }}" \
+            --description "Architecture Rehearsal gate" || true
       - name: Publish check summary
         if: always()
         run: |

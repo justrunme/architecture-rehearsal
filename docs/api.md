@@ -32,19 +32,26 @@ Env: `REHEARSAL_DATABASE_URL` (**wins over `--db`**), `REHEARSAL_BLOB_ROOT`.
 | ------ | ---- | ------ |
 | GET | /healthz | Liveness |
 | GET | /readyz | Readiness (`async` flag) |
-| GET | /v1/version | Version (`1.2.1`) |
-| GET | /v1/metrics | Prometheus text (requests, jobs, uptime) |
+| GET | /v1/version | Version (`1.4.0`) + schemaVersion |
+| GET | /v1/metrics | Prometheus text (requests, jobs, queue, schema, uptime) |
 | GET | /v1/schemas | Contract catalog |
-| POST | /v1/runs | Create run (idempotencyKey supported) |
-| GET | /v1/runs | List runs (org-scoped) |
+| POST | /v1/runs | Create run (idempotencyKey; 409 on conflict) |
+| GET | /v1/runs | List runs `{items,count,limit}` org-scoped |
 | GET | /v1/runs/{id} | Get run |
 | POST | /v1/runs/{id}/advance | Sync execute, cancel, or async enqueue |
 | GET | /v1/runs/{id}/evidence | Digests + chain/DSSE when present |
+| GET | /v1/jobs | List jobs (`?runId=&limit=`) |
+| GET | /v1/jobs/{id} | Job status / attempts / error |
+| POST | /v1/jobs/{id}/cancel | Cancel pending/leased job |
+| POST | /v1/jobs/{id}/retry | Requeue failed/cancelled job |
+| GET | /v1/audit | Tenant audit log |
 | POST | /v1/clusters | Register cluster (secret ref only) |
 | GET | /v1/clusters | List clusters |
 | POST | /v1/policies | Store policy document (bound on run create) |
 | GET | /v1/policies | List policies |
-| GET | /v1/calibration | Scenario quality report |
+| GET | /v1/calibration | Org-scoped scenario quality report |
+
+Auth: static token and/or OIDC (`REHEARSAL_OIDC_ISSUER` + JWKS, RS256).
 
 ### Advance semantics
 

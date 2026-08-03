@@ -99,6 +99,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/policies", s.withAuth(authz.ActionPolicyWrite, s.createPolicy))
 	mux.HandleFunc("GET /v1/policies", s.withAuth(authz.ActionPolicyRead, s.listPolicies))
 	mux.HandleFunc("GET /v1/calibration", s.withAuth(authz.ActionRunRead, s.getCalibration))
+	mux.HandleFunc("GET /v1/jobs", s.withAuth(authz.ActionJobRead, s.listJobs))
+	mux.HandleFunc("GET /v1/jobs/{id}", s.withAuth(authz.ActionJobRead, s.getJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.withAuth(authz.ActionJobWrite, s.cancelJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/retry", s.withAuth(authz.ActionJobWrite, s.retryJob))
+	mux.HandleFunc("GET /v1/audit", s.withAuth(authz.ActionAuditRead, s.listAudit))
 	mux.HandleFunc("GET /v1/schemas", s.wrap(s.listSchemas))
 	return mux
 }
@@ -127,10 +132,11 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, map[string]string{
-		"version":    "1.2.1",
-		"apiVersion": contract.APIVersionV1,
-		"product":    "architecture-rehearsal",
+	writeJSON(w, 200, map[string]any{
+		"version":       "1.4.0",
+		"apiVersion":    contract.APIVersionV1,
+		"product":       "architecture-rehearsal",
+		"schemaVersion": s.Backend.SchemaVersion(),
 	})
 }
 
@@ -149,6 +155,12 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "rehearsal_jobs{status=\"leased\"} %d\n", l)
 	fmt.Fprintf(w, "rehearsal_jobs{status=\"done\"} %d\n", d)
 	fmt.Fprintf(w, "rehearsal_jobs{status=\"failed\"} %d\n", f)
+	fmt.Fprintf(w, "# HELP rehearsal_queue_depth Pending+leased jobs\n")
+	fmt.Fprintf(w, "# TYPE rehearsal_queue_depth gauge\n")
+	fmt.Fprintf(w, "rehearsal_queue_depth %d\n", p+l)
+	fmt.Fprintf(w, "# HELP rehearsal_schema_version Applied DB schema version\n")
+	fmt.Fprintf(w, "# TYPE rehearsal_schema_version gauge\n")
+	fmt.Fprintf(w, "rehearsal_schema_version %d\n", s.Backend.SchemaVersion())
 	fmt.Fprintf(w, "# HELP rehearsal_uptime_seconds Process uptime\n")
 	fmt.Fprintf(w, "# TYPE rehearsal_uptime_seconds gauge\n")
 	fmt.Fprintf(w, "rehearsal_uptime_seconds %d\n", int(time.Since(s.startedAt).Seconds()))
@@ -312,14 +324,24 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, actor authn.Pr
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
 	var out []*run.RehearsalRun
 	for _, rr := range all {
 		if !s.AuthZ.CanAccessObject(actor, authz.ActionRunRead, resourceFromRun(rr)) {
 			continue
 		}
 		out = append(out, rr)
+		if len(out) >= limit {
+			break
+		}
 	}
-	writeJSON(w, 200, out)
+	writeJSON(w, 200, map[string]any{"items": out, "count": len(out), "limit": limit})
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
@@ -549,6 +571,72 @@ func (s *Server) getCalibration(w http.ResponseWriter, r *http.Request, actor au
 		return
 	}
 	writeJSON(w, 200, map[string]any{"org": actor.Org, "report": s.Backend.CalibrationReport(actor.Org)})
+}
+
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
+	runID := r.URL.Query().Get("runId")
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	list, err := s.Backend.ListJobs(actor.Org, runID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"org": actor.Org, "jobs": list})
+}
+
+func (s *Server) getJob(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
+	j, err := s.Backend.GetJob(actor.Org, r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if j == nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	writeJSON(w, 200, j)
+}
+
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
+	if err := s.Backend.CancelJob(actor.Org, r.PathValue("id")); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.Error(w, "not found", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.Backend.Audit(actor.ID, "job.cancel", r.PathValue("id"), "", actor.Org)
+	writeJSON(w, 200, map[string]string{"status": "cancelled", "id": r.PathValue("id")})
+}
+
+func (s *Server) retryJob(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
+	if err := s.Backend.RetryJob(actor.Org, r.PathValue("id")); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.Error(w, "not found", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.Backend.Audit(actor.ID, "job.retry", r.PathValue("id"), "", actor.Org)
+	writeJSON(w, 200, map[string]string{"status": "pending", "id": r.PathValue("id")})
+}
+
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	list, err := s.Backend.ListAudit(actor.Org, limit)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"org": actor.Org, "entries": list})
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request, authn.Principal)

@@ -16,8 +16,8 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.2.1** — durable control plane + tenant write isolation + evidence recompute.  
-Evidence integrity (v1.1) + secure API (v1.0.1+) remain required for production gates.  
+**Status: v1.4.0** — provable change-safety control plane (durable, multi-tenant, ops API, CI hooks).  
+Evidence integrity (v1.1) + secure API (v1.0.1+) + trust boundaries (v1.2.1) required for production.  
 **v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
 ---
@@ -39,18 +39,18 @@ Evidence integrity (v1.1) + secure API (v1.0.1+) remain required for production 
 | DSSE-style sign (HMAC / Ed25519) | **Supported** (not full Sigstore) |
 | RehearsalRun lifecycle + operator loop | **Supported** (offline JSON CRDs) |
 | GitOps policy gate | **Supported** (policy engine + GH reference) |
-| Control plane HTTP API | **Supported** (v1.0.1+ secure token required) |
-| Durable SQL store | **Supported** (SQLite default; Postgres URL) |
-| Content-addressed blobs | **Supported** (local filesystem; S3-shaped API later) |
-| Async job workers + leases | **Supported** (`--async`) |
-| Hierarchical RBAC + bearer auth | **Supported** (org-scoped; no OIDC stub) |
-| GitOps GH/GL full gate | **Reference** skeleton only |
-| Calibration engine | **Supported** (SQL-backed in control plane) |
-| Scenario package registry / SDK surface | **Supported** |
-| Helm chart | **Supported** (`deploy/helm`) |
-| Live kubectl collect | **Supported** |
-| Live controller-runtime operator | **Reference** (JSON reconciler) |
-| Multi-tenant SaaS | **Not supported** |
+| Control plane HTTP API | **Supported** (token + optional OIDC/JWKS) |
+| Durable SQL store | **Supported** (SQLite + Postgres; versioned migrations) |
+| Content-addressed blobs | **Supported** (FS + S3-compatible interface) |
+| Async jobs + fencing + cancel/retry API | **Supported** |
+| Job / Audit APIs | **Supported** (v1.3+) |
+| Hierarchical RBAC + bearer auth | **Supported** (org-scoped) |
+| GitHub/GitLab commit status | **Supported** (`rehearsal status`) |
+| GitOps full admission gate | **Reference** workflow + adapters |
+| Calibration engine | **Supported** (org-scoped SQL) |
+| Operator JSON CR ↔ control plane | **Supported** (`operator --api`) |
+| Live controller-runtime operator | **Not yet** (JSON reconciler + API client) |
+| Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
 | LLM in risk path | **Not supported** |
 
 ---
@@ -61,7 +61,7 @@ Evidence integrity (v1.1) + secure API (v1.0.1+) remain required for production 
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.2.1
+make build && ./bin/rehearsal version   # 1.4.0
 ```
 
 ### Offline iron path
