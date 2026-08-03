@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/justrunme/architecture-rehearsal
-  tag: "1.1.0"
+  tag: "1.2.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -19,6 +19,8 @@ api:
   org: default
   role: platform-admin
   workDir: /var/lib/rehearsal
+  async: true
+  workers: 2
 
 resources:
   requests:

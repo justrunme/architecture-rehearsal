@@ -90,7 +90,7 @@ Usage:
   rehearsal policy   [--file policy.yaml] --risk high --decision block
   rehearsal calibrate [--demo]
   rehearsal schemas
-  rehearsal serve    [--addr :8080]
+  rehearsal serve    [--addr :8080] [--workdir DIR] [--db PATH|postgres://] [--blob DIR] [--async] [--workers N]
   rehearsal operator [--watch DIR] [--once]
   rehearsal merge|store|audit|sign|verify-sign ...
   rehearsal version
