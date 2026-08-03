@@ -78,11 +78,13 @@ echo "==> 4/5 snapshot k8s (observed post-deploy dump + meta)"
   --meta "$FIX/observed-meta.json" \
   --out "$OUT/observed.json"
 
-echo "==> 5/5 verify (expect exit 0 verified)"
+echo "==> 5/5 verify (expect exit 0 verified; independent of annotation alone)"
 set +e
 "$BIN" verify \
   --report "$REPORT" \
   --observed "$OUT/observed.json" \
+  --baseline "$OUT/baseline.json" \
+  --change "$OUT/change.json" \
   --out "$OUT/verify.json"
 vcode=$?
 set -e
@@ -100,7 +102,11 @@ r = json.load(open(sys.argv[2]))
 assert v.get("outcome") == "verified", v
 assert r.get("decision") == "block", r
 assert "cni-ip-capacity" in (r.get("predicted_failures") or []), r
-print(f"  verify OK outcome={v['outcome']} score={v.get('score')}")
+assert v.get("deployedChangeDigest"), "missing deployedChangeDigest"
+# independent scenario check must have passed (not soft annotation only)
+names = [c["name"] for c in v.get("checks") or [] if c.get("passed") and not c.get("soft")]
+assert any(n.startswith("scenario:cni-ip-capacity") for n in names), names
+print(f"  verify OK outcome={v['outcome']} score={v.get('score')} digest={v.get('deployedChangeDigest')}")
 print(f"  decision={r['decision']} risk={r['risk']} failures={r.get('predicted_failures')}")
 PY
 fi

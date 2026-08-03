@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.7.0 — 2026-08-03
+
+**Platform layer** (local control-plane primitives — not a hosted SaaS).
+
+### Run store + audit
+- `internal/store` filesystem run records (`out/runs/runs/*.json`)
+- Append-only `audit.jsonl`
+- CLI: `rehearsal store list|save`, `rehearsal audit`
+- `analyze --store DIR` persists each gate run
+
+### Signed evidence
+- HMAC-SHA256 envelope (`REHEARSAL_HMAC_SECRET`)
+- CLI: `rehearsal sign`, `analyze --sign-out FILE`
+- Verify helper for envelopes (not Sigstore/cosign yet)
+
+### Multi-cluster CLI
+- `rehearsal merge --name fleet snap1.json snap2.json …` (uses `graph.MergeSnapshots`)
+
+### RBAC config model
+- Role/action policy (`internal/rbac`) for local actor gating
+- Env `REHEARSAL_ACTOR` (default `local`)
+
+### Honesty
+- Still not: network authn service, multi-tenant SaaS, published GHCR multi-arch product
+
+## 0.6.0 — 2026-08-03
+
+**Live rehearsal + graph fidelity**
+
+### Live collect
+- `snapshot k8s --live [--kubeconfig] [--context]` via read-only `kubectl get -A -o yaml`
+- Never writes to the cluster; reuses offline parser
+
+### Graph fidelity
+- Pod ownership prefers `ownerReferences` (Pod→ReplicaSet→Deployment)
+- ReplicaSet owner map recorded for chain resolution
+- PV zone from CSI labels **and** `nodeAffinity` matchExpressions
+- EndpointSlice ready counts annotated onto Service (`readyEndpoints`)
+- PDB `minAvailable: 50%` / `maxUnavailable` percentage support in collector + scenario
+
+### Capacity model
+- `internal/capacity`: `SchedulingEstimate` vs explicit `cni_ip_available`
+- Meta: `pod_scheduling_capacity_estimate` + `capacity_model`
+
+## 0.5.0 — 2026-08-03
+
+**Independent observation** (verify no longer trusts operator annotations as proof).
+
+- Scenario-specific observed predicates (CNI pending pods, RWO Pending Pods scoped to components/PVCs)
+- `meta.observed_failures` is **soft** annotation only
+- Deployed change identity + digest from patch nodes
+- Baseline→observed delta checks
+- CLI: `verify --baseline --change`
+- All predicted scenarios need their own evidence (no single-match short-circuit)
+
+## 0.4.1 — 2026-08-03
+
+**Trust patch** — fail-closed ingestion.
+
+- Collector + manifest compiler **strict by default**
+- `--allow-partial` opt-in only
+- `coverage_gap` / `yaml_parse_errors` → `RequiredMissing` → never APPROVE
+- Negative tests: malformed YAML, partial dir, unsupported Job
+- RWO verify looks at **KindPod** (not Workload)
+- Component presence no longer free-passes score
+
 ## 0.4.0 — 2026-08-03
 
 **End-to-end iron path** (one real pipeline, no new scenarios).
@@ -11,16 +77,11 @@
 
 ### Collectors / CLI
 - `snapshot k8s --phase baseline|observed|deployed`
-- `snapshot k8s --meta FILE` merges operator/CI annotations (e.g. `observed_failures`) after capacity derivation
+- `snapshot k8s --meta FILE` merges operator/CI annotations after capacity derivation
 - Observed phase marks Pending pods `unschedulable` for verify helpers
-- Collector version stamp `0.4.0`
 
 ### Change compiler
 - Manifest diffs set `facts.scenario=cni-ip-capacity` so capacity rules always evaluate on helm/manifest scale paths
-
-### Docs
-- Honest matrix: full offline E2E path **Supported**
-- Binary version `0.4.0`
 
 ## 0.3.0 — 2026-08-03
 

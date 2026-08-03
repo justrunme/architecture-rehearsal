@@ -2,9 +2,25 @@ package scenario
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 )
+
+// effectiveMinAvailable supports integer and percentage minAvailable (e.g. "50%").
+func effectiveMinAvailable(pdb *graph.Node, replicas int) int {
+	if pdb == nil {
+		return 0
+	}
+	if pct := pdb.AttrInt("minAvailablePercent"); pct > 0 && replicas > 0 {
+		// Kubernetes rounds up for minAvailable percentages.
+		return int(math.Ceil(float64(replicas) * float64(pct) / 100.0))
+	}
+	if n := pdb.AttrInt("minAvailable"); n > 0 {
+		return n
+	}
+	return 0
+}
 
 type PDBDisruption struct{}
 
@@ -58,10 +74,6 @@ func (r PDBDisruption) Evaluate(ctx Context) Result {
 	}
 	var findings []Finding
 	for _, pdb := range ctx.BaseIdx.ByKind[graph.KindPDB] {
-		minA := pdb.AttrInt("minAvailable")
-		if minA <= 0 {
-			continue
-		}
 		var workloads []string
 		for wid, edges := range ctx.BaseIdx.Out {
 			for _, e := range edges {
@@ -76,6 +88,10 @@ func (r PDBDisruption) Evaluate(ctx Context) Result {
 				continue
 			}
 			rep := w.WorkloadReplicas()
+			minA := effectiveMinAvailable(pdb, rep)
+			if minA <= 0 {
+				continue
+			}
 			onLost := false
 			for _, e := range ctx.BaseIdx.Out[wid] {
 				if e.Rel == graph.RelRunsOn && lost[e.To] {
@@ -95,7 +111,7 @@ func (r PDBDisruption) Evaluate(ctx Context) Result {
 					Components: []string{pdb.ID, wid},
 					Cascade: []string{"node loss", fmt.Sprintf("remaining %d < minAvailable %d", remaining, minA), "eviction denied or SLO breach"},
 					Controls: []string{"increase replicas before drain", "adjust PDB for maintenance"},
-					SLOImpact: "availability", Evidence: []string{fmt.Sprintf("minAvailable=%d", minA)},
+					SLOImpact: "availability", Evidence: []string{fmt.Sprintf("minAvailable=%d raw=%s", minA, pdb.AttrString("minAvailableRaw"))},
 					Rollback: RollbackUnknown, Confidence: "medium",
 				})
 			}

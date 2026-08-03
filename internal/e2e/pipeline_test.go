@@ -97,11 +97,11 @@ func TestE2EPipeline_DumpToVerify(t *testing.T) {
 	if !foundCNI {
 		t.Fatalf("expected cni-ip-capacity in predicted_failures, got %v", rep.PredictedFailures)
 	}
-	if rep.Version != "0.4.0" {
-		t.Fatalf("version=%s want 0.4.0", rep.Version)
+	if rep.Version != analyze.Version {
+		t.Fatalf("version=%s want %s", rep.Version, analyze.Version)
 	}
 
-	// 4. Observed snapshot + operator meta
+	// 4. Observed snapshot — independent evidence from Pending pods (annotation optional)
 	meta, err := collect.LoadMetaFile(filepath.Join(root, "observed-meta.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -117,14 +117,13 @@ func TestE2EPipeline_DumpToVerify(t *testing.T) {
 	if obs.Phase != graph.PhaseObserved {
 		t.Fatalf("phase=%s", obs.Phase)
 	}
-	rawFails, ok := obs.Meta["observed_failures"].([]any)
-	if !ok || len(rawFails) == 0 {
-		t.Fatalf("observed_failures missing: %v", obs.Meta)
-	}
 
-	// 5. Verify prediction against observed
-	vres := verify.Run(rep, obs)
+	// 5. Verify with baseline+change for identity/delta (independent of annotation)
+	vres := verify.RunWithOptions(rep, obs, verify.Options{Baseline: base, Change: ch})
 	if vres.Outcome != verify.OutcomeVerified {
 		t.Fatalf("verify outcome=%s summary=%s checks=%+v", vres.Outcome, vres.Summary, vres.Checks)
+	}
+	if vres.DeployedChangeDigest == "" {
+		t.Fatal("expected deployed change digest")
 	}
 }
