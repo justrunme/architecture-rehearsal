@@ -2,26 +2,41 @@
 
 **Know what breaks before you deploy.**
 
-Self-hosted **change gate** for Kubernetes and cloud infrastructure:
+Self-hosted **change impact analysis** for Kubernetes / IaC pipelines:
 
 ```text
-IaC / Kubernetes change
-  → architecture graph
-  → deterministic impact analysis
-  → CI decision (approve | warn | block | unknown)
-  → deploy outside Rehearsal
-  → post-deploy verification
-  → immutable evidence (SHA-256)
+YAML / plan → architecture graph → deterministic scenarios → approve|warn|block|unknown → evidence → verify
 ```
 
-> **Graph and rules decide. AI only explains** (optional, not in the risk path).  
+> **Graph and rules decide. AI only explains** (optional — not implemented in risk path).  
 > **Missing data never becomes a false approve.**
 
 [![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.0 / v2.0 multi-cluster merge** — production-lean CLI & container for GitHub Actions, GitLab CI, GitOps pipelines. Not a SaaS. Not a Kubernetes operator. Not an AI that manages clusters.
+**Status: v0.3.0** — strong deterministic prototype with real offline K8s graph pipeline.  
+**Not** production-grade multi-cluster platform. **Not** a published GHCR product yet (Dockerfile is reference until CI publishes images).
+
+---
+
+## Capability matrix (honest)
+
+| Area | Status |
+| ---- | ------ |
+| Snapshot graph + validation | **Supported** |
+| Deep-copy ApplyChange (baseline immutable) | **Supported** |
+| Golden scenarios (fixtures with hand-built edges) | **Supported** |
+| Scenario prerequisites → `unknown` | **Supported** |
+| Offline K8s YAML collector (List, recursive, edges) | **Supported** (v0.3) |
+| Manifest change compiler with **namespace scope** | **Supported** (removals off by default) |
+| Terraform plan → change | **Reference / experimental** |
+| `rehearsal verify` | **Reference** (needs `meta.observed_failures` / Pending markers) |
+| Distroless Dockerfile | **Reference** (not published by CI yet) |
+| GH/GL integration examples | **Reference** |
+| Multi-cluster merge | **Experimental** (`internal` only; no CLI) |
+| Live kubeconfig collector | **Not supported** |
+| Web UI / LLM / auto-deploy / operator | **Not supported** |
 
 ---
 
@@ -41,114 +56,56 @@ make build
   --html out/rwo-report.html
 ```
 
-### Exit codes (CI)
+### Real YAML → graph (v0.3)
+
+```bash
+# dump (example)
+kubectl get node,deploy,sts,ds,po,svc,pvc,pv,pdb,hpa,sa,ing -A -o yaml > /tmp/dump.yaml
+mkdir -p /tmp/k8s && cp /tmp/dump.yaml /tmp/k8s/
+
+./bin/rehearsal snapshot k8s --dir /tmp/k8s --cluster acme-prod --out baseline.json
+
+# scoped change (never mass-deletes out-of-scope workloads)
+./bin/rehearsal change manifests \
+  --baseline baseline.json \
+  --dir ./rendered-chart \
+  --namespace payments \
+  --out change.json
+# add --allow-remove only when rendered dir is complete for that scope
+```
+
+### Exit codes
 
 | Code | Meaning |
 | ---: | ------- |
-| 0 | approve / verified |
-| 1 | warn / diverged |
-| 2 | usage or validation error |
+| 0 | approve |
+| 1 | warn / verify diverged |
+| 2 | validation / usage error |
 | 3 | block |
 | 4 | **unknown** (insufficient evidence) |
 | 5 | internal error |
 
-Treat **3 and 4 as gate failures** unless you explicitly allow them.
+---
+
+## Scenarios
+
+Each scenario declares prerequisites. Missing data → **unknown**, not silent approve.
+
+1. **RWO + node loss** — needs PVC + volume edges  
+2. **CNI capacity** — replica delta + surge from baseline/proposed; needs capacity meta or node allocatablePods  
+3. **Prometheus zero-match** — metric-specific `meta.metric_labels`  
+4. **PDB disruption** — needs PROTECTED_BY edges  
+5. **Service routing** — needs ROUTES_TO edges  
+6. **Volume AZ** — needs PVC zone + remaining nodes  
 
 ---
 
-## What is supported
+## What this is (and is not)
 
-| Area | Support |
-| ---- | ------- |
-| Snapshot graph + change envelope | **Supported** |
-| Deterministic scenarios (RWO, CNI, Prom, PDB, routing, volume AZ) | **Supported** |
-| Evidence bundle + SHA-256 | **Supported** |
-| `rehearsal verify` closed loop | **Supported** |
-| Manifest / Terraform plan → change | **Supported** (offline) |
-| K8s YAML directory → snapshot | **Supported** (read-only, no Secret values) |
-| Multi-cluster merge | **Supported** (v2 API `MergeSnapshots`) |
-| Live kubeconfig collector | Reference (use `kubectl get -o yaml` + `snapshot k8s`) |
-| Web UI / LLM / auto-deploy | **Not supported** |
+**Is:** offline change-gate core you can run in CI with fixtures or rendered YAML.  
+**Is not yet:** signed immutable evidence store, published multi-arch image, live multi-cluster control plane.
 
----
-
-## Golden scenarios
-
-1. **RWO + node loss** — stateful PVC cannot reattach; dependents cascade  
-2. **CNI / IP capacity** — derived from baseline→proposed replicas + maxSurge  
-3. **Prometheus zero-match** — metric-specific label schema; valid PromQL, 0 series  
-4. **PDB disruption** — minAvailable violated by node loss  
-5. **Service routing** — backends all removed  
-6. **Volume AZ** — PVC zone has no remaining nodes  
-
----
-
-## CLI
-
-```bash
-rehearsal analyze  --baseline FILE --change FILE [--out DIR] [--html PATH] [--quiet]
-rehearsal verify   --report report.json --observed post.json
-rehearsal snapshot k8s --dir manifests/ --cluster acme-prod --out baseline.json
-rehearsal change   manifests --baseline baseline.json --dir rendered/ --out change.json
-rehearsal change   terraform --plan plan.json --out change.json
-rehearsal version
-```
-
-Container:
-
-```bash
-docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/justrunme/architecture-rehearsal:1.0.0 \
-  analyze --baseline baseline.json --change change.json --out evidence --quiet
-```
-
----
-
-## Architecture
-
-```text
-baseline snapshot (deployed + observed facts)
-change envelope (desired / plan / diff)
-        │
-        ▼
-  validate (fail-closed)
-  ApplyChange (deep-copy — baseline immutable)
-        │
-        ▼
-  scenario engine (rules only)
-        │
-        ▼
-  report + decision + semantic digest
-  evidence-manifest.json (sha256 per file)
-        │
-        ▼
-  [external deploy]
-        │
-        ▼
-  verify(prediction, observed snapshot)
-  → verified | diverged | inconclusive
-```
-
-### Multi-cluster (v2)
-
-```go
-merged := graph.MergeSnapshots("fleet", clusterA, clusterB)
-```
-
-Node IDs become `clusterId::nodeId` so repositories/clusters can be analyzed together without collisions.
-
----
-
-## Production definition
-
-- Baseline immutable under `ApplyChange`  
-- Invalid graphs rejected (duplicate IDs, dangling edges)  
-- Incomplete coverage → `unknown`, never silent approve  
-- Evidence writes are fail-closed with hashes  
-- Non-root distroless image  
-- No Secret value collection  
-
-See [docs/security.md](docs/security.md), [docs/upgrade.md](docs/upgrade.md), [docs/adr/0001-decision-model.md](docs/adr/0001-decision-model.md).
+Version discipline: inflated `v1`/`v2` tags were retracted; current line is **0.3.x**.
 
 ---
 

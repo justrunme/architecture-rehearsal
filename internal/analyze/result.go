@@ -92,26 +92,32 @@ func MaxRisk(a, b string) string {
 
 // DecisionFromFindings maps findings + coverage to a gate decision.
 // Missing required data never becomes approve.
+// Confident high/critical findings still block even if other scenarios lack data.
 func DecisionFromFindings(risk string, findings []scenario.Finding, cov Coverage, insufficient bool) string {
+	hasBlock := false
+	hasWarn := false
+	for _, f := range findings {
+		if f.Risk == RiskUnknown {
+			continue
+		}
+		if f.Risk == RiskCritical || f.Risk == RiskHigh {
+			hasBlock = true
+		}
+		if f.Risk == RiskMedium {
+			hasWarn = true
+		}
+	}
+	if hasBlock || risk == RiskCritical || risk == RiskHigh {
+		return DecisionBlock
+	}
 	if insufficient || len(cov.RequiredMissing) > 0 {
 		return DecisionUnknown
 	}
-	for _, f := range findings {
-		if f.Risk == RiskUnknown || f.Confidence == "low" && f.Risk != RiskNone {
-			// low confidence high impact → unknown rather than false approve
-			if f.Risk == RiskCritical || f.Risk == RiskHigh {
-				return DecisionUnknown
-			}
-		}
-	}
-	switch risk {
-	case RiskCritical, RiskHigh:
-		return DecisionBlock
-	case RiskMedium:
+	if hasWarn || risk == RiskMedium {
 		return DecisionWarn
-	case RiskUnknown:
-		return DecisionUnknown
-	default:
-		return DecisionApprove
 	}
+	if risk == RiskUnknown {
+		return DecisionUnknown
+	}
+	return DecisionApprove
 }

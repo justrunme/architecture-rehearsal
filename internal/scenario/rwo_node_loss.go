@@ -6,24 +6,53 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 )
 
-// RWONodeLoss detects stateful workloads that cannot re-attach RWO volumes after node loss.
 type RWONodeLoss struct{}
 
 func (RWONodeLoss) Name() string { return "rwo-node-loss" }
 
-func (RWONodeLoss) Run(ctx Context) []Finding {
+func (RWONodeLoss) Applicable(ctx Context) bool {
 	ch := ctx.Change
-	if ch == nil || ctx.BaseIdx == nil {
-		return nil
+	if ch == nil {
+		return false
 	}
-	kind := ch.EffectiveKind()
-	event := factString(ch.Facts, "event", "")
-	if kind != "node-failure" && kind != "node-drain" && event != "node_loss" && event != "node_drain" {
-		if factString(ch.Facts, "scenario", "") != "rwo-node-loss" {
-			return nil
+	k := changeKind(ch)
+	if k == "node-failure" || k == "node-drain" {
+		return true
+	}
+	return factString(ch.Facts, "scenario", "") == "rwo-node-loss" || factString(ch.Facts, "event", "") == "node_loss"
+}
+
+func (RWONodeLoss) MissingRequirements(ctx Context) []Requirement {
+	var miss []Requirement
+	if !hasKind(ctx.BaseIdx, graph.KindNode) {
+		miss = append(miss, Requirement{ID: "node", Message: "no Node objects in baseline"})
+	}
+	if !hasKind(ctx.BaseIdx, graph.KindPVC) {
+		miss = append(miss, Requirement{ID: "pvc", Message: "no PVC objects — cannot evaluate RWO reattach"})
+	}
+	// need at least one BINDS_VOLUME edge or volumeClaims attr
+	hasVolLink := false
+	if ctx.BaseIdx != nil {
+		for _, e := range ctx.Baseline.Edges {
+			if e.Rel == graph.RelBindsVolume {
+				hasVolLink = true
+				break
+			}
+		}
+		for _, n := range ctx.BaseIdx.ByKind[graph.KindWorkload] {
+			if n.Attributes["volumeClaims"] != nil {
+				hasVolLink = true
+			}
 		}
 	}
+	if !hasVolLink && hasKind(ctx.BaseIdx, graph.KindPVC) {
+		miss = append(miss, Requirement{ID: "workload-pvc-edge", Message: "no Workload→PVC edges or volumeClaims attributes"})
+	}
+	return miss
+}
 
+func (r RWONodeLoss) Evaluate(ctx Context) Result {
+	ch := ctx.Change
 	idx := ctx.BaseIdx
 	lostNode := factString(ch.Facts, "lost_node", "")
 	if lostNode == "" {
@@ -35,7 +64,7 @@ func (RWONodeLoss) Run(ctx Context) []Finding {
 		}
 	}
 	if lostNode == "" {
-		return nil
+		return Result{Outcome: OutcomeNotMatched}
 	}
 
 	var findings []Finding
@@ -45,7 +74,7 @@ func (RWONodeLoss) Run(ctx Context) []Finding {
 			continue
 		}
 		boundNode := pvc.AttrString("boundNode")
-		lostName := display(idx, lostNode)
+		lostName := ""
 		if n := idx.ByID[lostNode]; n != nil {
 			lostName = n.Name
 		}
@@ -60,7 +89,7 @@ func (RWONodeLoss) Run(ctx Context) []Finding {
 			"volume cannot attach to replacement node until detach completes",
 		}
 		for _, w := range workloads {
-			cascade = append(cascade, fmt.Sprintf("workload %s cannot schedule / stays Pending", display(idx, w)))
+			cascade = append(cascade, fmt.Sprintf("workload %s cannot schedule", display(idx, w)))
 			for _, dep := range graph.DependentsOf(idx, w) {
 				if n := idx.ByID[dep]; n != nil {
 					cascade = append(cascade, fmt.Sprintf("dependent %s %s impacted", n.Kind, n.Name))
@@ -72,9 +101,6 @@ func (RWONodeLoss) Run(ctx Context) []Finding {
 		zoneOK := factBool(ch.Facts, "replacement_zone_compatible", true)
 		if !capacityOK {
 			cascade = append(cascade, "insufficient free capacity for replacement pod")
-		}
-		if !zoneOK {
-			cascade = append(cascade, "replacement node zone incompatible with volume AZ")
 		}
 		risk := "critical"
 		if capacityOK && zoneOK {
@@ -91,26 +117,19 @@ func (RWONodeLoss) Run(ctx Context) []Finding {
 			}
 		}
 		findings = append(findings, Finding{
-			ID:         "rwo-node-loss:" + pvc.ID,
-			Scenario:   "rwo-node-loss",
-			Risk:       risk,
-			Title:      "Stateful service unavailable after node loss (RWO volume)",
-			Summary:    fmt.Sprintf("PVC %s (RWO) is bound to node %s. After node loss the pod cannot reattach until detach finishes.", pvc.Name, display(idx, lostNode)),
-			Components: unique(comps),
-			Cascade:    cascade,
-			Controls: []string{
-				"validate volume detach/attach path before drain",
-				"reserve replacement capacity in the same AZ",
-				"verify volume zone compatibility",
-				"prepare rollback / maintenance window",
-			},
-			SLOImpact:  "availability SLO at risk for stateful path",
-			Evidence:   []string{"pvc.accessMode=RWO", "pvc.boundNode=" + boundNode, "event=node_loss"},
-			Rollback:   rb,
-			Confidence: "high",
+			ID: "rwo-node-loss:" + pvc.ID, Scenario: r.Name(), Risk: risk,
+			Title: "Stateful service unavailable after node loss (RWO volume)",
+			Summary: fmt.Sprintf("PVC %s (RWO) bound to %s cannot reattach after node loss.", pvc.Name, display(idx, lostNode)),
+			Components: unique(comps), Cascade: cascade,
+			Controls: []string{"validate detach/attach path", "reserve same-AZ capacity", "prepare rollback window"},
+			SLOImpact: "availability SLO at risk", Evidence: []string{"accessMode=RWO", "boundNode=" + boundNode},
+			Rollback: rb, Confidence: "high",
 		})
 	}
-	return findings
+	if len(findings) == 0 {
+		return Result{Outcome: OutcomeNotMatched}
+	}
+	return Result{Outcome: OutcomeMatched, Findings: findings}
 }
 
 func workloadsForPVC(idx *graph.Index, pvcID string) []string {

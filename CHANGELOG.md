@@ -1,28 +1,43 @@
 # Changelog
 
-## 2.0.0 — 2026-08-03
+## 0.3.0 — 2026-08-03
 
-- Multi-cluster snapshot merge (`graph.MergeSnapshots`) for multi-repo / multi-cluster baselines
-- Cluster-prefixed node IDs and capacity facts namespacing
+**Real graph pipeline** (honest milestone after prototype inflation).
 
-## 1.0.0 — 2026-08-03
+### Collectors
+- Recursive YAML directories
+- Kubernetes `kind: List` / `items[]`
+- Default namespace normalization
+- Nodes: Pod, PV, Ingress, ServiceAccount, HPA, PDB, …
+- Edges: Workload→PVC, Service→Workload (selector), PDB→Workload, HPA→Workload, Pod→Node, PVC→PV+zone
+- Capacity meta from node allocatablePods
+- Fail-closed `validate.Snapshot` on collect
 
-Production self-hosted change gate:
+### Change compilers
+- Manifest diff **scoped** by `--namespace` / prefix
+- Removals **disabled by default** (`--allow-remove` opt-in within scope)
+- Recursive rendered dirs + List support
+- Terraform seeds use baseline node/cluster IDs (no invalid `tf:` seeds)
 
-- Fail-closed validation (duplicate nodes, dangling edges, bad seeds/patches)
-- Decision model: `approve | warn | block | unknown`
-- Rollback: `available | unavailable | unknown`
-- Evidence bundles with SHA-256 (fail-closed writes)
-- Deterministic semantic digest
-- CNI capacity derived from baseline→proposed replicas + maxSurge
-- Metric-specific Prometheus label schema
-- Scenarios: RWO, CNI, Prom zero-match, PDB, service routing, volume AZ
-- CLI: `analyze`, `verify`, `snapshot k8s`, `change manifests|terraform`
-- Distroless non-root container
-- GitHub Actions / GitLab CI examples
-- Deep-copy ApplyChange (baseline immutability)
-- Public fixtures use `acme-prod` only
+### Scenarios
+- Interface: Applicable / MissingRequirements / Evaluate (`matched|not_matched|unknown`)
+- Confident findings still **block**; missing prereqs → **unknown** (never false approve for that path)
+- CNI maxSurge uses Kubernetes-style **ceil** for percentages
+- PDB only when RUNS_ON lost node (fewer false positives)
+- Positive/negative/unknown tests for core scenarios + collector/compiler tests
+
+### Versioning
+- Retract premature `v1.0.0` / `v2.0.0` tags
+- Binary version `0.3.0`
+
+## 0.2.0 — 2026-08-03
+
+Correctness foundation (formerly mis-tagged as v1.0 in a single commit):
+
+- Deep-copy ApplyChange, rollback ternary, decision unknown, evidence SHA-256
+- Validation, six scenarios (fixture-driven), verify prototype, distroless Dockerfile reference
+- Public fixtures: `acme-prod` only
 
 ## 0.1.0 — 2026-08-02
 
-Initial prototype: three golden scenarios, CLI analyze, HTML report.
+Initial golden prototype (RWO, CNI, Prom).
