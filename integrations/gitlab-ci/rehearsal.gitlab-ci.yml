@@ -1,10 +1,10 @@
 # Example GitLab CI job — include from your pipeline.
+# Reference job — build from source until GHCR publish exists.
 architecture-rehearsal:
-  image:
-    name: ghcr.io/justrunme/architecture-rehearsal:1.0.0
-    entrypoint: [""]
+  image: golang:1.26
   stage: test
   script:
+    - go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v0.3.0
     - rehearsal analyze --baseline "$BASELINE" --change "$CHANGE" --out evidence --quiet
   artifacts:
     when: always
