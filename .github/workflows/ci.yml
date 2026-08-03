@@ -103,32 +103,49 @@ jobs:
         env:
           REHEARSAL_DATABASE_URL: postgres://rehearsal:rehearsal@localhost:5432/rehearsal?sslmode=disable
         run: |
-          go test ./internal/persist/ -run 'TestSQLite|TestConcurrent|TestBackup' -count=1
-          # dedicated pg smoke via small Go program
-          cat > /tmp/pg_smoke.go <<'EOF'
+          go test ./internal/persist/ -count=1
+          mkdir -p scripts
+          cat > scripts/pg_smoke.go <<'EOF'
+          //go:build ignore
+
           package main
+
           import (
-            "context"
-            "fmt"
-            "os"
-            "time"
-            "github.com/justrunme/architecture-rehearsal/internal/persist"
-            "github.com/justrunme/architecture-rehearsal/internal/run"
+          	"context"
+          	"fmt"
+          	"os"
+          	"time"
+
+          	"github.com/justrunme/architecture-rehearsal/internal/persist"
+          	"github.com/justrunme/architecture-rehearsal/internal/run"
           )
+
           func main() {
-            dsn := os.Getenv("REHEARSAL_DATABASE_URL")
-            s, err := persist.Open(dsn, "")
-            if err != nil { panic(err) }
-            defer s.Close()
-            rr := run.NewRun("pg1", "ik-pg", run.Spec{})
-            rr.Labels = map[string]string{"org": "ci"}
-            if err := s.CreateRun(rr); err != nil { panic(err) }
-            if _, err := s.Enqueue(persist.JobAdvanceRun, "pg1", "ci", `{}`, "op-pg"); err != nil { panic(err) }
-            job, err := s.ClaimJob(context.Background(), "w", time.Minute)
-            if err != nil || job == nil { panic(fmt.Sprintf("claim %v %#v", err, job)) }
-            if err := s.CompleteJob(job.ID, job.FenceToken); err != nil { panic(err) }
-            if s.SchemaVersion() < 2 { panic("schema") }
-            fmt.Println("postgres ok schema", s.SchemaVersion())
+          	dsn := os.Getenv("REHEARSAL_DATABASE_URL")
+          	s, err := persist.Open(dsn, "")
+          	if err != nil {
+          		panic(err)
+          	}
+          	defer s.Close()
+          	rr := run.NewRun("pg1", "ik-pg", run.Spec{})
+          	rr.Labels = map[string]string{"org": "ci"}
+          	if err := s.CreateRun(rr); err != nil {
+          		panic(err)
+          	}
+          	if _, err := s.Enqueue(persist.JobAdvanceRun, "pg1", "ci", `{}`, "op-pg"); err != nil {
+          		panic(err)
+          	}
+          	job, err := s.ClaimJob(context.Background(), "w", time.Minute)
+          	if err != nil || job == nil {
+          		panic(fmt.Sprintf("claim %v %#v", err, job))
+          	}
+          	if err := s.CompleteJob(job.ID, job.FenceToken); err != nil {
+          		panic(err)
+          	}
+          	if s.SchemaVersion() < 2 {
+          		panic("schema")
+          	}
+          	fmt.Println("postgres ok schema", s.SchemaVersion())
           }
           EOF
-          go run /tmp/pg_smoke.go
+          go run scripts/pg_smoke.go
