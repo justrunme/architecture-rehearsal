@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
+	"github.com/justrunme/architecture-rehearsal/internal/contract"
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/report"
 )
@@ -125,10 +126,79 @@ func Bundle(outDir string, rep *analyze.Report, baselinePath, changePath string)
 	if err := os.WriteFile(filepath.Join(dir, "evidence-manifest.json"), mb, 0o644); err != nil {
 		return "", fmt.Errorf("write evidence-manifest: %w", err)
 	}
+	// v1.1: chain digests + optional DSSE when REHEARSAL_HMAC_SECRET is set
+	if err := writeChainArtifacts(dir, rep, baseBytes, chBytes, raw); err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(filepath.Join(outDir, "latest-report.json"), raw, 0o644); err != nil {
 		return "", err
 	}
+	// also write latest chain next to outDir for convenience
+	if b, err := os.ReadFile(filepath.Join(dir, "evidence-chain.json")); err == nil {
+		_ = os.WriteFile(filepath.Join(outDir, "latest-chain.json"), b, 0o644)
+	}
 	return dir, nil
+}
+
+func writeChainArtifacts(dir string, rep *analyze.Report, baseBytes, chBytes, reportBytes []byte) error {
+	digests := contract.ArtifactDigests{
+		BaselineDigest: contract.DigestBytes(baseBytes),
+		ChangeDigest:   contract.DigestBytes(chBytes),
+		ReportDigest:   contract.Digest(rep.SemanticDigest),
+	}
+	// Prefer report-embedded digests when present
+	if rep.BaselineDigest != "" {
+		digests.BaselineDigest = contract.Digest(rep.BaselineDigest)
+	}
+	if rep.ChangeDigest != "" {
+		digests.ChangeDigest = contract.Digest(rep.ChangeDigest)
+	}
+	if rep.ProposedDigest != "" {
+		digests.ProposedDigest = contract.Digest(rep.ProposedDigest)
+	}
+	chainDoc := map[string]any{
+		"apiVersion": contract.APIVersionV1Beta1,
+		"kind":       contract.KindChain,
+		"changeId":   rep.ChangeID,
+		"decision":   rep.Decision,
+		"risk":       rep.Risk,
+		"digests":    digests,
+		"reportBinding": map[string]string{
+			"baselineDigest": string(digests.BaselineDigest),
+			"changeDigest":   string(digests.ChangeDigest),
+			"reportDigest":   rep.SemanticDigest,
+		},
+		"valid": true,
+	}
+	cb, err := json.MarshalIndent(chainDoc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-chain.json"), cb, 0o644); err != nil {
+		return err
+	}
+	if sec := SecretFromEnv(); len(sec) > 0 {
+		stmt := EvidenceStatement{
+			ChangeID:             rep.ChangeID,
+			Decision:             rep.Decision,
+			Risk:                 rep.Risk,
+			ChainDigests:         digests,
+			ReportSemanticDigest: rep.SemanticDigest,
+			KeyID:                "hmac-env",
+		}
+		env, err := SignEvidenceStatement(stmt, sec)
+		if err != nil {
+			return err
+		}
+		eb, err := json.MarshalIndent(env, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "evidence-dsse.json"), eb, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sanitize(s string) string {

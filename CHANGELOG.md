@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.1.0 — 2026-08-03
+
+**Evidence Integrity** — product-grade binding of predictions to artifacts.
+
+### Report / verify binding
+- `ImpactReport` embeds `baselineDigest`, `changeDigest`, `proposedDigest`
+- Semantic digest includes those bindings
+- `verify` **refuses** when report digests ≠ live baseline/change (`report_binding`)
+- Verification result records artifact digests
+
+### DSSE / chain
+- `EvidenceStatement` payload includes chain digests + keyId + signedAt (inside signature)
+- `analyze` writes `evidence-chain.json` (+ `evidence-dsse.json` when `REHEARSAL_HMAC_SECRET` set)
+- `rehearsal evidence sign-dsse --chain` / `verify-dsse --envelope`
+- Run engine **persists** chain + verification JSON under `out/<runId>/`
+
+### Live causal data
+- Collector ingests Kubernetes **Events** and promotes reasons onto Pods
+- Live dump includes `events`
+- Workload status: `readyReplicas` / `availableReplicas` / `unavailableReplicas`
+- Incomplete rollout under CNI prediction is soft (consistent with failure prediction)
+
+### Gate / calibration
+- Run gate evaluates organization **policy** (`Spec.PolicyPath`)
+- Per-scenario calibration outcomes (not fake `gate` aggregate)
+
+### API
+- `/v1/runs/{id}/evidence` returns digests + inline chain/DSSE when present
+
 ## 1.0.1 — 2026-08-03
 
 **Security correction** — networked API tenant/auth hard-fix.

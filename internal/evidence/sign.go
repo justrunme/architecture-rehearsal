@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
@@ -25,8 +24,8 @@ type SignedEnvelope struct {
 	Signature  string          `json:"signature"`
 }
 
-// SignReportHMAC signs a report digest with HMAC-SHA256.
-// secret from env REHEARSAL_HMAC_SECRET or explicit key.
+// SignReportHMAC signs a report digest with HMAC-SHA256 (legacy v0.7 envelope).
+// Prefer SignEvidenceStatement for v1.1 chain-bound DSSE.
 func SignReportHMAC(rep *analyze.Report, secret []byte, keyID string) (*SignedEnvelope, error) {
 	if len(secret) == 0 {
 		return nil, fmt.Errorf("empty HMAC secret")
@@ -34,14 +33,19 @@ func SignReportHMAC(rep *analyze.Report, secret []byte, keyID string) (*SignedEn
 	if keyID == "" {
 		keyID = "default"
 	}
-	// Sign semantic digest + decision for stable verification
+	// Include content digests so legacy envelope still binds artifacts.
 	body := map[string]any{
 		"semanticDigest": rep.SemanticDigest,
 		"changeId":       rep.ChangeID,
 		"baselineId":     rep.BaselineID,
+		"baselineDigest": rep.BaselineDigest,
+		"changeDigest":   rep.ChangeDigest,
+		"proposedDigest": rep.ProposedDigest,
 		"decision":       rep.Decision,
 		"risk":           rep.Risk,
 		"version":        rep.Version,
+		"signedAt":       time.Now().UTC().Format(time.RFC3339Nano),
+		"keyId":          keyID,
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -73,9 +77,4 @@ func VerifyHMAC(env *SignedEnvelope, secret []byte) (bool, error) {
 	_, _ = mac.Write(env.Payload)
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(env.Signature)), nil
-}
-
-// SecretFromEnv loads REHEARSAL_HMAC_SECRET.
-func SecretFromEnv() []byte {
-	return []byte(os.Getenv("REHEARSAL_HMAC_SECRET"))
 }

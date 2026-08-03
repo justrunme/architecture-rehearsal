@@ -45,7 +45,7 @@ jobs:
           # must be verified (exit 0)
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.0.1'
+        run: ./bin/rehearsal version | grep -q '1.1.0'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null

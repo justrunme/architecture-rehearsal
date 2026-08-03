@@ -16,8 +16,9 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.0.1** — offline change-gate is strong; networked API requires **explicit secure token** (see security notes).  
-**v1.0.0 network API was unsafe** (hardcoded tokens + tenant header bypass) — do not deploy `v1.0.0` API to a network.
+**Status: v1.1.0** — evidence-bound change gate + secure API (v1.0.1+).  
+Every analyze report carries content digests; verify refuses mismatched baseline/change.  
+**v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
 ---
 
@@ -58,7 +59,7 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.0.0
+make build && ./bin/rehearsal version   # 1.1.0
 ```
 
 ### Offline iron path
@@ -75,9 +76,14 @@ make build && ./bin/rehearsal version   # 1.0.0
 ./bin/rehearsal verify --report out/latest-report.json --observed observed.json \
   --baseline baseline.json --change change.json
 
-# evidence chain
+# evidence chain (also written automatically by analyze as out/*/evidence-chain.json)
 ./bin/rehearsal evidence chain --baseline baseline.json --change change.json \
   --report out/latest-report.json --observed observed.json --out out/chain.json
+
+# sign & verify DSSE (requires REHEARSAL_HMAC_SECRET)
+export REHEARSAL_HMAC_SECRET="$(openssl rand -hex 32)"
+./bin/rehearsal evidence sign-dsse --chain out/latest-chain.json --out out/evidence-dsse.json
+./bin/rehearsal evidence verify-dsse --envelope out/evidence-dsse.json
 ```
 
 ### Full run lifecycle
