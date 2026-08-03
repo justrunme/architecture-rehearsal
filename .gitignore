@@ -32,4 +32,6 @@ __pycache__/
 out/
 out2/
 dist/
+data/
+*.db
 internal/run/out/
