@@ -16,7 +16,7 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.2.0** — durable control plane (SQLite/Postgres + blobs + async jobs).  
+**Status: v1.2.1** — durable control plane + tenant write isolation + evidence recompute.  
 Evidence integrity (v1.1) + secure API (v1.0.1+) remain required for production gates.  
 **v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
@@ -61,7 +61,7 @@ Evidence integrity (v1.1) + secure API (v1.0.1+) remain required for production 
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.2.0
+make build && ./bin/rehearsal version   # 1.2.1
 ```
 
 ### Offline iron path
@@ -96,26 +96,26 @@ export REHEARSAL_HMAC_SECRET="$(openssl rand -hex 32)"
   --out out/run.json
 ```
 
-### Control plane API (v1.2)
+### Control plane API (v1.2.1)
 
 ```bash
-# REQUIRED: strong token (serve refuses to start without it)
+# REQUIRED: strong token + workspace root (serve refuses without either)
 export REHEARSAL_API_TOKEN="$(openssl rand -hex 32)"
 export REHEARSAL_API_ORG=my-org
 
-# Durable default: SQLite + local blobs under workdir
+# Durable default: SQLite + local blobs under workdir (mandatory --workdir)
 ./bin/rehearsal serve --addr :8080 --workdir "$PWD" \
   --db "$PWD/data/rehearsal.db" --blob "$PWD/data/blobs" --async --workers 2
 
-# Postgres (optional):
+# Postgres (REHEARSAL_DATABASE_URL always wins over --db):
 # export REHEARSAL_DATABASE_URL='postgres://user:pass@localhost/rehearsal'
 # ./bin/rehearsal serve --workdir "$PWD" --async
 
 curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/version
 curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/metrics
 
-# non-durable local only:
-# ./bin/rehearsal serve --memory --insecure-dev --addr :8080
+# non-durable local only (still needs --workdir):
+# ./bin/rehearsal serve --memory --insecure-dev --addr :8080 --workdir "$PWD"
 ```
 
 **GitOps status:** `integrations/github-actions/gate.yml` is a **Reference** skeleton (not a full PR gate yet).
@@ -125,8 +125,8 @@ curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/me
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
-  --set image.tag=1.2.0
-# chart fails closed if api.token is empty
+  --set image.tag=1.2.1
+# chart fails closed if api.token is empty; PVC on by default (persistence.enabled)
 ```
 
 ---

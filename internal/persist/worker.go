@@ -23,13 +23,14 @@ type AdvancePayload struct {
 }
 
 // Worker claims and executes jobs from the store.
+// LeaseTTL must exceed typical run duration; RenewLease heartbeats during execute.
 type Worker struct {
-	Store     *Store
-	Holder    string
-	WorkDir   string
-	Calibrate *calibrate.Store // optional in-memory mirror; SQL cal is primary
-	Interval  time.Duration
-	LeaseTTL  time.Duration
+	Store    *Store
+	Holder   string
+	WorkDir  string
+	Interval time.Duration
+	// LeaseTTL default 15m (covers 10m run timeout + margin).
+	LeaseTTL time.Duration
 }
 
 // Run loops until ctx cancelled.
@@ -38,7 +39,7 @@ func (w *Worker) Run(ctx context.Context) {
 		w.Interval = 500 * time.Millisecond
 	}
 	if w.LeaseTTL <= 0 {
-		w.LeaseTTL = 2 * time.Minute
+		w.LeaseTTL = 15 * time.Minute
 	}
 	if w.Holder == "" {
 		w.Holder = "worker-1"
@@ -65,14 +66,43 @@ func (w *Worker) tick(ctx context.Context) error {
 	if job == nil {
 		return nil
 	}
+	// Heartbeat lease while executing.
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	defer hbCancel()
+	go w.heartbeat(hbCtx, job)
+
 	if err := w.execute(job); err != nil {
-		_ = w.Store.FailJob(job.ID, err.Error())
+		if failErr := w.Store.FailJob(job.ID, job.FenceToken, err.Error()); failErr != nil {
+			log.Printf("worker fail job: %v (exec err: %v)", failErr, err)
+		}
 		return err
 	}
-	return w.Store.CompleteJob(job.ID)
+	return w.Store.CompleteJob(job.ID, job.FenceToken)
+}
+
+func (w *Worker) heartbeat(ctx context.Context, job *Job) {
+	// Renew at half TTL so long runs keep the lease.
+	period := w.LeaseTTL / 3
+	if period < 5*time.Second {
+		period = 5 * time.Second
+	}
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := w.Store.RenewLease(job.ID, w.Holder, job.FenceToken, w.LeaseTTL); err != nil {
+				log.Printf("worker: lease renew failed for %s: %v", job.ID, err)
+				return
+			}
+		}
+	}
 }
 
 func (w *Worker) execute(job *Job) error {
+	// Bail if job was cancelled while we claimed
 	switch job.Kind {
 	case JobAdvanceRun:
 		return w.execAdvance(job)
@@ -82,12 +112,12 @@ func (w *Worker) execute(job *Job) error {
 }
 
 func (w *Worker) execAdvance(job *Job) error {
-	rr, err := w.Store.GetRun(job.RunID)
+	rr, err := w.Store.GetRun(job.Org, job.RunID)
 	if err != nil {
 		return err
 	}
 	if rr == nil {
-		return fmt.Errorf("run %s not found", job.RunID)
+		return fmt.Errorf("run %s not found in org %s", job.RunID, job.Org)
 	}
 	var p AdvancePayload
 	if job.Payload != "" {
@@ -95,36 +125,31 @@ func (w *Worker) execAdvance(job *Job) error {
 	}
 	if p.Action == "cancel" {
 		_ = rr.Transition(run.PhaseCancelled, "cancelled by job")
-		return w.Store.PutRun(rr)
+		return w.Store.UpdateRun(rr)
+	}
+	// Skip if already terminal
+	if rr.Status.Phase.Terminal() {
+		return nil
 	}
 	wd := p.WorkDir
 	if wd == "" {
 		wd = w.WorkDir
 	}
-	// Optional org policy file from store
-	if pol, err := w.Store.GetOrgPolicy(job.Org); err == nil && pol != nil {
-		// write temp policy yaml-ish via JSON for engine — engine expects path; skip if no path
-		// Product: store policy payload and pass as PolicyPath when we materialize
-		_ = pol
-	}
-	eng := &run.Engine{WorkDir: wd, Holder: w.Holder, Calibrate: w.Calibrate}
+	eng := &run.Engine{WorkDir: wd, Holder: w.Holder}
 	if err := eng.Execute(rr); err != nil {
-		// still persist failed state
-		_ = w.Store.PutRun(rr)
-		// also record calibration from engine if any
+		_ = w.Store.UpdateRun(rr)
 		return err
 	}
-	// Persist calibration outcomes from run predicted failures + verify outcome
-	if w.Store != nil && len(rr.Status.PredictedFailures) > 0 {
+	org := job.Org
+	if len(rr.Status.PredictedFailures) > 0 {
 		verified := rr.Status.VerifyOutcome != "" && rr.Status.VerifyOutcome != "inconclusive"
 		for _, sc := range rr.Status.PredictedFailures {
 			obsOK := rr.Status.VerifyOutcome == "verified"
-			_ = w.Store.RecordCalibration(calibrate.Outcome{
+			_ = w.Store.RecordCalibration(org, calibrate.Outcome{
 				Scenario: sc, Predicted: true, Observed: obsOK, Verified: verified,
 			})
 		}
 	}
-	// Store chain blob if present
 	if w.Store.Blob != nil && rr.Status.ChainPath != "" {
 		if raw, err := readFile(rr.Status.ChainPath); err == nil {
 			if d, _, err := w.Store.Blob.Put(raw, "application/json"); err == nil {
@@ -135,7 +160,7 @@ func (w *Worker) execAdvance(job *Job) error {
 			}
 		}
 	}
-	return w.Store.PutRun(rr)
+	return w.Store.UpdateRun(rr)
 }
 
 func readFile(p string) ([]byte, error) {

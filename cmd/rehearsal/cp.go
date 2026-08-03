@@ -33,12 +33,12 @@ import (
 func cmdServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "listen address")
-	workdir := fs.String("workdir", "", "workspace root for file refs (recommended)")
-	dbDSN := fs.String("db", "", "SQLite path or postgres:// URL (default: memory if empty and --memory)")
-	blobDir := fs.String("blob", "", "content-addressed blob root (default: <workdir>/blobs or ./data/blobs)")
+	workdir := fs.String("workdir", "", "REQUIRED workspace root for file refs (sandbox)")
+	dbDSN := fs.String("db", "", "SQLite path or postgres:// URL")
+	blobDir := fs.String("blob", "", "content-addressed blob root (default: <workdir>/blobs)")
 	memory := fs.Bool("memory", false, "in-process store (tests/dev; no durability)")
 	async := fs.Bool("async", false, "enqueue run advances as durable jobs (requires SQL backend)")
-	workers := fs.Int("workers", 1, "number of background job workers when --async or --db")
+	workers := fs.Int("workers", 1, "number of background job workers when --async")
 	insecureDev := fs.Bool("insecure-dev", false, "allow local-dev token (NEVER in production)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -47,8 +47,25 @@ func cmdServe(args []string) int {
 	if *insecureDev {
 		_ = os.Setenv("REHEARSAL_ALLOW_INSECURE_DEV", "1")
 	}
-	// env overrides for deployability
-	if env := os.Getenv("REHEARSAL_DATABASE_URL"); env != "" && *dbDSN == "" {
+	// --workdir is mandatory for serve (path sandbox + policy snapshots).
+	if *workdir == "" {
+		fmt.Fprintln(os.Stderr, "serve refused: --workdir is required (workspace sandbox root)")
+		return 2
+	}
+	absWD, err := filepath.Abs(*workdir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "workdir: %v\n", err)
+		return 2
+	}
+	if err := os.MkdirAll(absWD, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "workdir mkdir: %v\n", err)
+		return 2
+	}
+	*workdir = absWD
+
+	// REHEARSAL_DATABASE_URL always wins over --db (so Helm can pass --db for SQLite
+	// while still selecting Postgres via env).
+	if env := os.Getenv("REHEARSAL_DATABASE_URL"); env != "" {
 		*dbDSN = env
 	}
 	if env := os.Getenv("REHEARSAL_BLOB_ROOT"); env != "" && *blobDir == "" {
@@ -64,26 +81,16 @@ func cmdServe(args []string) int {
 
 	var backend api.Backend
 	var store *persist.Store
-	useSQL := !*memory && (*dbDSN != "" || os.Getenv("REHEARSAL_DATABASE_URL") != "")
-	// Default durable path: SQLite under workdir or ./data
+	// Default durable path: SQLite under workdir
 	if !*memory && *dbDSN == "" {
-		if *workdir != "" {
-			*dbDSN = filepath.Join(*workdir, "rehearsal.db")
-		} else {
-			*dbDSN = "data/rehearsal.db"
-		}
-		useSQL = true
+		*dbDSN = filepath.Join(*workdir, "rehearsal.db")
 	}
 	if *memory {
 		backend = api.NewMemoryBackend()
 		fmt.Fprintln(os.Stderr, "backend: memory (non-durable)")
 	} else {
 		if *blobDir == "" {
-			if *workdir != "" {
-				*blobDir = filepath.Join(*workdir, "blobs")
-			} else {
-				*blobDir = "data/blobs"
-			}
+			*blobDir = filepath.Join(*workdir, "blobs")
 		}
 		store, err = persist.Open(*dbDSN, *blobDir)
 		if err != nil {
@@ -93,37 +100,34 @@ func cmdServe(args []string) int {
 		defer store.Close()
 		backend = &api.SQLBackend{S: store}
 		fmt.Fprintf(os.Stderr, "backend: sql dsn=%s blob=%s\n", redactDSN(*dbDSN), *blobDir)
-		_ = useSQL
 	}
 
 	srv := api.NewServerWith(api.Options{
-		AuthN:       auth,
-		Backend:     backend,
-		WorkDirRoot: *workdir,
-		Async:       *async && store != nil,
+		AuthN:          auth,
+		Backend:        backend,
+		WorkDirRoot:    *workdir,
+		Async:          *async && store != nil,
+		RequireWorkDir: true,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if store != nil && (*async || *workers > 0) {
+	if store != nil && *async {
 		n := *workers
 		if n < 1 {
 			n = 1
 		}
-		// Only start workers when async is requested or explicitly multi-worker with SQL
-		if *async {
-			for i := 0; i < n; i++ {
-				w := &persist.Worker{
-					Store:    store,
-					Holder:   fmt.Sprintf("worker-%d", i+1),
-					WorkDir:  *workdir,
-					Interval: 300 * time.Millisecond,
-					LeaseTTL: 2 * time.Minute,
-				}
-				go w.Run(ctx)
+		for i := 0; i < n; i++ {
+			w := &persist.Worker{
+				Store:    store,
+				Holder:   fmt.Sprintf("worker-%d", i+1),
+				WorkDir:  *workdir,
+				Interval: 300 * time.Millisecond,
+				LeaseTTL: 15 * time.Minute, // covers 10m run timeout + margin
 			}
-			fmt.Fprintf(os.Stderr, "workers: %d (async advance enabled)\n", n)
+			go w.Run(ctx)
 		}
+		fmt.Fprintf(os.Stderr, "workers: %d (async advance, lease TTL 15m + heartbeat)\n", n)
 	}
 
 	httpSrv := &http.Server{

@@ -20,6 +20,7 @@ spec:
       serviceAccountName: {{ include "architecture-rehearsal.serviceAccountName" . }}
       securityContext:
         runAsNonRoot: true
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -32,10 +33,14 @@ spec:
             - ":8080"
             - --workdir
             - {{ .Values.api.workDir | default "/var/lib/rehearsal" | quote }}
-            - --db
-            - {{ printf "%s/rehearsal.db" (.Values.api.workDir | default "/var/lib/rehearsal") | quote }}
             - --blob
             - {{ printf "%s/blobs" (.Values.api.workDir | default "/var/lib/rehearsal") | quote }}
+            {{- if and .Values.postgresql.enabled .Values.postgresql.host }}
+            {{- /* Postgres via REHEARSAL_DATABASE_URL env; do not pass --db sqlite */ -}}
+            {{- else }}
+            - --db
+            - {{ printf "%s/rehearsal.db" (.Values.api.workDir | default "/var/lib/rehearsal") | quote }}
+            {{- end }}
             {{- if .Values.api.async }}
             - --async
             - --workers
@@ -59,11 +64,12 @@ spec:
             - name: REHEARSAL_DATABASE_URL
               value: {{ printf "postgres://%s/%s" .Values.postgresql.host .Values.postgresql.database | quote }}
             {{- end }}
-            # OIDC stub intentionally NOT wired — unsigned JWT acceptance was removed in v1.0.1
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
@@ -80,4 +86,9 @@ spec:
               drop: ["ALL"]
       volumes:
         - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{ else }}{{ include "architecture-rehearsal.fullname" . }}-data{{ end }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}

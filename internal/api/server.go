@@ -1,9 +1,12 @@
 // Package api provides the self-hosted control-plane HTTP API.
-// v1.2: durable SQL backend, async jobs, metrics, policy binding.
+// v1.2.1: tenant-aware identity, mandatory workspace, immutable policy snapshots.
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,25 +31,33 @@ type Server struct {
 	WorkDirRoot string
 	// Async: when true, advance enqueues jobs instead of sync execute.
 	Async bool
+	// RequireWorkDir: production serve sets true; tests may use temp dir via Options.
+	RequireWorkDir bool
 	// Metrics
-	reqTotal   atomic.Int64
-	reqErrors  atomic.Int64
-	startedAt  time.Time
+	reqTotal  atomic.Int64
+	reqErrors atomic.Int64
+	startedAt time.Time
 }
 
 // Options for NewServerWith.
 type Options struct {
-	AuthN       authn.Authenticator
-	Backend     Backend
-	WorkDirRoot string
-	Async       bool
+	AuthN          authn.Authenticator
+	Backend        Backend
+	WorkDirRoot    string
+	Async          bool
+	RequireWorkDir bool
 }
 
-// NewServer constructs a test server (memory + insecure local-dev).
+// NewServer constructs a test server (memory + temp workdir + insecure local-dev).
 func NewServer() *Server {
+	dir, err := os.MkdirTemp("", "rehearsal-api-*")
+	if err != nil {
+		dir = os.TempDir()
+	}
 	return NewServerWith(Options{
-		AuthN:   authn.Default(),
-		Backend: NewMemoryBackend(),
+		AuthN:       authn.Default(),
+		Backend:     NewMemoryBackend(),
+		WorkDirRoot: dir,
 	})
 }
 
@@ -61,12 +72,13 @@ func NewServerWith(opts Options) *Server {
 		b = NewMemoryBackend()
 	}
 	return &Server{
-		Backend:     b,
-		AuthN:       a,
-		AuthZ:       authz.Default(),
-		WorkDirRoot: opts.WorkDirRoot,
-		Async:       opts.Async,
-		startedAt:   time.Now().UTC(),
+		Backend:        b,
+		AuthN:          a,
+		AuthZ:          authz.Default(),
+		WorkDirRoot:    opts.WorkDirRoot,
+		Async:          opts.Async,
+		RequireWorkDir: opts.RequireWorkDir,
+		startedAt:      time.Now().UTC(),
 	}
 }
 
@@ -103,12 +115,20 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+	if s.RequireWorkDir && s.WorkDirRoot == "" {
+		http.Error(w, "workdir required", 503)
+		return
+	}
+	if err := s.Backend.Ready(); err != nil {
+		http.Error(w, "backend not ready: "+err.Error(), 503)
+		return
+	}
 	writeJSON(w, 200, map[string]any{"status": "ready", "async": s.Async})
 }
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]string{
-		"version":    "1.2.0",
+		"version":    "1.2.1",
 		"apiVersion": contract.APIVersionV1,
 		"product":    "architecture-rehearsal",
 	})
@@ -164,17 +184,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, actor authn.P
 		http.Error(w, "principal has no org", 403)
 		return
 	}
-	_ = req.Org
+	_ = req.Org // client org claim ignored
 	if !s.AuthZ.Allow(actor, authz.ActionRunCreate, authz.Resource{Org: org, Project: req.Project, Environment: req.Environment}) {
 		http.Error(w, "forbidden", 403)
 		return
 	}
 	if req.IdempotencyKey != "" {
-		if existing, _ := s.Backend.GetRunByIdempotency(req.IdempotencyKey); existing != nil {
-			if !s.AuthZ.CanAccessObject(actor, authz.ActionRunRead, resourceFromRun(existing)) {
-				http.Error(w, "forbidden", 403)
-				return
-			}
+		if existing, _ := s.Backend.GetRunByIdempotency(org, req.IdempotencyKey); existing != nil {
 			writeJSON(w, 200, existing)
 			return
 		}
@@ -182,6 +198,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, actor authn.P
 	if req.ID == "" {
 		req.ID = fmt.Sprintf("run-%d", time.Now().UTC().UnixNano())
 	}
+	// Conflict if (org, id) already exists
+	if existing, _ := s.Backend.GetRun(org, req.ID); existing != nil {
+		s.reqErrors.Add(1)
+		http.Error(w, "run id already exists", 409)
+		return
+	}
+
 	baseRef, err := s.sandboxPath(req.BaselineRef)
 	if err != nil {
 		http.Error(w, "baselineRef: "+err.Error(), 400)
@@ -200,14 +223,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, actor authn.P
 			return
 		}
 	}
-	// Bind org policy path if available (engine expects YAML expressions)
-	policyPath := ""
-	if pol, _ := s.Backend.GetOrgPolicy(org); pol != nil && s.WorkDirRoot != "" {
-		pdir := filepath.Join(s.WorkDirRoot, "policies", org)
-		_ = os.MkdirAll(pdir, 0o755)
-		policyPath = filepath.Join(pdir, "active.yaml")
-		_ = writePolicyYAML(policyPath, pol)
-	}
+
+	// Immutable policy snapshot per run (digest-named file).
+	policyPath, policyDigest := s.materializePolicySnapshot(org, req.ID)
 
 	rr := run.NewRun(req.ID, req.IdempotencyKey, run.Spec{
 		ClusterName:    req.ClusterName,
@@ -216,24 +234,54 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, actor authn.P
 		ObservedRef:    obsRef,
 		Scenarios:      req.Scenarios,
 		PolicyPath:     policyPath,
-		OutDir:         filepath.Join("out", req.ID),
+		OutDir:         filepath.Join("out", org, req.ID),
 		TimeoutSeconds: 600,
 	})
 	rr.Labels = map[string]string{
 		"org": org, "project": req.Project, "environment": req.Environment,
 		"actor": actor.ID,
 	}
-	if err := s.Backend.PutRun(rr); err != nil {
+	if policyDigest != "" {
+		rr.Labels["policyDigest"] = policyDigest
+	}
+	if err := s.Backend.CreateRun(rr); err != nil {
 		s.reqErrors.Add(1)
+		if errors.Is(err, ErrConflict) {
+			http.Error(w, "run id or idempotency key conflict", 409)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	s.Backend.Audit(actor.ID, "run.create", rr.ID, "org="+org)
+	s.Backend.Audit(actor.ID, "run.create", rr.ID, "org="+org, org)
 	writeJSON(w, 201, rr)
 }
 
-func writePolicyYAML(path string, pol map[string]any) error {
-	// Minimal YAML for policy.Load
+// materializePolicySnapshot writes a content-addressed policy file for this run only.
+func (s *Server) materializePolicySnapshot(org, runID string) (path, digest string) {
+	if s.WorkDirRoot == "" {
+		return "", ""
+	}
+	pol, _ := s.Backend.GetOrgPolicy(org)
+	if pol == nil {
+		return "", ""
+	}
+	rawYAML, err := policyYAMLBytes(pol)
+	if err != nil {
+		return "", ""
+	}
+	sum := sha256.Sum256(rawYAML)
+	digest = hex.EncodeToString(sum[:])
+	pdir := filepath.Join(s.WorkDirRoot, "policies", org, "snapshots")
+	_ = os.MkdirAll(pdir, 0o755)
+	path = filepath.Join(pdir, digest[:16]+"-"+runID+".yaml")
+	if _, err := os.Stat(path); err != nil {
+		_ = os.WriteFile(path, rawYAML, 0o644)
+	}
+	return path, digest
+}
+
+func policyYAMLBytes(pol map[string]any) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("apiVersion: rehearsal.io/v1beta1\nkind: RehearsalPolicy\n")
 	if v, ok := pol["unknownAsBlock"].(bool); ok && v {
@@ -255,7 +303,7 @@ func writePolicyYAML(path string, pol map[string]any) error {
 	} else {
 		b.WriteString("  - risk == \"medium\"\n")
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return []byte(b.String()), nil
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
@@ -275,7 +323,7 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, actor authn.Pr
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	rr, err := s.Backend.GetRun(r.PathValue("id"))
+	rr, err := s.Backend.GetRun(actor.Org, r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -288,7 +336,7 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request, actor authn.Prin
 }
 
 func (s *Server) advanceRun(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	rr, err := s.Backend.GetRun(r.PathValue("id"))
+	rr, err := s.Backend.GetRun(actor.Org, r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -309,7 +357,17 @@ func (s *Server) advanceRun(w http.ResponseWriter, r *http.Request, actor authn.
 		async = *body.Async
 	}
 
-	if async && body.Action != "cancel" {
+	// Cancel: update run + cancel pending/leased jobs
+	if body.Action == "cancel" {
+		_ = rr.Transition(run.PhaseCancelled, "cancelled by "+actor.ID)
+		_ = s.Backend.UpdateRun(rr)
+		n, _ := s.Backend.CancelJobsForRun(actor.Org, rr.ID)
+		s.Backend.Audit(actor.ID, "run.cancel", rr.ID, fmt.Sprintf("jobs=%d", n), actor.Org)
+		writeJSON(w, 200, map[string]any{"run": rr, "jobsCancelled": n})
+		return
+	}
+
+	if async {
 		wd := body.WorkDir
 		if wd != "" {
 			wd, err = s.sandboxPath(wd)
@@ -319,23 +377,18 @@ func (s *Server) advanceRun(w http.ResponseWriter, r *http.Request, actor authn.
 			}
 		}
 		payload, _ := json.Marshal(persist.AdvancePayload{WorkDir: wd, Action: body.Action})
-		jobID, err := s.Backend.Enqueue(persist.JobAdvanceRun, rr.ID, actor.Org, string(payload))
+		opID := fmt.Sprintf("advance:%s:%s", actor.Org, rr.ID)
+		jobID, err := s.Backend.Enqueue(persist.JobAdvanceRun, rr.ID, actor.Org, string(payload), opID)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		s.Backend.Audit(actor.ID, "run.enqueue", rr.ID, jobID)
+		s.Backend.Audit(actor.ID, "run.enqueue", rr.ID, jobID, actor.Org)
 		writeJSON(w, 202, map[string]any{"runId": rr.ID, "jobId": jobID, "status": "queued"})
 		return
 	}
 
-	// Sync path (tests / small installs)
-	if body.Action == "cancel" {
-		_ = rr.Transition(run.PhaseCancelled, "cancelled by "+actor.ID)
-		_ = s.Backend.PutRun(rr)
-		writeJSON(w, 200, rr)
-		return
-	}
+	// Sync path
 	wd := body.WorkDir
 	if wd != "" {
 		wd, err = s.sandboxPath(wd)
@@ -348,31 +401,31 @@ func (s *Server) advanceRun(w http.ResponseWriter, r *http.Request, actor authn.
 	}
 	eng := &run.Engine{WorkDir: wd, Holder: actor.ID}
 	if err := eng.Execute(rr); err != nil {
-		_ = s.Backend.PutRun(rr)
+		_ = s.Backend.UpdateRun(rr)
 		writeJSON(w, 200, map[string]any{"run": rr, "error": err.Error()})
 		return
 	}
-	_ = s.Backend.PutRun(rr)
-	s.recordCal(rr)
-	s.Backend.Audit(actor.ID, "run.advance", rr.ID, string(rr.Status.Phase))
+	_ = s.Backend.UpdateRun(rr)
+	s.recordCal(actor.Org, rr)
+	s.Backend.Audit(actor.ID, "run.advance", rr.ID, string(rr.Status.Phase), actor.Org)
 	writeJSON(w, 200, rr)
 }
 
-func (s *Server) recordCal(rr *run.RehearsalRun) {
+func (s *Server) recordCal(org string, rr *run.RehearsalRun) {
 	if len(rr.Status.PredictedFailures) == 0 {
 		return
 	}
 	verified := rr.Status.VerifyOutcome != "" && rr.Status.VerifyOutcome != "inconclusive"
 	for _, sc := range rr.Status.PredictedFailures {
 		obsOK := rr.Status.VerifyOutcome == "verified"
-		_ = s.Backend.RecordCalibration(calibrate.Outcome{
+		_ = s.Backend.RecordCalibration(org, calibrate.Outcome{
 			Scenario: sc, Predicted: true, Observed: obsOK, Verified: verified,
 		})
 	}
 }
 
 func (s *Server) getEvidence(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	rr, err := s.Backend.GetRun(r.PathValue("id"))
+	rr, err := s.Backend.GetRun(actor.Org, r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -389,6 +442,7 @@ func (s *Server) getEvidence(w http.ResponseWriter, r *http.Request, actor authn
 		"verifyOutcome":     rr.Status.VerifyOutcome,
 		"chainPath":         rr.Status.ChainPath,
 		"predictedFailures": rr.Status.PredictedFailures,
+		"policyDigest":      rr.Labels["policyDigest"],
 	}
 	if rr.Status.ChainPath != "" {
 		if raw, err := os.ReadFile(rr.Status.ChainPath); err == nil {
@@ -432,7 +486,7 @@ func (s *Server) createCluster(w http.ResponseWriter, r *http.Request, actor aut
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	s.Backend.Audit(actor.ID, "cluster.create", c.Name, "org="+c.Org)
+	s.Backend.Audit(actor.ID, "cluster.create", c.Name, "org="+c.Org, c.Org)
 	writeJSON(w, 201, c)
 }
 
@@ -474,7 +528,7 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request, actor auth
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	s.Backend.Audit(actor.ID, "policy.create", id, "org="+actor.Org)
+	s.Backend.Audit(actor.ID, "policy.create", id, "org="+actor.Org, actor.Org)
 	p["id"] = id
 	p["org"] = actor.Org
 	writeJSON(w, 201, p)
@@ -494,7 +548,7 @@ func (s *Server) getCalibration(w http.ResponseWriter, r *http.Request, actor au
 		http.Error(w, "forbidden", 403)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"org": actor.Org, "report": s.Backend.CalibrationReport()})
+	writeJSON(w, 200, map[string]any{"org": actor.Org, "report": s.Backend.CalibrationReport(actor.Org)})
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request, authn.Principal)
@@ -516,36 +570,6 @@ func (s *Server) withAuth(action authz.Action, next handlerFunc) http.HandlerFun
 		}
 		next(w, r, p)
 	}
-}
-
-func (s *Server) sandboxPath(p string) (string, error) {
-	if p == "" {
-		return "", nil
-	}
-	if s.WorkDirRoot == "" {
-		clean := filepath.Clean(p)
-		if strings.Contains(clean, "..") {
-			return "", fmt.Errorf("path must not contain ..")
-		}
-		return clean, nil
-	}
-	root, err := filepath.Abs(s.WorkDirRoot)
-	if err != nil {
-		return "", err
-	}
-	target := p
-	if !filepath.IsAbs(p) {
-		target = filepath.Join(root, p)
-	}
-	abs, err := filepath.Abs(target)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("path outside workspace root")
-	}
-	return abs, nil
 }
 
 func resourceFromRun(rr *run.RehearsalRun) authz.Resource {
