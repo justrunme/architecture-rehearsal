@@ -66,22 +66,47 @@ func (w *Worker) tick(ctx context.Context) error {
 	if job == nil {
 		return nil
 	}
-	// Heartbeat lease while executing.
-	hbCtx, hbCancel := context.WithCancel(ctx)
+	// Job-scoped cancel: poll job status; cancel engine context if cancelled.
+	jobCtx, jobCancel := context.WithCancel(ctx)
+	defer jobCancel()
+	hbCtx, hbCancel := context.WithCancel(jobCtx)
 	defer hbCancel()
 	go w.heartbeat(hbCtx, job)
+	go w.watchCancel(jobCtx, jobCancel, job)
 
-	if err := w.execute(job); err != nil {
+	if err := w.execute(jobCtx, job); err != nil {
 		if failErr := w.Store.FailJob(job.ID, job.FenceToken, err.Error()); failErr != nil {
+			// cancelled/stale fence is expected
 			log.Printf("worker fail job: %v (exec err: %v)", failErr, err)
 		}
 		return err
 	}
+	// Only complete if still active (not cancelled mid-flight)
+	ok, _ := w.Store.JobIsActive(job.ID, w.Holder, job.FenceToken)
+	if !ok {
+		return ErrStaleFence
+	}
 	return w.Store.CompleteJob(job.ID, job.FenceToken)
 }
 
+func (w *Worker) watchCancel(ctx context.Context, cancel context.CancelFunc, job *Job) {
+	t := time.NewTicker(200 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			ok, err := w.Store.JobIsActive(job.ID, w.Holder, job.FenceToken)
+			if err != nil || !ok {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 func (w *Worker) heartbeat(ctx context.Context, job *Job) {
-	// Renew at half TTL so long runs keep the lease.
 	period := w.LeaseTTL / 3
 	if period < 5*time.Second {
 		period = 5 * time.Second
@@ -101,17 +126,16 @@ func (w *Worker) heartbeat(ctx context.Context, job *Job) {
 	}
 }
 
-func (w *Worker) execute(job *Job) error {
-	// Bail if job was cancelled while we claimed
+func (w *Worker) execute(ctx context.Context, job *Job) error {
 	switch job.Kind {
 	case JobAdvanceRun:
-		return w.execAdvance(job)
+		return w.execAdvance(ctx, job)
 	default:
 		return fmt.Errorf("unknown job kind %s", job.Kind)
 	}
 }
 
-func (w *Worker) execAdvance(job *Job) error {
+func (w *Worker) execAdvance(ctx context.Context, job *Job) error {
 	rr, err := w.Store.GetRun(job.Org, job.RunID)
 	if err != nil {
 		return err
@@ -125,9 +149,8 @@ func (w *Worker) execAdvance(job *Job) error {
 	}
 	if p.Action == "cancel" {
 		_ = rr.Transition(run.PhaseCancelled, "cancelled by job")
-		return w.Store.UpdateRun(rr)
+		return w.persistIfActive(job, rr)
 	}
-	// Skip if already terminal
 	if rr.Status.Phase.Terminal() {
 		return nil
 	}
@@ -136,8 +159,9 @@ func (w *Worker) execAdvance(job *Job) error {
 		wd = w.WorkDir
 	}
 	eng := &run.Engine{WorkDir: wd, Holder: w.Holder}
-	if err := eng.Execute(rr); err != nil {
-		_ = w.Store.UpdateRun(rr)
+	if err := eng.ExecuteContext(ctx, rr); err != nil {
+		// persist cancelled/failed state only if still lease holder
+		_ = w.persistIfActive(job, rr)
 		return err
 	}
 	org := job.Org
@@ -157,8 +181,21 @@ func (w *Worker) execAdvance(job *Job) error {
 					rr.Labels = map[string]string{}
 				}
 				rr.Labels["chainBlob"] = d
+				rr.Labels["chainBlobURI"] = w.Store.Blob.URI(d)
 			}
 		}
+	}
+	return w.persistIfActive(job, rr)
+}
+
+// persistIfActive writes run only when job lease/fence is still held (prevents cancelled stale write).
+func (w *Worker) persistIfActive(job *Job, rr *run.RehearsalRun) error {
+	ok, err := w.Store.JobIsActive(job.ID, w.Holder, job.FenceToken)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrStaleFence
 	}
 	return w.Store.UpdateRun(rr)
 }

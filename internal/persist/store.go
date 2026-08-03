@@ -29,7 +29,7 @@ type Cluster struct {
 // Store is the durable control-plane repository.
 type Store struct {
 	db      *sql.DB
-	Blob    *BlobStore
+	Blob    Blob // filesystem or S3-compatible
 	dialect string // sqlite|postgres
 }
 
@@ -90,6 +90,11 @@ func (s *Store) migrate() error {
 	// Detect legacy v1.2.0 runs table (global PK on id only) and rebuild.
 	if s.dialect == "sqlite" {
 		if err := s.upgradeLegacySQLite(); err != nil {
+			return err
+		}
+	}
+	if s.dialect == "postgres" {
+		if err := s.upgradeLegacyPostgres(); err != nil {
 			return err
 		}
 	}
@@ -189,6 +194,111 @@ func (s *Store) upgradeLegacySQLite() error {
 	return tx.Commit()
 }
 
+// upgradeLegacyPostgres migrates v1.2.0 global PK (id) → composite (org, id).
+func (s *Store) upgradeLegacyPostgres() error {
+	// Detect legacy: runs has PK only on id (constraint_name runs_pkey with single column id).
+	var n int
+	err := s.db.QueryRow(`
+SELECT COUNT(*) FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+WHERE tc.table_name = 'runs' AND tc.constraint_type = 'PRIMARY KEY'
+`).Scan(&n)
+	if err != nil {
+		// table may not exist yet
+		return nil
+	}
+	if n == 0 {
+		return nil
+	}
+	var cols int
+	_ = s.db.QueryRow(`
+SELECT COUNT(*) FROM information_schema.key_column_usage
+WHERE table_name = 'runs' AND constraint_name IN (
+  SELECT constraint_name FROM information_schema.table_constraints
+  WHERE table_name = 'runs' AND constraint_type = 'PRIMARY KEY'
+)`).Scan(&cols)
+	if cols != 1 {
+		return nil // already composite or unknown
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmts := []string{
+		`ALTER TABLE runs RENAME TO runs_legacy`,
+		`CREATE TABLE runs (
+  org TEXT NOT NULL DEFAULT '',
+  id TEXT NOT NULL,
+  idempotency_key TEXT,
+  project TEXT NOT NULL DEFAULT '',
+  environment TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL,
+  phase TEXT NOT NULL DEFAULT 'Pending',
+  version INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (org, id)
+)`,
+		`INSERT INTO runs(org, id, idempotency_key, project, environment, payload, phase, updated_at, created_at)
+ SELECT COALESCE(org,''), id, idempotency_key, COALESCE(project,''), COALESCE(environment,''), payload, phase, updated_at, created_at FROM runs_legacy`,
+		`DROP TABLE runs_legacy`,
+		`DROP INDEX IF EXISTS idx_runs_idem`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_idem_org ON runs(org, idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''`,
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("postgres legacy upgrade: %w (%s)", err, q)
+		}
+	}
+	// Optional calibration/jobs upgrades only if tables exist (legacy smoke may only seed runs).
+	var calExists int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='calibration'`).Scan(&calExists)
+	if calExists > 0 {
+		var calHasOrg int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='calibration' AND column_name='org'`).Scan(&calHasOrg)
+		if calHasOrg == 0 {
+			if _, err := tx.Exec(`ALTER TABLE calibration ADD COLUMN org TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("postgres legacy cal org: %w", err)
+			}
+		}
+	}
+	var jobsExist int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='jobs'`).Scan(&jobsExist)
+	if jobsExist > 0 {
+		var hasFence int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='jobs' AND column_name='fence_token'`).Scan(&hasFence)
+		if hasFence == 0 {
+			if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN fence_token INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("postgres legacy fence: %w", err)
+			}
+		}
+		var hasOp int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='jobs' AND column_name='operation_id'`).Scan(&hasOp)
+		if hasOp == 0 {
+			if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN operation_id TEXT`); err != nil {
+				return fmt.Errorf("postgres legacy op: %w", err)
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// JobIsActive reports whether a job is still leased by holder with fence (for cancel checks).
+func (s *Store) JobIsActive(id, holder string, fence int64) (bool, error) {
+	var status, leaseHolder sql.NullString
+	var f int64
+	err := s.queryRow(`SELECT status, COALESCE(lease_holder,''), fence_token FROM jobs WHERE id=?`, id).Scan(&status, &leaseHolder, &f)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status.String == "leased" && leaseHolder.String == holder && f == fence, nil
+}
+
 func (s *Store) rebind(q string) string {
 	if s.dialect != "postgres" {
 		return q
@@ -239,6 +349,9 @@ func (s *Store) CreateRun(r *run.RehearsalRun) error {
 	if org == "" {
 		return fmt.Errorf("run org required")
 	}
+	if r.Version == 0 {
+		r.Version = 1
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -249,19 +362,31 @@ func (s *Store) CreateRun(r *run.RehearsalRun) error {
 	}
 	now := s.now()
 	_, err = s.exec(`
-INSERT INTO runs(org, id, idempotency_key, project, environment, payload, phase, updated_at, created_at)
-VALUES(?,?,?,?,?,?,?,?,?)
-`, org, r.ID, nullStr(r.IdempotencyKey), project, env, string(raw), string(r.Status.Phase), now, r.CreatedAt.UTC().Format(time.RFC3339Nano))
+INSERT INTO runs(org, id, idempotency_key, project, environment, payload, phase, version, updated_at, created_at)
+VALUES(?,?,?,?,?,?,?,?,?,?)
+`, org, r.ID, nullStr(r.IdempotencyKey), project, env, string(raw), string(r.Status.Phase), r.Version, now, r.CreatedAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrConflict
+		}
+		// fallback without version column (pre-migration)
+		if strings.Contains(err.Error(), "version") {
+			_, err = s.exec(`
+INSERT INTO runs(org, id, idempotency_key, project, environment, payload, phase, updated_at, created_at)
+VALUES(?,?,?,?,?,?,?,?,?)
+`, org, r.ID, nullStr(r.IdempotencyKey), project, env, string(raw), string(r.Status.Phase), now, r.CreatedAt.UTC().Format(time.RFC3339Nano))
+			if err != nil && isUniqueViolation(err) {
+				return ErrConflict
+			}
+			return err
 		}
 		return err
 	}
 	return nil
 }
 
-// UpdateRun updates an existing run in the same org. Never changes org.
+// UpdateRun updates an existing run with optimistic concurrency (version).
+// Expected version is r.Version before increment; on success r.Version is incremented.
 func (s *Store) UpdateRun(r *run.RehearsalRun) error {
 	if r == nil || r.ID == "" {
 		return fmt.Errorf("run id required")
@@ -270,24 +395,42 @@ func (s *Store) UpdateRun(r *run.RehearsalRun) error {
 	if org == "" {
 		return fmt.Errorf("run org required")
 	}
+	expected := r.Version
+	next := expected + 1
+	if next < 1 {
+		next = 1
+	}
+	r.Version = next
 	raw, err := json.Marshal(r)
 	if err != nil {
+		r.Version = expected
 		return err
 	}
 	project, env := "", ""
 	if r.Labels != nil {
 		project, env = r.Labels["project"], r.Labels["environment"]
 	}
-	res, err := s.exec(`
-UPDATE runs SET payload=?, phase=?, project=?, environment=?, updated_at=?
+	// Optimistic: match previous version (0 matches any missing/legacy row)
+	var res sql.Result
+	if expected == 0 {
+		res, err = s.exec(`
+UPDATE runs SET payload=?, phase=?, project=?, environment=?, version=?, updated_at=?
 WHERE org=? AND id=?
-`, string(raw), string(r.Status.Phase), project, env, s.now(), org, r.ID)
+`, string(raw), string(r.Status.Phase), project, env, next, s.now(), org, r.ID)
+	} else {
+		res, err = s.exec(`
+UPDATE runs SET payload=?, phase=?, project=?, environment=?, version=?, updated_at=?
+WHERE org=? AND id=? AND version=?
+`, string(raw), string(r.Status.Phase), project, env, next, s.now(), org, r.ID, expected)
+	}
 	if err != nil {
+		r.Version = expected
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return ErrNotFound
+		r.Version = expected
+		return ErrConflict // stale version or missing
 	}
 	return nil
 }
@@ -517,17 +660,11 @@ type Job struct {
 	OperationID string
 }
 
-// Enqueue creates a job. operationID enables exactly-once logical enqueue (same op returns existing).
+// Enqueue creates a job. operationID enables exactly-once logical enqueue:
+// INSERT then on unique violation SELECT existing id (no TOCTOU race).
 func (s *Store) Enqueue(kind, runID, org, payload, operationID string) (string, error) {
 	if org == "" {
 		return "", fmt.Errorf("org required")
-	}
-	if operationID != "" {
-		var existing string
-		err := s.queryRow(`SELECT id FROM jobs WHERE org=? AND operation_id=?`, org, operationID).Scan(&existing)
-		if err == nil && existing != "" {
-			return existing, nil
-		}
 	}
 	id := fmt.Sprintf("job-%d", time.Now().UTC().UnixNano())
 	now := s.now()
@@ -535,7 +672,20 @@ func (s *Store) Enqueue(kind, runID, org, payload, operationID string) (string, 
 INSERT INTO jobs(id, kind, run_id, org, status, attempts, max_attempts, fence_token, payload, operation_id, created_at, updated_at)
 VALUES(?,?,?,?, 'pending', 0, 5, 0, ?, ?, ?, ?)
 `, id, kind, runID, org, payload, nullStr(operationID), now, now)
-	return id, err
+	if err == nil {
+		return id, nil
+	}
+	if operationID != "" && isUniqueViolation(err) {
+		var existing string
+		qerr := s.queryRow(`SELECT id FROM jobs WHERE org=? AND operation_id=?`, org, operationID).Scan(&existing)
+		if qerr == nil && existing != "" {
+			return existing, nil
+		}
+		if qerr != nil {
+			return "", qerr
+		}
+	}
+	return "", err
 }
 
 // ClaimJob leases the next pending job with a fencing token.

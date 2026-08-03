@@ -53,8 +53,10 @@ type RehearsalRun struct {
 	Spec           Spec              `json:"spec"`
 	Status         Status            `json:"status"`
 	Digests        contract.ArtifactDigests `json:"digests,omitempty"`
-	CreatedAt      time.Time         `json:"createdAt"`
-	UpdatedAt      time.Time         `json:"updatedAt"`
+	// Version is an optimistic concurrency token (v1.4.1+). Incremented on each durable update.
+	Version   int64     `json:"version,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Spec is the desired run configuration.

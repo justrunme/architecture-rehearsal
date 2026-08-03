@@ -15,7 +15,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-const Version = "1.4.0"
+const Version = "1.5.0"
 
 // Run builds proposed graph, validates, runs scenarios, returns Report.
 func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
@@ -150,8 +150,15 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 	rep.Rollback = rollback
 	rep.PredictedFailures = uniqueStrings(rep.PredictedFailures)
 	rep.Summary = summarize(rep, ch)
-	rep.SemanticDigest = semanticDigest(rep)
+	rep.SemanticDigest = ComputeSemanticDigest(rep)
 	return rep, nil
+}
+
+// ComputeSemanticDigest recomputes the stable content hash of a report
+// (excludes Generated timestamp and SemanticDigest itself).
+// Callers MUST use this for verification — never trust report.SemanticDigest alone.
+func ComputeSemanticDigest(r *Report) string {
+	return semanticDigest(r)
 }
 
 func summarize(r *Report, ch *loader.ChangeEnvelope) string {
