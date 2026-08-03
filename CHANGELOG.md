@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0 — 2026-08-03
+
+**End-to-end iron path** (one real pipeline, no new scenarios).
+
+### E2E pipeline
+- Fixture tree `examples/e2e-pipeline/`: kubectl List dump → rendered helm chart → observed dump + meta
+- `scripts/e2e_pipeline.sh` + `make e2e`: dump → `snapshot k8s` → scoped `change manifests` → analyze (**block**) → observed snapshot → verify (**verified**)
+- Go integration test `internal/e2e` covering the same path without shell
+
+### Collectors / CLI
+- `snapshot k8s --phase baseline|observed|deployed`
+- `snapshot k8s --meta FILE` merges operator/CI annotations (e.g. `observed_failures`) after capacity derivation
+- Observed phase marks Pending pods `unschedulable` for verify helpers
+- Collector version stamp `0.4.0`
+
+### Change compiler
+- Manifest diffs set `facts.scenario=cni-ip-capacity` so capacity rules always evaluate on helm/manifest scale paths
+
+### Docs
+- Honest matrix: full offline E2E path **Supported**
+- Binary version `0.4.0`
+
 ## 0.3.0 — 2026-08-03
 
 **Real graph pipeline** (honest milestone after prototype inflation).

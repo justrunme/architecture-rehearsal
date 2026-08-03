@@ -15,7 +15,7 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v0.3.0** — strong deterministic prototype with real offline K8s graph pipeline.  
+**Status: v0.4.0** — strong deterministic prototype with a full offline E2E path (dump → graph → scoped change → gate → verify).  
 **Not** production-grade multi-cluster platform. **Not** a published GHCR product yet (Dockerfile is reference until CI publishes images).
 
 ---
@@ -28,10 +28,11 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 | Deep-copy ApplyChange (baseline immutable) | **Supported** |
 | Golden scenarios (fixtures with hand-built edges) | **Supported** |
 | Scenario prerequisites → `unknown` | **Supported** |
-| Offline K8s YAML collector (List, recursive, edges) | **Supported** (v0.3) |
+| Offline K8s YAML collector (List, recursive, edges) | **Supported** |
 | Manifest change compiler with **namespace scope** | **Supported** (removals off by default) |
+| **E2E path**: List dump → graph → scoped change → analyze → verify | **Supported** (v0.4) |
 | Terraform plan → change | **Reference / experimental** |
-| `rehearsal verify` | **Reference** (needs `meta.observed_failures` / Pending markers) |
+| `rehearsal verify` | **Supported** with `meta.observed_failures` / Pending markers |
 | Distroless Dockerfile | **Reference** (not published by CI yet) |
 | GH/GL integration examples | **Reference** |
 | Multi-cluster merge | **Experimental** (`internal` only; no CLI) |
@@ -45,7 +46,8 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 ```bash
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
-make demo
+make demo    # golden scenarios (expect block)
+make e2e     # full dump → graph → scoped change → verify path
 ```
 
 ```bash
@@ -56,29 +58,45 @@ make build
   --html out/rwo-report.html
 ```
 
-### Real YAML → graph (v0.3)
+### Real YAML → graph → scoped change → verify (v0.4)
 
 ```bash
-# dump (example)
-kubectl get node,deploy,sts,ds,po,svc,pvc,pv,pdb,hpa,sa,ing -A -o yaml > /tmp/dump.yaml
+# 1) dump from a cluster (or use examples/e2e-pipeline/cluster-dump)
+kubectl get node,ns,deploy,sts,ds,po,svc,pvc,pv,pdb,hpa,sa,ing -A -o yaml > /tmp/dump.yaml
 mkdir -p /tmp/k8s && cp /tmp/dump.yaml /tmp/k8s/
 
 ./bin/rehearsal snapshot k8s --dir /tmp/k8s --cluster acme-prod --out baseline.json
 
-# scoped change (never mass-deletes out-of-scope workloads)
+# 2) scoped change from helm-rendered manifests (never mass-deletes out-of-scope)
 ./bin/rehearsal change manifests \
   --baseline baseline.json \
   --dir ./rendered-chart \
   --namespace payments \
   --out change.json
 # add --allow-remove only when rendered dir is complete for that scope
+
+# 3) gate
+./bin/rehearsal analyze --baseline baseline.json --change change.json --out out --quiet
+# exit 3 = block
+
+# 4) post-deploy: dump again + optional operator meta for verify
+./bin/rehearsal snapshot k8s \
+  --dir /tmp/observed \
+  --cluster acme-prod \
+  --phase observed \
+  --meta observed-meta.json \
+  --out observed.json
+
+./bin/rehearsal verify --report out/latest-report.json --observed observed.json
 ```
+
+Fixture walkthrough (no live cluster): `examples/e2e-pipeline/` + `make e2e`.
 
 ### Exit codes
 
 | Code | Meaning |
 | ---: | ------- |
-| 0 | approve |
+| 0 | approve / verified |
 | 1 | warn / verify diverged |
 | 2 | validation / usage error |
 | 3 | block |
@@ -102,10 +120,10 @@ Each scenario declares prerequisites. Missing data → **unknown**, not silent a
 
 ## What this is (and is not)
 
-**Is:** offline change-gate core you can run in CI with fixtures or rendered YAML.  
+**Is:** offline change-gate core you can run in CI with fixtures or rendered YAML, including a full dump→verify path.  
 **Is not yet:** signed immutable evidence store, published multi-arch image, live multi-cluster control plane.
 
-Version discipline: inflated `v1`/`v2` tags were retracted; current line is **0.3.x**.
+Version discipline: inflated `v1`/`v2` tags were retracted; current line is **0.4.x**.
 
 ---
 

@@ -15,7 +15,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // Run builds proposed graph, validates, runs scenarios, returns Report.
 func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {

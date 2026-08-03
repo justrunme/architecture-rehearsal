@@ -1,0 +1,32 @@
+# Helm-rendered payments-worker after upgrade (desired).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-worker
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: payments-worker
+    app.kubernetes.io/part-of: payments
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: payments
+    meta.helm.sh/release-namespace: payments
+spec:
+  replicas: 12
+  selector:
+    matchLabels:
+      app: payments-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: "1"
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: payments-worker
+    spec:
+      serviceAccountName: payments-worker
+      containers:
+        - name: worker
+          image: registry.example/payments-worker:1.5.0

@@ -1,0 +1,262 @@
+# Realistic kubectl List dump (offline fixture).
+# Shape matches: kubectl get node,ns,deploy,sts,po,svc,pvc,pv,pdb,hpa,sa -A -o yaml
+# Capacity is intentionally tight so a payments helm scale-up must block on CNI.
+apiVersion: v1
+kind: List
+metadata:
+  resourceVersion: ""
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: payments
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: gitops
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: ip-10-0-12-44
+      labels:
+        topology.kubernetes.io/zone: eu-central-1a
+        node.kubernetes.io/instance-type: m6i.large
+    status:
+      allocatable:
+        pods: "12"
+        cpu: "2"
+        memory: 8Gi
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: ip-10-0-13-18
+      labels:
+        topology.kubernetes.io/zone: eu-central-1b
+        node.kubernetes.io/instance-type: m6i.large
+    status:
+      allocatable:
+        pods: "12"
+        cpu: "2"
+        memory: 8Gi
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: payments-api
+      namespace: payments
+      labels:
+        app.kubernetes.io/name: payments-api
+        app.kubernetes.io/part-of: payments
+    spec:
+      replicas: 6
+      selector:
+        matchLabels:
+          app: payments-api
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxSurge: 25%
+          maxUnavailable: 0
+      template:
+        metadata:
+          labels:
+            app: payments-api
+        spec:
+          serviceAccountName: payments-api
+          containers:
+            - name: api
+              image: registry.example/payments-api:1.4.2
+              ports:
+                - containerPort: 8080
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: payments-worker
+      namespace: payments
+      labels:
+        app.kubernetes.io/name: payments-worker
+        app.kubernetes.io/part-of: payments
+    spec:
+      replicas: 4
+      selector:
+        matchLabels:
+          app: payments-worker
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxSurge: "1"
+          maxUnavailable: 0
+      template:
+        metadata:
+          labels:
+            app: payments-worker
+        spec:
+          serviceAccountName: payments-worker
+          containers:
+            - name: worker
+              image: registry.example/payments-worker:1.4.2
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: webservice
+      namespace: gitops
+    spec:
+      replicas: 3
+      selector:
+        matchLabels:
+          app: webservice
+      template:
+        metadata:
+          labels:
+            app: webservice
+        spec:
+          containers:
+            - name: web
+              image: registry.example/webservice:16.0
+  - apiVersion: apps/v1
+    kind: StatefulSet
+    metadata:
+      name: gitaly
+      namespace: gitops
+    spec:
+      replicas: 1
+      serviceName: gitaly
+      selector:
+        matchLabels:
+          app: gitaly
+      template:
+        metadata:
+          labels:
+            app: gitaly
+        spec:
+          serviceAccountName: gitaly
+          containers:
+            - name: gitaly
+              image: registry.example/gitaly:16.0
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: gitaly-data
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: payments-api
+      namespace: payments
+    spec:
+      selector:
+        app: payments-api
+      ports:
+        - port: 80
+          targetPort: 8080
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: gitaly
+      namespace: gitops
+    spec:
+      selector:
+        app: gitaly
+      ports:
+        - port: 8075
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: payments-api
+      namespace: payments
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: payments-worker
+      namespace: payments
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: gitaly
+      namespace: gitops
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: gitaly-data
+      namespace: gitops
+      annotations:
+        volume.kubernetes.io/selected-node: ip-10-0-12-44
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3
+      volumeName: pv-gitaly
+      resources:
+        requests:
+          storage: 200Gi
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: pv-gitaly
+      labels:
+        topology.kubernetes.io/zone: eu-central-1a
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      capacity:
+        storage: 200Gi
+      persistentVolumeReclaimPolicy: Retain
+      storageClassName: gp3
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: payments-api
+      namespace: payments
+    spec:
+      minAvailable: 4
+      selector:
+        matchLabels:
+          app: payments-api
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: gitaly
+      namespace: gitops
+    spec:
+      minAvailable: 1
+      selector:
+        matchLabels:
+          app: gitaly
+  - apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: payments-api
+      namespace: payments
+    spec:
+      scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: payments-api
+      minReplicas: 4
+      maxReplicas: 20
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: payments-api-7d8f9c-abc12
+      namespace: payments
+      labels:
+        app: payments-api
+    spec:
+      nodeName: ip-10-0-12-44
+      serviceAccountName: payments-api
+      containers:
+        - name: api
+          image: registry.example/payments-api:1.4.2
+    status:
+      phase: Running
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: gitaly-0
+      namespace: gitops
+      labels:
+        app: gitaly
+    spec:
+      nodeName: ip-10-0-12-44
+      serviceAccountName: gitaly
+      containers:
+        - name: gitaly
+          image: registry.example/gitaly:16.0
+    status:
+      phase: Running

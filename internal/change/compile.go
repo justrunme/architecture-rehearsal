@@ -43,8 +43,10 @@ func FromManifestsDiff(base *graph.Snapshot, manifestDir, changeID, title string
 		ID:         changeID,
 		Title:      title,
 		Facts: map[string]any{
-			"scope.namespaces": scope.Namespaces,
+			"scope.namespaces":  scope.Namespaces,
 			"scope.allowRemove": scope.AllowRemove,
+			// Manifest/helm scale path is evaluated by CNI capacity scenario.
+			"scenario": "cni-ip-capacity",
 		},
 	}
 

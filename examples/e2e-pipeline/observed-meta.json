@@ -1,0 +1,4 @@
+{
+  "observed_failures": ["cni-ip-capacity"],
+  "incident_notes": "FailedCreatePodSandbox / pending pods after payments helm scale; pod IP pool exhausted"
+}

@@ -1,0 +1,49 @@
+# Helm-rendered payments-api after upgrade (desired).
+# Replicas deliberately exceed cluster pod/IP headroom when combined with worker + surge.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: payments-api
+    app.kubernetes.io/part-of: payments
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: payments
+    meta.helm.sh/release-namespace: payments
+spec:
+  replicas: 18
+  selector:
+    matchLabels:
+      app: payments-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: payments-api
+    spec:
+      serviceAccountName: payments-api
+      containers:
+        - name: api
+          image: registry.example/payments-api:1.5.0
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    app: payments-api
+  ports:
+    - port: 80
+      targetPort: 8080

@@ -1,7 +1,7 @@
 BIN ?= bin/rehearsal
 GO ?= go
 
-.PHONY: all build test race vet demo tidy clean docker image verify-example
+.PHONY: all build test race vet demo e2e tidy clean docker image verify-example
 
 all: vet test build
 
@@ -23,8 +23,12 @@ tidy:
 demo: build
 	bash scripts/demo.sh
 
+# v0.4 iron path: real YAML dump → graph → scoped change → analyze → verify
+e2e: build
+	bash scripts/e2e_pipeline.sh
+
 docker image:
-	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.0.0 -f Dockerfile .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal:0.4.0 -f Dockerfile .
 
 verify-example: build
 	$(BIN) analyze \
