@@ -181,6 +181,8 @@ items:
           image: registry.example/payments-api:1.5.0
     status:
       phase: Pending
+      reason: FailedCreatePodSandBox
+      message: "failed to assign an IP address: eni/ipamd: no free IPs"
   - apiVersion: v1
     kind: Pod
     metadata:
@@ -194,6 +196,8 @@ items:
           image: registry.example/payments-api:1.5.0
     status:
       phase: Pending
+      reason: FailedCreatePodSandBox
+      message: "network plugin cni failed to set up pod network"
   - apiVersion: v1
     kind: Pod
     metadata:
@@ -207,3 +211,5 @@ items:
           image: registry.example/payments-worker:1.5.0
     status:
       phase: Pending
+      reason: FailedCreatePodSandBox
+      message: "failed to assign an IP address"

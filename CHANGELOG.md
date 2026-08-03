@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.2 — 2026-08-03
+
+**Verification Integrity** — causal predicates, honest identity, production mode.
+
+### Identity / delta
+- Split `change_applied` vs `rollout_converged` (replica mismatch is **fail**, not free pass)
+- Scale-up still at baseline → delta fail (change not applied)
+- Without `--baseline` + `--change`: mode=`legacy`, max outcome **INCONCLUSIVE**
+
+### Causal scenario evidence
+- CNI: `cni_ip_available=0`, `FailedCreatePodSandBox` / IP assign messages, or `cni_failure_events` — not any Pending
+- RWO: `FailedAttachVolume` / multi-attach **or** PVC boundNode gone + component pending
+- PDB: PDB component + protected workload pressure / `pdb_evictions_denied` — not global Pending
+- Prom: `metric_match_count == 0` (not mere field presence)
+- Service-routing: EndpointSlice `readyEndpoints=0` or all backends missing
+
+### Platform / hygiene
+- CLI enforces local policy model (`REHEARSAL_POLICY` + `REHEARSAL_ACTOR`) on commands
+- `rehearsal verify-sign --envelope FILE`
+- Store run IDs nanosecond + temp+rename; audit append errors surface
+- Collector captures pod `reason` / `message` / waitingReason
+- README version aligned to 0.7.2; CI docker build smoke
+- Adversarial cross-scenario verify tests
+
 ## 0.7.1 — 2026-08-03
 
 **CI hotfix** — golden multi-scenario verify.

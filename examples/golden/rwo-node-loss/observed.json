@@ -7,16 +7,19 @@
   "phase": "observed",
   "createdAt": "2026-08-01T13:00:00Z",
   "meta": {
-    "observed_failures": ["rwo-node-loss", "pdb-disruption", "volume-az"]
+    "observed_failures": ["rwo-node-loss", "pdb-disruption", "volume-az"],
+    "pdb_evictions_denied": 1
   },
   "nodes": [
     { "id": "cluster/acme-prod", "kind": "Cluster", "name": "acme-prod" },
     { "id": "node/ip-10-0-13-18", "kind": "Node", "name": "ip-10-0-13-18", "attributes": { "zone": "eu-central-1b" } },
-    { "id": "workload/gitops/gitaly", "kind": "Workload", "name": "gitaly", "namespace": "gitops", "attributes": { "replicas": 1, "phase": "Pending", "unschedulable": true } },
+    { "id": "workload/gitops/gitaly", "kind": "Workload", "name": "gitaly", "namespace": "gitops", "attributes": { "replicas": 1, "phase": "Pending", "unschedulable": true, "unavailableReplicas": 1 } },
     { "id": "pvc/gitops/gitaly-data", "kind": "PVC", "name": "gitaly-data", "namespace": "gitops", "attributes": { "accessMode": "ReadWriteOnce", "boundNode": "ip-10-0-12-44", "zone": "eu-central-1a" } },
-    { "id": "pod/gitops/gitaly-0", "kind": "Pod", "name": "gitaly-0", "namespace": "gitops", "attributes": { "phase": "Pending", "unschedulable": true } }
+    { "id": "pdb/gitops/gitaly", "kind": "PDB", "name": "gitaly", "namespace": "gitops", "attributes": { "minAvailable": 1 } },
+    { "id": "pod/gitops/gitaly-0", "kind": "Pod", "name": "gitaly-0", "namespace": "gitops", "attributes": { "phase": "Pending", "unschedulable": true, "reason": "FailedAttachVolume", "message": "Multi-Attach error for volume \"pvc-gitaly\" Volume is already exclusively attached to one node and can't be attached to another" } }
   ],
   "edges": [
-    { "from": "workload/gitops/gitaly", "to": "pvc/gitops/gitaly-data", "rel": "BINDS_VOLUME" }
+    { "from": "workload/gitops/gitaly", "to": "pvc/gitops/gitaly-data", "rel": "BINDS_VOLUME" },
+    { "from": "workload/gitops/gitaly", "to": "pdb/gitops/gitaly", "rel": "PROTECTED_BY" }
   ]
 }

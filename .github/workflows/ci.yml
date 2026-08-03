@@ -44,3 +44,7 @@ jobs:
             --out out/verify.json
           # must be verified (exit 0)
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
+      - name: Version stamp
+        run: ./bin/rehearsal version | grep -q '0.7.2'
+      - name: Docker build (reference image)
+        run: docker build -t architecture-rehearsal:ci -f Dockerfile .
