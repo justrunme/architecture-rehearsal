@@ -5,6 +5,7 @@ import (
 )
 
 // RehearsalRunSpec defines the desired state of RehearsalRun.
+// Control plane URL is NEVER set on the CR — only via operator env REHEARSAL_API_URL (v1.5.1).
 type RehearsalRunSpec struct {
 	// BaselineRef is a path/URI relative to the control-plane workdir.
 	BaselineRef string `json:"baselineRef"`
@@ -19,20 +20,23 @@ type RehearsalRunSpec struct {
 	// Async when true enqueues advance on the control plane (default true).
 	// +optional
 	Async *bool `json:"async,omitempty"`
-	// ControlPlaneURL overrides default REHEARSAL_API_URL.
-	// +optional
-	ControlPlaneURL string `json:"controlPlaneURL,omitempty"`
 }
 
 // RehearsalRunStatus defines the observed state.
 type RehearsalRunStatus struct {
+	// ObservedGeneration is the last reconciled metadata.generation.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// SpecDigest is sha256 of the reconciled Spec (detects drift).
+	// +optional
+	SpecDigest string `json:"specDigest,omitempty"`
 	// Phase mirrors control-plane phase.
 	Phase string `json:"phase,omitempty"`
 	// Decision approve|warn|block|unknown.
 	Decision string `json:"decision,omitempty"`
 	// Risk level.
 	Risk string `json:"risk,omitempty"`
-	// ControlPlaneRunID is the durable run id (namespace/name by default).
+	// ControlPlaneRunID is the durable run id (includes generation for immutability).
 	ControlPlaneRunID string `json:"controlPlaneRunId,omitempty"`
 	// JobID last enqueue id when async.
 	JobID string `json:"jobId,omitempty"`
@@ -47,6 +51,7 @@ type RehearsalRunStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Decision",type=string,JSONPath=`.status.decision`
+// +kubebuilder:printcolumn:name="Gen",type=integer,JSONPath=`.status.observedGeneration`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // RehearsalRun is the Schema for the rehearsalruns API.
