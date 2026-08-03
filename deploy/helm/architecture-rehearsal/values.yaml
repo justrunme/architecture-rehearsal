@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/justrunme/architecture-rehearsal
-  tag: "1.0.0"
+  tag: "1.0.1"
   pullPolicy: IfNotPresent
 
 service:
@@ -11,8 +11,14 @@ service:
 
 api:
   enabled: true
-  token: "" # set via secret; default local-dev is insecure
-  oidcIssuer: ""
+  # REQUIRED: set a strong token (or use existingSecret). Chart fails without it.
+  # helm upgrade ... --set api.token=$(openssl rand -hex 32)
+  token: ""
+  existingSecret: ""
+  existingSecretKey: token
+  org: default
+  role: platform-admin
+  workDir: /var/lib/rehearsal
 
 resources:
   requests:
@@ -22,13 +28,11 @@ resources:
     cpu: 500m
     memory: 256Mi
 
-# Object storage (optional S3-compatible) — evidence blobs
 objectStorage:
   enabled: false
   endpoint: ""
   bucket: rehearsal-evidence
 
-# PostgreSQL for multi-replica production (API uses memory store by default)
 postgresql:
   enabled: false
   host: ""

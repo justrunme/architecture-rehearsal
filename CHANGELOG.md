@@ -1,6 +1,40 @@
 # Changelog
 
+## 1.0.1 — 2026-08-03
+
+**Security correction** — networked API tenant/auth hard-fix.
+
+> **v1.0.0 is not safe for network deployment.** Use **v1.0.1+** for any exposed API.
+
+### Authn
+- Removed hardcoded `ci`, `viewer-token`, default `local-dev` tokens
+- `serve` **refuses to start** without `REHEARSAL_API_TOKEN` / `REHEARSAL_API_TOKENS` (or explicit `--insecure-dev`)
+- Removed OIDC stub that accepted any `a.b.c` JWT when issuer env set
+- Client `X-Org` **cannot** override principal organization
+
+### Authz / tenancy
+- Object-level authorization after load (`get/advance/evidence`)
+- Cross-tenant reads return **404** (no existence leak)
+- Clusters/policies filtered by org labels
+- Run create binds `labels.org` from principal only
+
+### API hardening
+- WorkDir / path refs sandboxed under `--workdir` root
+- Request body size limit; HTTP server timeouts
+- Cross-tenant + hardcoded-token negative tests
+
+### Helm
+- Secret template **required**; chart fails without `api.token`
+- `optional: false` on token secretKeyRef
+- Image tag `1.0.1`
+
 ## 1.0.0 — 2026-08-03
+
+**YANKED for network use** — offline CLI is fine; API had tenant/auth bypass (hardcoded tokens + `X-Org` principal rewrite + missing object authz). Fixed in 1.0.1.
+
+Original notes:
+
+**Stable production contract** for the Architecture Rehearsal control plane.
 
 **Stable production contract** for the Architecture Rehearsal control plane.
 

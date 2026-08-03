@@ -14,6 +14,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: architecture-rehearsal
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "architecture-rehearsal.serviceAccountName" . }}
       securityContext:
@@ -24,7 +26,14 @@ spec:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["serve", "--addr", ":8080"]
+          args:
+            - serve
+            - --addr
+            - ":8080"
+            {{- if .Values.api.workDir }}
+            - --workdir
+            - {{ .Values.api.workDir | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -32,11 +41,14 @@ spec:
             - name: REHEARSAL_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "architecture-rehearsal.fullname" . }}-api
-                  key: token
-                  optional: true
-            - name: REHEARSAL_OIDC_ISSUER
-              value: {{ .Values.api.oidcIssuer | quote }}
+                  name: {{ if .Values.api.existingSecret }}{{ .Values.api.existingSecret }}{{ else }}{{ include "architecture-rehearsal.fullname" . }}-api{{ end }}
+                  key: {{ .Values.api.existingSecretKey | default "token" }}
+                  optional: false
+            - name: REHEARSAL_API_ORG
+              value: {{ .Values.api.org | default "default" | quote }}
+            - name: REHEARSAL_API_ROLE
+              value: {{ .Values.api.role | default "platform-admin" | quote }}
+            # OIDC stub intentionally NOT wired — unsigned JWT acceptance was removed in v1.0.1
           readinessProbe:
             httpGet:
               path: /readyz

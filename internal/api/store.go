@@ -107,6 +107,16 @@ func (s *MemoryStore) PutPolicy(id string, p map[string]any) {
 	s.policies[id] = p
 }
 
+func (s *MemoryStore) ListPolicies() []map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]map[string]any, 0, len(s.policies))
+	for _, p := range s.policies {
+		out = append(out, p)
+	}
+	return out
+}
+
 func (s *MemoryStore) Audit(actor, action, target, detail string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
