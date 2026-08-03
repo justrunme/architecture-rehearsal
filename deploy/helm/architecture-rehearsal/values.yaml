@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/justrunme/architecture-rehearsal
-  tag: "1.2.0"
+  tag: "1.2.1"
   pullPolicy: IfNotPresent
 
 service:
@@ -22,6 +22,14 @@ api:
   async: true
   workers: 2
 
+# Durable storage for SQLite + blobs (v1.2.1+). emptyDir is NOT durable.
+persistence:
+  enabled: true
+  size: 5Gi
+  accessMode: ReadWriteOnce
+  storageClass: ""
+  existingClaim: ""
+
 resources:
   requests:
     cpu: 50m
@@ -35,6 +43,7 @@ objectStorage:
   endpoint: ""
   bucket: rehearsal-evidence
 
+# When enabled, REHEARSAL_DATABASE_URL is set and --db sqlite is omitted.
 postgresql:
   enabled: false
   host: ""

@@ -1,4 +1,4 @@
-# Control plane API (v1.2)
+# Control plane API (v1.2.1)
 
 Base URL: `http://localhost:8080`
 
@@ -9,21 +9,22 @@ Auth (v1.0.1+): `Authorization: Bearer <token>`.
 - Local only: `rehearsal serve --insecure-dev` enables `local-dev`.
 - **Hardcoded `ci` / `viewer-token` removed.**
 - Client `X-Org` does **not** change principal org; tenant is bound to the token.
-- Object reads use labels of the stored object (cross-tenant → 404).
+- Object identity is **`(org, id)`** — cross-tenant reads → 404; cross-tenant overwrite impossible.
+- Duplicate create in same org → **409 Conflict**.
 
-## Serve flags (v1.2)
+## Serve flags (v1.2.1)
 
 | Flag | Default | Meaning |
 | ---- | ------- | ------- |
-| `--db` | `<workdir>/rehearsal.db` or `data/rehearsal.db` | SQLite path or `postgres://` URL |
-| `--blob` | `<workdir>/blobs` or `data/blobs` | Content-addressed blob root |
+| `--workdir` | **required** | Sandbox root (serve refuses without it) |
+| `--db` | `<workdir>/rehearsal.db` | SQLite path or `postgres://` URL |
+| `--blob` | `<workdir>/blobs` | Content-addressed blob root |
 | `--memory` | off | Non-durable in-process store (tests/dev) |
 | `--async` | off | Enqueue advances as durable jobs; start workers |
 | `--workers` | 1 | Worker count when `--async` |
-| `--workdir` | empty | Sandbox root for file refs |
 | `--insecure-dev` | off | Allow `local-dev` token only |
 
-Env: `REHEARSAL_DATABASE_URL`, `REHEARSAL_BLOB_ROOT`.
+Env: `REHEARSAL_DATABASE_URL` (**wins over `--db`**), `REHEARSAL_BLOB_ROOT`.
 
 ## Endpoints
 
@@ -31,7 +32,7 @@ Env: `REHEARSAL_DATABASE_URL`, `REHEARSAL_BLOB_ROOT`.
 | ------ | ---- | ------ |
 | GET | /healthz | Liveness |
 | GET | /readyz | Readiness (`async` flag) |
-| GET | /v1/version | Version (`1.2.0`) |
+| GET | /v1/version | Version (`1.2.1`) |
 | GET | /v1/metrics | Prometheus text (requests, jobs, uptime) |
 | GET | /v1/schemas | Contract catalog |
 | POST | /v1/runs | Create run (idempotencyKey supported) |

@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"time"
+
 	"github.com/justrunme/architecture-rehearsal/internal/calibrate"
 	"github.com/justrunme/architecture-rehearsal/internal/persist"
 	"github.com/justrunme/architecture-rehearsal/internal/run"
@@ -11,12 +15,26 @@ type SQLBackend struct {
 	S *persist.Store
 }
 
-func (b *SQLBackend) PutRun(r *run.RehearsalRun) error { return b.S.PutRun(r) }
-func (b *SQLBackend) GetRun(id string) (*run.RehearsalRun, error) {
-	return b.S.GetRun(id)
+func mapErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, persist.ErrConflict) {
+		return ErrConflict
+	}
+	if errors.Is(err, persist.ErrNotFound) {
+		return ErrNotFound
+	}
+	return err
 }
-func (b *SQLBackend) GetRunByIdempotency(key string) (*run.RehearsalRun, error) {
-	return b.S.GetRunByIdempotency(key)
+
+func (b *SQLBackend) CreateRun(r *run.RehearsalRun) error { return mapErr(b.S.CreateRun(r)) }
+func (b *SQLBackend) UpdateRun(r *run.RehearsalRun) error { return mapErr(b.S.UpdateRun(r)) }
+func (b *SQLBackend) GetRun(org, id string) (*run.RehearsalRun, error) {
+	return b.S.GetRun(org, id)
+}
+func (b *SQLBackend) GetRunByIdempotency(org, key string) (*run.RehearsalRun, error) {
+	return b.S.GetRunByIdempotency(org, key)
 }
 func (b *SQLBackend) ListRuns(org string) ([]*run.RehearsalRun, error) { return b.S.ListRuns(org) }
 
@@ -47,14 +65,24 @@ func (b *SQLBackend) ListPolicies(org string) ([]map[string]any, error) {
 func (b *SQLBackend) GetOrgPolicy(org string) (map[string]any, error) {
 	return b.S.GetOrgPolicy(org)
 }
-func (b *SQLBackend) RecordCalibration(o calibrate.Outcome) error {
-	return b.S.RecordCalibration(o)
+func (b *SQLBackend) RecordCalibration(org string, o calibrate.Outcome) error {
+	return b.S.RecordCalibration(org, o)
 }
-func (b *SQLBackend) CalibrationReport() calibrate.Report { return b.S.CalibrationReport() }
-func (b *SQLBackend) Audit(actor, action, target, detail string) {
-	_ = b.S.Audit(actor, action, target, detail)
+func (b *SQLBackend) CalibrationReport(org string) calibrate.Report {
+	return b.S.CalibrationReport(org)
 }
-func (b *SQLBackend) Enqueue(kind, runID, org, payload string) (string, error) {
-	return b.S.Enqueue(kind, runID, org, payload)
+func (b *SQLBackend) Audit(actor, action, target, detail, org string) {
+	_ = b.S.Audit(actor, action, target, detail, org)
+}
+func (b *SQLBackend) Enqueue(kind, runID, org, payload, operationID string) (string, error) {
+	return b.S.Enqueue(kind, runID, org, payload, operationID)
+}
+func (b *SQLBackend) CancelJobsForRun(org, runID string) (int, error) {
+	return b.S.CancelJobsForRun(org, runID)
 }
 func (b *SQLBackend) JobStats() (pending, leased, done, failed int) { return b.S.JobStats() }
+func (b *SQLBackend) Ready() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return b.S.Ping(ctx)
+}
