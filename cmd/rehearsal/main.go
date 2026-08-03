@@ -16,7 +16,9 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/evidence"
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/rbac"
 	"github.com/justrunme/architecture-rehearsal/internal/report"
+	"github.com/justrunme/architecture-rehearsal/internal/store"
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 	"github.com/justrunme/architecture-rehearsal/internal/verify"
 )
@@ -36,6 +38,14 @@ func main() {
 		code = cmdSnapshot(os.Args[2:])
 	case "change":
 		code = cmdChange(os.Args[2:])
+	case "merge":
+		code = cmdMerge(os.Args[2:])
+	case "store":
+		code = cmdStore(os.Args[2:])
+	case "audit":
+		code = cmdAudit(os.Args[2:])
+	case "sign":
+		code = cmdSign(os.Args[2:])
 	case "version":
 		fmt.Println("rehearsal", analyze.Version)
 	case "help", "-h", "--help":
@@ -52,11 +62,14 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `Architecture Rehearsal — know what breaks before you deploy
 
 Usage:
-  rehearsal analyze  --baseline FILE --change FILE [flags]
-  rehearsal verify   --report FILE --observed FILE
-  rehearsal snapshot k8s --dir MANIFESTS [--cluster NAME] [--phase baseline|observed] [--meta FILE] --out FILE
-  rehearsal change   manifests --baseline FILE --dir RENDERED [--namespace NS] [--allow-remove] --out FILE
-  rehearsal change   terraform --plan FILE --out FILE
+  rehearsal analyze  --baseline FILE --change FILE [--store DIR] [flags]
+  rehearsal verify   --report FILE --observed FILE [--baseline FILE] [--change FILE]
+  rehearsal snapshot k8s --dir MANIFESTS| --live [--kubeconfig PATH] [flags] --out FILE
+  rehearsal change   manifests|terraform ...
+  rehearsal merge    --name NAME --out FILE SNAP1.json [SNAP2.json ...]
+  rehearsal store    list|save --root DIR ...
+  rehearsal audit    --root DIR [--limit N]
+  rehearsal sign     --report FILE --out FILE   # needs REHEARSAL_HMAC_SECRET
   rehearsal version
 
 Exit codes:
@@ -68,6 +81,7 @@ Exit codes:
   5  internal error
 
 Graph and rules decide. Missing data never becomes false approve.
+YAML is fail-closed by default; pass --allow-partial only deliberately.
 `)
 }
 
@@ -78,6 +92,8 @@ func cmdAnalyze(args []string) int {
 	outDir := fs.String("out", "out", "evidence output directory")
 	htmlPath := fs.String("html", "", "optional extra HTML path")
 	quiet := fs.Bool("quiet", false, "compact summary only")
+	storeRoot := fs.String("store", "", "optional run store directory (persists run + audit)")
+	signOut := fs.String("sign-out", "", "optional path to write HMAC-signed evidence (needs REHEARSAL_HMAC_SECRET)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -116,6 +132,36 @@ func cmdAnalyze(args []string) int {
 			return 5
 		}
 	}
+	if *storeRoot != "" {
+		st, err := store.NewFS(*storeRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "store: %v\n", err)
+			return 5
+		}
+		path, err := st.SaveFromReport(rep, dir, rbac.ActorFromEnv())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "store save: %v\n", err)
+			return 5
+		}
+		fmt.Fprintf(os.Stderr, "run stored: %s\n", path)
+	}
+	if *signOut != "" {
+		sec := evidence.SecretFromEnv()
+		if len(sec) == 0 {
+			fmt.Fprintln(os.Stderr, "sign: REHEARSAL_HMAC_SECRET not set")
+			return 2
+		}
+		env, err := evidence.SignReportHMAC(rep, sec, "env")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sign: %v\n", err)
+			return 5
+		}
+		raw, _ := json.MarshalIndent(env, "", "  ")
+		if err := os.WriteFile(*signOut, raw, 0o644); err != nil {
+			return 5
+		}
+		fmt.Fprintf(os.Stderr, "signed evidence: %s\n", *signOut)
+	}
 	if *quiet {
 		fmt.Printf("risk=%s decision=%s findings=%d rollback=%s digest=%s evidence=%s\n",
 			rep.Risk, rep.Decision, len(rep.Findings), rep.Rollback, rep.SemanticDigest, dir)
@@ -141,6 +187,8 @@ func cmdVerify(args []string) int {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	reportPath := fs.String("report", "", "prior analyze report.json")
 	observed := fs.String("observed", "", "post-deploy snapshot JSON")
+	baselinePath := fs.String("baseline", "", "optional baseline for independent delta checks")
+	changePath := fs.String("change", "", "optional change envelope for deployed identity")
 	out := fs.String("out", "", "write verification JSON")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -165,7 +213,24 @@ func cmdVerify(args []string) int {
 		fmt.Fprintf(os.Stderr, "observed: %v\n", err)
 		return 2
 	}
-	res := verify.Run(&pred, obs)
+	opts := verify.Options{}
+	if *baselinePath != "" {
+		b, err := loader.LoadSnapshot(*baselinePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "baseline: %v\n", err)
+			return 2
+		}
+		opts.Baseline = b
+	}
+	if *changePath != "" {
+		ch, err := loader.LoadChange(*changePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "change: %v\n", err)
+			return 2
+		}
+		opts.Change = ch
+	}
+	res := verify.RunWithOptions(&pred, obs, opts)
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(res)
@@ -187,35 +252,57 @@ func cmdVerify(args []string) int {
 
 func cmdSnapshot(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: rehearsal snapshot k8s --dir DIR --out FILE")
+		fmt.Fprintln(os.Stderr, "usage: rehearsal snapshot k8s --dir DIR|--live --out FILE")
 		return 2
 	}
 	switch args[0] {
 	case "k8s":
 		fs := flag.NewFlagSet("snapshot-k8s", flag.ContinueOnError)
 		dir := fs.String("dir", "", "directory of Kubernetes YAML manifests")
+		live := fs.Bool("live", false, "read-only live collect via kubectl (requires kubectl + kubeconfig)")
+		kubeconfig := fs.String("kubeconfig", "", "kubeconfig path for --live")
+		contextName := fs.String("context", "", "kube context for --live")
 		cluster := fs.String("cluster", "acme-prod", "cluster name label")
 		out := fs.String("out", "baseline.json", "output snapshot path")
 		phase := fs.String("phase", "baseline", "snapshot phase: baseline|observed|deployed")
 		metaPath := fs.String("meta", "", "optional JSON file merged into snapshot meta (e.g. observed_failures)")
+		allowPartial := fs.Bool("allow-partial", false, "opt-in: skip malformed YAML (default fail-closed)")
 		fs.SetOutput(os.Stderr)
 		if err := fs.Parse(args[1:]); err != nil {
 			return 2
 		}
-		if *dir == "" {
-			fmt.Fprintln(os.Stderr, "--dir required")
+		if !*live && *dir == "" {
+			fmt.Fprintln(os.Stderr, "--dir required (or pass --live)")
 			return 2
 		}
-		opts := collect.K8sOptions{ClusterName: *cluster, Phase: graph.Phase(*phase)}
+		var extra map[string]any
 		if *metaPath != "" {
-			extra, err := collect.LoadMetaFile(*metaPath)
+			var err error
+			extra, err = collect.LoadMetaFile(*metaPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "meta: %v\n", err)
 				return 2
 			}
-			opts.ExtraMeta = extra
 		}
-		snap, err := collect.K8sFromManifests(nil, *dir, opts)
+		var snap *graph.Snapshot
+		var err error
+		if *live {
+			snap, err = collect.K8sFromLive(nil, collect.LiveOptions{
+				Kubeconfig:   *kubeconfig,
+				Context:      *contextName,
+				Cluster:      *cluster,
+				AllowPartial: *allowPartial,
+				Phase:        graph.Phase(*phase),
+				ExtraMeta:    extra,
+			})
+		} else {
+			snap, err = collect.K8sFromManifests(nil, *dir, collect.K8sOptions{
+				ClusterName:  *cluster,
+				Phase:        graph.Phase(*phase),
+				AllowPartial: *allowPartial,
+				ExtraMeta:    extra,
+			})
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "collect: %v\n", err)
 			return 5
@@ -227,12 +314,155 @@ func cmdSnapshot(args []string) int {
 		if err := os.WriteFile(*out, b, 0o644); err != nil {
 			return 5
 		}
-		fmt.Fprintf(os.Stderr, "wrote snapshot %s phase=%s (%d nodes)\n", *out, snap.Phase, len(snap.Nodes))
+		fmt.Fprintf(os.Stderr, "wrote snapshot %s phase=%s source=%s (%d nodes)\n", *out, snap.Phase, snap.Source, len(snap.Nodes))
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown snapshot source: %s\n", args[0])
 		return 2
 	}
+}
+
+func cmdMerge(args []string) int {
+	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
+	name := fs.String("name", "fleet", "merged multi-cluster name")
+	out := fs.String("out", "merged.json", "output snapshot")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	paths := fs.Args()
+	if len(paths) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: rehearsal merge --name fleet --out merged.json snap1.json [snap2.json ...]")
+		return 2
+	}
+	var snaps []*graph.Snapshot
+	for _, p := range paths {
+		s, err := loader.LoadSnapshot(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", p, err)
+			return 2
+		}
+		snaps = append(snaps, s)
+	}
+	merged := graph.MergeSnapshots(*name, snaps...)
+	raw, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return 5
+	}
+	if err := os.WriteFile(*out, raw, 0o644); err != nil {
+		return 5
+	}
+	fmt.Fprintf(os.Stderr, "wrote multi-cluster snapshot %s (%d nodes from %d clusters)\n", *out, len(merged.Nodes), len(paths))
+	return 0
+}
+
+func cmdStore(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: rehearsal store list|save --root DIR")
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("store-list", flag.ContinueOnError)
+		root := fs.String("root", "out/runs", "store root")
+		_ = fs.Parse(args[1:])
+		st, err := store.NewFS(*root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 5
+		}
+		runs, err := st.ListRuns()
+		if err != nil {
+			return 5
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(runs)
+		return 0
+	case "save":
+		fs := flag.NewFlagSet("store-save", flag.ContinueOnError)
+		root := fs.String("root", "out/runs", "store root")
+		reportPath := fs.String("report", "", "analyze report.json")
+		evidenceDir := fs.String("evidence", "", "evidence directory")
+		_ = fs.Parse(args[1:])
+		if *reportPath == "" {
+			return 2
+		}
+		raw, err := os.ReadFile(*reportPath)
+		if err != nil {
+			return 2
+		}
+		var rep analyze.Report
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			return 2
+		}
+		st, err := store.NewFS(*root)
+		if err != nil {
+			return 5
+		}
+		path, err := st.SaveFromReport(&rep, *evidenceDir, rbac.ActorFromEnv())
+		if err != nil {
+			return 5
+		}
+		fmt.Println(path)
+		return 0
+	default:
+		return 2
+	}
+}
+
+func cmdAudit(args []string) int {
+	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
+	root := fs.String("root", "out/runs", "store root")
+	limit := fs.Int("limit", 50, "max events")
+	_ = fs.Parse(args)
+	st, err := store.NewFS(*root)
+	if err != nil {
+		return 5
+	}
+	evs, err := st.ReadAudit(*limit)
+	if err != nil {
+		return 5
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(evs)
+	return 0
+}
+
+func cmdSign(args []string) int {
+	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
+	reportPath := fs.String("report", "", "analyze report.json")
+	out := fs.String("out", "signed-evidence.json", "output envelope")
+	_ = fs.Parse(args)
+	if *reportPath == "" {
+		return 2
+	}
+	raw, err := os.ReadFile(*reportPath)
+	if err != nil {
+		return 2
+	}
+	var rep analyze.Report
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		return 2
+	}
+	sec := evidence.SecretFromEnv()
+	if len(sec) == 0 {
+		fmt.Fprintln(os.Stderr, "REHEARSAL_HMAC_SECRET required")
+		return 2
+	}
+	env, err := evidence.SignReportHMAC(&rep, sec, "env")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 5
+	}
+	b, _ := json.MarshalIndent(env, "", "  ")
+	if err := os.WriteFile(*out, b, 0o644); err != nil {
+		return 5
+	}
+	ok, _ := evidence.VerifyHMAC(env, sec)
+	fmt.Fprintf(os.Stderr, "wrote %s verified=%v\n", *out, ok)
+	return 0
 }
 
 func cmdChange(args []string) int {
@@ -251,6 +481,7 @@ func cmdChange(args []string) int {
 		ns := fs.String("namespace", "", "limit scope to namespace (repeat not supported; comma-separated)")
 		prefix := fs.String("name-prefix", "", "limit scope to workload name prefix")
 		allowRemove := fs.Bool("allow-remove", false, "allow removals within scope only (default false)")
+		allowPartial := fs.Bool("allow-partial", false, "opt-in: skip malformed YAML (default fail-closed)")
 		fs.SetOutput(os.Stderr)
 		_ = fs.Parse(args[1:])
 		if *base == "" || *dir == "" {
@@ -262,7 +493,11 @@ func cmdChange(args []string) int {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 2
 		}
-		scope := change.ManifestScope{NamePrefix: *prefix, AllowRemove: *allowRemove}
+		scope := change.ManifestScope{
+			NamePrefix:   *prefix,
+			AllowRemove:  *allowRemove,
+			AllowPartial: *allowPartial,
+		}
 		if *ns != "" {
 			for _, p := range strings.Split(*ns, ",") {
 				p = strings.TrimSpace(p)

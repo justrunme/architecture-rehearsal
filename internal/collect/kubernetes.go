@@ -21,7 +21,11 @@ import (
 // K8sOptions controls offline YAML collection.
 type K8sOptions struct {
 	ClusterName string
-	// StrictYAML if true, YAML parse errors fail the collect.
+	// AllowPartial opts into skipping malformed YAML documents (default false = fail-closed).
+	// When false, any YAML parse error fails the collect.
+	AllowPartial bool
+	// StrictYAML is deprecated: when true forces fail-closed. Prefer AllowPartial=false.
+	// If StrictYAML is true, AllowPartial is ignored.
 	StrictYAML bool
 	// Phase overrides snapshot phase (default baseline). Use observed for post-deploy dumps.
 	Phase graph.Phase
@@ -31,8 +35,19 @@ type K8sOptions struct {
 	SnapshotID string
 }
 
+// strictMode returns true when parse errors must fail the collect (default).
+func (o K8sOptions) strictMode() bool {
+	if o.StrictYAML {
+		return true
+	}
+	return !o.AllowPartial
+}
+
 // K8sFromManifests builds a snapshot from a directory tree of Kubernetes YAML
 // (including kubectl List dumps). Does not call a live API.
+//
+// Fail-closed by default: malformed YAML aborts the collect. Pass AllowPartial
+// only for deliberate partial ingestion (still recorded in warnings).
 //
 // Recommended dump:
 //
@@ -46,6 +61,7 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 	if phase == "" {
 		phase = graph.PhaseBaseline
 	}
+	strict := opts.strictMode()
 	start := time.Now().UTC()
 	id := "k8s-" + opts.ClusterName
 	if opts.SnapshotID != "" {
@@ -66,7 +82,7 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		Cluster: &graph.ClusterInfo{
 			Name:             opts.ClusterName,
 			CollectedFrom:    start,
-			CollectorVersion: "0.4.0",
+			CollectorVersion: "0.7.0",
 		},
 	}
 	snap.Nodes = append(snap.Nodes, graph.Node{
@@ -97,8 +113,8 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 			if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
 				msg := fmt.Sprintf("%s: %v", path, err)
 				parseErrors = append(parseErrors, msg)
-				if opts.StrictYAML {
-					return fmt.Errorf("yaml parse: %w", err)
+				if strict {
+					return fmt.Errorf("yaml parse (fail-closed): %w", err)
 				}
 				snap.Warnings = append(snap.Warnings, "skip parse: "+msg)
 				continue
@@ -115,8 +131,12 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 	if err != nil {
 		return nil, err
 	}
-	if opts.StrictYAML && len(parseErrors) > 0 {
-		return nil, fmt.Errorf("yaml errors: %s", strings.Join(parseErrors, "; "))
+	if strict && len(parseErrors) > 0 {
+		return nil, fmt.Errorf("yaml errors (fail-closed): %s", strings.Join(parseErrors, "; "))
+	}
+	if len(parseErrors) > 0 {
+		snap.Meta["yaml_parse_errors"] = len(parseErrors)
+		snap.Meta["coverage_gap"] = "yaml_parse_errors_present"
 	}
 
 	buildEdges(snap)
@@ -124,7 +144,8 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 	snap.Cluster.CollectedUntil = end
 	snap.Warnings = append(snap.Warnings, "Secret values are never collected (references only)")
 
-	// capacity hint from nodes
+	// Scheduling capacity estimate from node allocatable pods (not real CNI IP pool).
+	// Kept under both keys for compatibility; prefer pod_scheduling_capacity_estimate.
 	alloc := 0
 	for _, n := range snap.Nodes {
 		if n.Kind == graph.KindNode {
@@ -142,8 +163,10 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		if avail < 0 {
 			avail = 0
 		}
-		snap.Meta["pod_ip_capacity_available"] = avail
+		snap.Meta["pod_scheduling_capacity_estimate"] = avail
+		snap.Meta["pod_ip_capacity_available"] = avail // compat alias until v0.6 CNI provider
 		snap.Meta["node_allocatable_pods_total"] = alloc
+		snap.Meta["capacity_model"] = "node_allocatable_pods_minus_desired_replicas"
 	}
 
 	// Operator/CI annotations (observed_failures, incident notes, …) after derived capacity.
@@ -331,11 +354,35 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			ID: id, Kind: graph.KindWorkload, Name: name, Namespace: ns, Attributes: attrs,
 			Source: "kubernetes", SourceRef: kind + "/" + ns + "/" + name,
 		})
+	case "ReplicaSet":
+		// Record RS→Deployment mapping for ownerReferences resolution (not a graph Workload).
+		if owners := ownerRefs(meta); len(owners) > 0 {
+			if c := controllerOwner(owners); c != nil {
+				ck := fmt.Sprint(c["kind"])
+				cn := fmt.Sprint(c["name"])
+				if (ck == "Deployment" || ck == "StatefulSet" || ck == "DaemonSet") && cn != "" {
+					key := ns + "/" + name
+					m, _ := snap.Meta["replicaset_owners"].(map[string]any)
+					if m == nil {
+						m = map[string]any{}
+					}
+					m[key] = map[string]any{"kind": ck, "name": cn, "namespace": ns}
+					snap.Meta["replicaset_owners"] = m
+				}
+			}
+		}
 	case "Pod":
 		id := fmt.Sprintf("pod/%s/%s", ns, name)
 		attrs := map[string]any{}
 		if labels, ok := meta["labels"].(map[string]any); ok {
 			attrs["labels"] = labels
+		}
+		if owners := ownerRefs(meta); len(owners) > 0 {
+			attrs["ownerReferences"] = owners
+			if c := controllerOwner(owners); c != nil {
+				attrs["controllerKind"] = fmt.Sprint(c["kind"])
+				attrs["controllerName"] = fmt.Sprint(c["name"])
+			}
 		}
 		nodeName := ""
 		phase := ""
@@ -362,10 +409,54 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			Source: "kubernetes", SourceRef: "v1/Pod/" + ns + "/" + name,
 		})
 		if nodeName != "" {
-			// edge later in buildEdges if node exists
 			attrs["nodeName"] = nodeName
 		}
 		_ = phase
+	case "EndpointSlice":
+		// Annotate matching Service with ready endpoint count (actual routing).
+		svcName := ""
+		if labels, ok := meta["labels"].(map[string]any); ok {
+			if s, ok := labels["kubernetes.io/service-name"].(string); ok {
+				svcName = s
+			}
+		}
+		ready := 0
+		if endpoints, ok := obj["endpoints"].([]any); ok {
+			for _, ep := range endpoints {
+				em, _ := ep.(map[string]any)
+				if em == nil {
+					continue
+				}
+				if cond, ok := em["conditions"].(map[string]any); ok {
+					if r, ok := cond["ready"].(bool); ok && r {
+						ready++
+					}
+				} else {
+					ready++
+				}
+			}
+		}
+		if svcName != "" {
+			sid := fmt.Sprintf("svc/%s/%s", ns, svcName)
+			// Ensure service shell exists so attributes can attach.
+			addNode(snap, graph.Node{
+				ID: sid, Kind: graph.KindService, Name: svcName, Namespace: ns,
+				Attributes: map[string]any{},
+				Source:     "kubernetes", SourceRef: "v1/Service/" + ns + "/" + svcName,
+			})
+			for i := range snap.Nodes {
+				if snap.Nodes[i].ID == sid {
+					if snap.Nodes[i].Attributes == nil {
+						snap.Nodes[i].Attributes = map[string]any{}
+					}
+					// accumulate ready across slices
+					prev := snap.Nodes[i].AttrInt("readyEndpoints")
+					snap.Nodes[i].Attributes["readyEndpoints"] = prev + ready
+					snap.Nodes[i].Attributes["hasEndpointSlice"] = true
+					break
+				}
+			}
+		}
 	case "Service":
 		id := fmt.Sprintf("svc/%s/%s", ns, name)
 		attrs := map[string]any{}
@@ -412,25 +503,28 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			}
 			if nsel, ok := spec["nodeAffinity"].(map[string]any); ok {
 				attrs["nodeAffinity"] = true
-				_ = nsel
+				if z := zoneFromNodeAffinity(nsel); z != "" {
+					attrs["zone"] = z
+				}
 			}
-			// topology from CSI / AWS EBS
 			if csi, ok := spec["csi"].(map[string]any); ok {
 				if va, ok := csi["volumeAttributes"].(map[string]any); ok {
-					if z, ok := va["storage.kubernetes.io/csiProvisionerIdentity"]; ok {
-						_ = z
+					if z, ok := va["topology.kubernetes.io/zone"].(string); ok {
+						attrs["zone"] = z
 					}
 				}
 			}
 			if aws, ok := spec["awsElasticBlockStore"].(map[string]any); ok {
-				_ = aws
+				if z, ok := aws["zone"].(string); ok && attrs["zone"] == nil {
+					attrs["zone"] = z
+				}
 			}
 		}
 		if labels, ok := meta["labels"].(map[string]any); ok {
 			if z, ok := labels["topology.kubernetes.io/zone"].(string); ok {
 				attrs["zone"] = z
 			}
-			if z, ok := labels["failure-domain.beta.kubernetes.io/zone"].(string); ok {
+			if z, ok := labels["failure-domain.beta.kubernetes.io/zone"].(string); ok && attrs["zone"] == nil {
 				attrs["zone"] = z
 			}
 		}
@@ -443,12 +537,20 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 		attrs := map[string]any{}
 		if spec, ok := obj["spec"].(map[string]any); ok {
 			if v, ok := spec["minAvailable"]; ok {
-				attrs["minAvailable"] = asInt(v)
 				attrs["minAvailableRaw"] = fmt.Sprint(v)
+				if s, ok := v.(string); ok && strings.HasSuffix(s, "%") {
+					attrs["minAvailablePercent"] = asInt(strings.TrimSuffix(s, "%"))
+				} else {
+					attrs["minAvailable"] = asInt(v)
+				}
 			}
 			if v, ok := spec["maxUnavailable"]; ok {
-				attrs["maxUnavailable"] = asInt(v)
 				attrs["maxUnavailableRaw"] = fmt.Sprint(v)
+				if s, ok := v.(string); ok && strings.HasSuffix(s, "%") {
+					attrs["maxUnavailablePercent"] = asInt(strings.TrimSuffix(s, "%"))
+				} else {
+					attrs["maxUnavailable"] = asInt(v)
+				}
 			}
 			if sel, ok := spec["selector"].(map[string]any); ok {
 				if ml, ok := sel["matchLabels"].(map[string]any); ok {
@@ -619,12 +721,44 @@ func buildEdges(snap *graph.Snapshot) {
 		addEdge(hpa.ID, wid, graph.RelScales)
 	}
 
-	// Workload RUNS_ON via pods that share labels (simplified: pods named after workload)
+	// Workload ownership: prefer ownerReferences chain, fall back to name prefix.
+	rsOwners, _ := snap.Meta["replicaset_owners"].(map[string]any)
 	for _, pod := range snap.Nodes {
 		if pod.Kind != graph.KindPod {
 			continue
 		}
-		// owner: prefix match common generated names
+		linked := false
+		ck := pod.AttrString("controllerKind")
+		cn := pod.AttrString("controllerName")
+		if ck != "" && cn != "" {
+			var wid string
+			switch ck {
+			case "ReplicaSet":
+				if rsOwners != nil {
+					if raw, ok := rsOwners[pod.Namespace+"/"+cn].(map[string]any); ok {
+						wid = fmt.Sprintf("workload/%s/%s", pod.Namespace, fmt.Sprint(raw["name"]))
+					}
+				}
+				if wid == "" {
+					wid = resolveRSToWorkload(snap, pod.Namespace, cn)
+				}
+			case "StatefulSet", "DaemonSet", "Deployment", "Job", "ControllerRevision":
+				wid = fmt.Sprintf("workload/%s/%s", pod.Namespace, cn)
+			}
+			if wid != "" {
+				if _, ok := idx[wid]; ok {
+					addEdge(wid, pod.ID, graph.RelOwns)
+					if nn := pod.AttrString("nodeName"); nn != "" {
+						addEdge(wid, "node/"+nn, graph.RelRunsOn)
+					}
+					linked = true
+				}
+			}
+		}
+		if linked {
+			continue
+		}
+		// Fallback: prefix match (legacy dumps without ownerReferences)
 		for _, w := range snap.Nodes {
 			if w.Kind != graph.KindWorkload || w.Namespace != pod.Namespace {
 				continue
@@ -637,6 +771,98 @@ func buildEdges(snap *graph.Snapshot) {
 			}
 		}
 	}
+
+}
+
+func ownerRefs(meta map[string]any) []any {
+	raw, ok := meta["ownerReferences"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []any
+	for _, o := range raw {
+		m, ok := o.(map[string]any)
+		if !ok {
+			continue
+		}
+		// strip uid-heavy noise; keep kind/name/controller
+		entry := map[string]any{
+			"kind": m["kind"],
+			"name": m["name"],
+		}
+		if c, ok := m["controller"].(bool); ok {
+			entry["controller"] = c
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func controllerOwner(owners []any) map[string]any {
+	var fallback map[string]any
+	for _, o := range owners {
+		m, ok := o.(map[string]any)
+		if !ok {
+			continue
+		}
+		fallback = m
+		if c, ok := m["controller"].(bool); ok && c {
+			return m
+		}
+	}
+	return fallback
+}
+
+func resolveRSToWorkload(snap *graph.Snapshot, ns, rsName string) string {
+	// ReplicaSet name: <deployment>-<pod-template-hash>
+	// Find workload whose name is a prefix of rsName
+	best := ""
+	for _, w := range snap.Nodes {
+		if w.Kind != graph.KindWorkload || w.Namespace != ns {
+			continue
+		}
+		if strings.HasPrefix(rsName, w.Name+"-") && len(w.Name) > len(best) {
+			best = w.Name
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	return fmt.Sprintf("workload/%s/%s", ns, best)
+}
+
+func zoneFromNodeAffinity(nsel map[string]any) string {
+	// spec.nodeAffinity.required.nodeSelectorTerms[].matchExpressions
+	req, _ := nsel["required"].(map[string]any)
+	if req == nil {
+		req, _ = nsel["requiredDuringSchedulingIgnoredDuringExecution"].(map[string]any)
+	}
+	if req == nil {
+		return ""
+	}
+	terms, _ := req["nodeSelectorTerms"].([]any)
+	for _, t := range terms {
+		tm, _ := t.(map[string]any)
+		if tm == nil {
+			continue
+		}
+		exprs, _ := tm["matchExpressions"].([]any)
+		for _, e := range exprs {
+			em, _ := e.(map[string]any)
+			if em == nil {
+				continue
+			}
+			key, _ := em["key"].(string)
+			if key != "topology.kubernetes.io/zone" && key != "failure-domain.beta.kubernetes.io/zone" {
+				continue
+			}
+			vals, _ := em["values"].([]any)
+			if len(vals) > 0 {
+				return fmt.Sprint(vals[0])
+			}
+		}
+	}
+	return ""
 }
 
 func addNode(snap *graph.Snapshot, n graph.Node) {

@@ -22,9 +22,13 @@ type ManifestScope struct {
 	LabelKey    string   // require baseline attr managed-by label key
 	LabelValue  string
 	AllowRemove bool // explicit opt-in to removals within scope
+	// AllowPartial opts into continuing after YAML parse errors (default false = fail-closed).
+	// When false, any malformed document fails the compile.
+	AllowPartial bool
 }
 
 // FromManifestsDiff builds a change by comparing scoped baseline workloads to rendered YAML.
+// Fail-closed: malformed YAML returns an error unless scope.AllowPartial is set.
 func FromManifestsDiff(base *graph.Snapshot, manifestDir, changeID, title string, scope ManifestScope) (*loader.ChangeEnvelope, error) {
 	baseWL := map[string]graph.Node{}
 	for _, n := range base.Nodes {
@@ -45,13 +49,14 @@ func FromManifestsDiff(base *graph.Snapshot, manifestDir, changeID, title string
 		Facts: map[string]any{
 			"scope.namespaces":  scope.Namespaces,
 			"scope.allowRemove": scope.AllowRemove,
-			// Manifest/helm scale path is evaluated by CNI capacity scenario.
+			// Manifest/helm scale path is evaluated by capacity scenario.
 			"scenario": "cni-ip-capacity",
 		},
 	}
 
 	seen := map[string]bool{}
 	parseErrors := 0
+	var parseMsgs []string
 	err := filepath.WalkDir(manifestDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -73,8 +78,15 @@ func FromManifestsDiff(base *graph.Snapshot, manifestDir, changeID, title string
 				continue
 			}
 			var obj map[string]any
-			if err := yaml.Unmarshal([]byte(doc), &obj); err != nil || obj == nil {
+			if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
 				parseErrors++
+				parseMsgs = append(parseMsgs, fmt.Sprintf("%s: %v", path, err))
+				if !scope.AllowPartial {
+					return fmt.Errorf("yaml parse (fail-closed): %s: %w", path, err)
+				}
+				continue
+			}
+			if obj == nil {
 				continue
 			}
 			// expand List
@@ -97,6 +109,9 @@ func FromManifestsDiff(base *graph.Snapshot, manifestDir, changeID, title string
 	if parseErrors > 0 {
 		ch.Facts["yaml_parse_errors"] = parseErrors
 		ch.Facts["coverage_gap"] = "yaml_parse_errors_present"
+		if len(parseMsgs) > 0 {
+			ch.Facts["yaml_parse_error_samples"] = parseMsgs
+		}
 	}
 
 	// Removals only when explicitly allowed AND scope non-empty.

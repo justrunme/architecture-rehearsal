@@ -15,8 +15,8 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v0.4.0** — strong deterministic prototype with a full offline E2E path (dump → graph → scoped change → gate → verify).  
-**Not** production-grade multi-cluster platform. **Not** a published GHCR product yet (Dockerfile is reference until CI publishes images).
+**Status: v0.7.0** — deterministic engineering prototype with fail-closed offline gate, independent verify, live kubectl collect, and local platform primitives (run store / signed evidence / multi-cluster merge).  
+**Not** a multi-tenant SaaS. **Not** a published GHCR multi-arch product yet.
 
 ---
 
@@ -29,15 +29,23 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 | Golden scenarios (fixtures with hand-built edges) | **Supported** |
 | Scenario prerequisites → `unknown` | **Supported** |
 | Offline K8s YAML collector (List, recursive, edges) | **Supported** |
+| Fail-closed YAML (strict default, `--allow-partial`) | **Supported** (v0.4.1+) |
 | Manifest change compiler with **namespace scope** | **Supported** (removals off by default) |
-| **E2E path**: List dump → graph → scoped change → analyze → verify | **Supported** (v0.4) |
+| E2E path: List dump → graph → scoped change → analyze → verify | **Supported** |
+| Independent verify (Pending pods, change identity, delta) | **Supported** (v0.5+) |
+| Live read-only collect (`kubectl`) | **Supported** (v0.6; requires kubectl) |
+| ownerReferences ownership chain | **Supported** (v0.6) |
+| Capacity: scheduling estimate vs explicit CNI meta | **Supported** (estimate default; real CNI needs `cni_ip_available`) |
+| Run store + audit trail (filesystem) | **Supported** (v0.7 local) |
+| HMAC-signed evidence | **Supported** (v0.7; not Sigstore) |
+| Multi-cluster merge CLI | **Supported** (v0.7) |
+| Config RBAC model | **Supported** (v0.7 local policy) |
 | Terraform plan → change | **Reference / experimental** |
-| `rehearsal verify` | **Supported** with `meta.observed_failures` / Pending markers |
 | Distroless Dockerfile | **Reference** (not published by CI yet) |
 | GH/GL integration examples | **Reference** |
-| Multi-cluster merge | **Experimental** (`internal` only; no CLI) |
-| Live kubeconfig collector | **Not supported** |
-| Web UI / LLM / auto-deploy / operator | **Not supported** |
+| Live client-go watch / operator | **Not supported** |
+| Web UI / LLM / auto-deploy | **Not supported** |
+| Network authn / multi-tenant control plane | **Not supported** |
 
 ---
 
@@ -52,45 +60,39 @@ make e2e     # full dump → graph → scoped change → verify path
 
 ```bash
 make build
-./bin/rehearsal analyze \
-  --baseline examples/golden/rwo-node-loss/baseline.json \
-  --change examples/golden/rwo-node-loss/change.json \
-  --html out/rwo-report.html
+./bin/rehearsal version   # 0.7.0
 ```
 
-### Real YAML → graph → scoped change → verify (v0.4)
+### Offline iron path
 
 ```bash
-# 1) dump from a cluster (or use examples/e2e-pipeline/cluster-dump)
-kubectl get node,ns,deploy,sts,ds,po,svc,pvc,pv,pdb,hpa,sa,ing -A -o yaml > /tmp/dump.yaml
-mkdir -p /tmp/k8s && cp /tmp/dump.yaml /tmp/k8s/
-
-./bin/rehearsal snapshot k8s --dir /tmp/k8s --cluster acme-prod --out baseline.json
-
-# 2) scoped change from helm-rendered manifests (never mass-deletes out-of-scope)
+./bin/rehearsal snapshot k8s --dir examples/e2e-pipeline/cluster-dump --out baseline.json
 ./bin/rehearsal change manifests \
   --baseline baseline.json \
-  --dir ./rendered-chart \
+  --dir examples/e2e-pipeline/rendered-chart \
   --namespace payments \
   --out change.json
-# add --allow-remove only when rendered dir is complete for that scope
-
-# 3) gate
-./bin/rehearsal analyze --baseline baseline.json --change change.json --out out --quiet
+./bin/rehearsal analyze --baseline baseline.json --change change.json --out out --store out/runs --quiet
 # exit 3 = block
 
-# 4) post-deploy: dump again + optional operator meta for verify
 ./bin/rehearsal snapshot k8s \
-  --dir /tmp/observed \
-  --cluster acme-prod \
+  --dir examples/e2e-pipeline/observed-dump \
   --phase observed \
-  --meta observed-meta.json \
+  --meta examples/e2e-pipeline/observed-meta.json \
   --out observed.json
-
-./bin/rehearsal verify --report out/latest-report.json --observed observed.json
+./bin/rehearsal verify \
+  --report out/latest-report.json \
+  --observed observed.json \
+  --baseline baseline.json \
+  --change change.json
 ```
 
-Fixture walkthrough (no live cluster): `examples/e2e-pipeline/` + `make e2e`.
+### Live collect (read-only)
+
+```bash
+./bin/rehearsal snapshot k8s --live --cluster acme-prod --out baseline.json
+# optional: --kubeconfig ~/.kube/config --context prod
+```
 
 ### Exit codes
 
@@ -110,9 +112,9 @@ Fixture walkthrough (no live cluster): `examples/e2e-pipeline/` + `make e2e`.
 Each scenario declares prerequisites. Missing data → **unknown**, not silent approve.
 
 1. **RWO + node loss** — needs PVC + volume edges  
-2. **CNI capacity** — replica delta + surge from baseline/proposed; needs capacity meta or node allocatablePods  
+2. **CNI / scheduling capacity** — replica delta + surge; uses scheduling estimate unless `meta.cni_ip_available` is injected  
 3. **Prometheus zero-match** — metric-specific `meta.metric_labels`  
-4. **PDB disruption** — needs PROTECTED_BY edges  
+4. **PDB disruption** — needs PROTECTED_BY edges; supports percentage minAvailable  
 5. **Service routing** — needs ROUTES_TO edges  
 6. **Volume AZ** — needs PVC zone + remaining nodes  
 
@@ -120,10 +122,10 @@ Each scenario declares prerequisites. Missing data → **unknown**, not silent a
 
 ## What this is (and is not)
 
-**Is:** offline change-gate core you can run in CI with fixtures or rendered YAML, including a full dump→verify path.  
-**Is not yet:** signed immutable evidence store, published multi-arch image, live multi-cluster control plane.
+**Is:** offline (+ optional live kubectl) change-gate core you can run in CI, with independent verify and local run persistence.  
+**Is not yet:** signed immutable multi-party evidence store (Sigstore), published multi-arch image, multi-tenant control plane.
 
-Version discipline: inflated `v1`/`v2` tags were retracted; current line is **0.4.x**.
+Version line: **0.7.x** after honest 0.1–0.4 rebuild (inflated v1/v2 tags were retracted).
 
 ---
 
