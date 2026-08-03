@@ -48,6 +48,20 @@ func main() {
 		code = cmdSign(os.Args[2:])
 	case "verify-sign":
 		code = cmdVerifySign(os.Args[2:])
+	case "serve":
+		code = cmdServe(os.Args[2:])
+	case "run":
+		code = cmdRun(os.Args[2:])
+	case "evidence":
+		code = cmdEvidence(os.Args[2:])
+	case "policy":
+		code = cmdPolicy(os.Args[2:])
+	case "calibrate":
+		code = cmdCalibrate(os.Args[2:])
+	case "schemas":
+		code = cmdSchemas(os.Args[2:])
+	case "operator":
+		code = cmdOperator(os.Args[2:])
 	case "version":
 		fmt.Println("rehearsal", analyze.Version)
 	case "help", "-h", "--help":
@@ -61,36 +75,35 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Architecture Rehearsal — know what breaks before you deploy
+	fmt.Fprintf(os.Stderr, `Architecture Rehearsal — deterministic pre-deploy simulation + post-deploy verification control plane
+
+Pipeline:
+  Collect → Model → Propose → Rehearse → Gate → Observe → Verify → Calibrate
 
 Usage:
   rehearsal analyze  --baseline FILE --change FILE [--store DIR] [flags]
   rehearsal verify   --report FILE --observed FILE --baseline FILE --change FILE
-  rehearsal snapshot k8s --dir MANIFESTS| --live [--kubeconfig PATH] [flags] --out FILE
+  rehearsal snapshot k8s --dir MANIFESTS| --live [flags] --out FILE
   rehearsal change   manifests|terraform ...
-  rehearsal merge    --name NAME --out FILE SNAP1.json [SNAP2.json ...]
-  rehearsal store    list|save --root DIR ...
-  rehearsal audit    --root DIR [--limit N]
-  rehearsal sign     --report FILE --out FILE   # needs REHEARSAL_HMAC_SECRET
-  rehearsal verify-sign --envelope FILE         # needs REHEARSAL_HMAC_SECRET
+  rehearsal run execute --baseline F --change F [--observed F] --out F
+  rehearsal evidence chain|verify-chain|sign-dsse ...
+  rehearsal policy   [--file policy.yaml] --risk high --decision block
+  rehearsal calibrate [--demo]
+  rehearsal schemas
+  rehearsal serve    [--addr :8080]
+  rehearsal operator [--watch DIR] [--once]
+  rehearsal merge|store|audit|sign|verify-sign ...
   rehearsal version
 
-Exit codes:
-  0  approve / verified
-  1  warn / diverged
-  2  usage or validation error
-  3  block
-  4  unknown (insufficient evidence) / verify inconclusive
-  5  internal error
+Exit codes: 0 approve/verified · 1 warn/diverged · 2 usage · 3 block · 4 unknown/inconclusive · 5 internal
 
 Graph and rules decide. Missing data never becomes false approve.
-YAML is fail-closed by default; pass --allow-partial only deliberately.
-verify without --baseline/--change is legacy mode (max INCONCLUSIVE).
+verify without --baseline/--change is legacy (max INCONCLUSIVE).
 `)
 }
 
-// policy loads optional REHEARSAL_POLICY YAML (local policy model — not network authn).
-func policy() *rbac.Policy {
+// loadAccessPolicy loads optional REHEARSAL_POLICY YAML (local access policy model).
+func loadAccessPolicy() *rbac.Policy {
 	path := os.Getenv("REHEARSAL_POLICY")
 	p, err := rbac.LoadPolicy(path)
 	if err != nil {
@@ -101,7 +114,7 @@ func policy() *rbac.Policy {
 }
 
 func requireAction(action rbac.Action) int {
-	if err := policy().Require(rbac.ActorFromEnv(), action); err != nil {
+	if err := loadAccessPolicy().Require(rbac.ActorFromEnv(), action); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 2
 	}

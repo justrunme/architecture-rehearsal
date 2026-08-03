@@ -1,0 +1,42 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/justrunme/architecture-rehearsal
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+api:
+  enabled: true
+  token: "" # set via secret; default local-dev is insecure
+  oidcIssuer: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Object storage (optional S3-compatible) — evidence blobs
+objectStorage:
+  enabled: false
+  endpoint: ""
+  bucket: rehearsal-evidence
+
+# PostgreSQL for multi-replica production (API uses memory store by default)
+postgresql:
+  enabled: false
+  host: ""
+  database: rehearsal
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rehearsal.io/schemas/v1beta1/VerificationResult.json",
+  "title": "VerificationResult",
+  "type": "object",
+  "required": ["changeId", "outcome"],
+  "properties": {
+    "outcome": { "type": "string", "enum": ["verified", "diverged", "inconclusive"] },
+    "mode": { "type": "string", "enum": ["production", "legacy"] },
+    "checks": { "type": "array" },
+    "deployedChangeDigest": { "type": "string" },
+    "score": { "type": "number" }
+  }
+}

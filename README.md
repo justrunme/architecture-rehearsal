@@ -1,22 +1,29 @@
 # Architecture Rehearsal
 
-**Know what breaks before you deploy.**
+**Know what breaks before you deploy — and prove whether you were right.**
 
-Self-hosted **change impact analysis** for Kubernetes / IaC pipelines:
+Self-hosted **deterministic pre-deployment failure simulation** and **post-deployment verification control plane**:
 
 ```text
-YAML / plan → architecture graph → deterministic scenarios → approve|warn|block|unknown → evidence → verify
+Collect → Model → Propose → Rehearse → Gate → Observe → Verify → Calibrate
 ```
 
-> **Graph and rules decide. AI only explains** (optional — not implemented in risk path).  
-> **Missing data never becomes a false approve.**
+> **Graph and rules decide. AI only explains** (optional — not in risk path).  
+> **Missing data never becomes a false approve.**  
+> **Every production gate decision links to a content-addressed evidence chain.**
 
 [![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v0.7.2** — deterministic engineering prototype with fail-closed offline gate, **causal** independent verify, live kubectl collect, and local platform primitives (run store / signed evidence / multi-cluster merge).  
-**Not** a multi-tenant SaaS. **Not** a published GHCR multi-arch product yet.
+**Status: v1.0.0** — stable production **contract** for offline + self-hosted control plane.  
+Still not a multi-tenant SaaS; still not a published multi-arch GHCR product until your registry publish pipeline runs.
+
+---
+
+## Product positioning
+
+> Architecture Rehearsal is a deterministic pre-deployment failure simulation and post-deployment verification control plane. It builds a causal architecture graph, predicts change impact, blocks unsafe deployments, verifies observed outcomes, and continuously measures the accuracy of its own scenarios.
 
 ---
 
@@ -24,28 +31,23 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 
 | Area | Status |
 | ---- | ------ |
-| Snapshot graph + validation | **Supported** |
-| Deep-copy ApplyChange (baseline immutable) | **Supported** |
-| Golden scenarios (fixtures with hand-built edges) | **Supported** |
-| Scenario prerequisites → `unknown` | **Supported** |
-| Offline K8s YAML collector (List, recursive, edges) | **Supported** |
-| Fail-closed YAML (strict default, `--allow-partial`) | **Supported** (v0.4.1+) |
-| Manifest change compiler with **namespace scope** | **Supported** (removals off by default) |
-| E2E path: List dump → graph → scoped change → analyze → verify | **Supported** |
-| Independent verify (causal evidence, change identity, delta) | **Supported** (v0.7.2 integrity) |
-| Live read-only collect (`kubectl`) | **Supported** (v0.6; requires kubectl) |
-| ownerReferences ownership chain | **Supported** (v0.6) |
-| Capacity: scheduling estimate vs explicit CNI meta | **Supported** (estimate default; real CNI needs `cni_ip_available`) |
-| Run store + audit trail (filesystem) | **Supported** (v0.7 local prototype) |
-| HMAC-signed evidence | **Supported** (v0.7; not Sigstore/non-repudiation) |
-| Multi-cluster merge CLI | **Supported** (v0.7) |
-| Local policy model (`REHEARSAL_POLICY`) | **Supported** (v0.7.2 CLI-enforced; not network IAM) |
-| Terraform plan → change | **Reference / experimental** |
-| Distroless Dockerfile | **Reference** (not published by CI yet) |
-| GH/GL integration examples | **Reference** |
-| Live client-go watch / operator | **Not supported** |
-| Web UI / LLM / auto-deploy | **Not supported** |
-| Network authn / multi-tenant control plane | **Not supported** |
+| Offline K8s graph collect + edges | **Supported** |
+| Fail-closed YAML | **Supported** |
+| Causal verify (no global Pending free-pass) | **Supported** (v0.7.2+) |
+| Evidence digests + chain | **Supported** (v0.8+) |
+| DSSE-style sign (HMAC / Ed25519) | **Supported** (not full Sigstore) |
+| RehearsalRun lifecycle + operator loop | **Supported** (offline JSON CRDs) |
+| GitOps policy gate | **Supported** (policy engine + GH reference) |
+| Control plane HTTP API | **Supported** (`rehearsal serve`) |
+| Hierarchical RBAC + bearer auth | **Supported** (local; OIDC stub) |
+| Calibration engine | **Supported** |
+| Scenario package registry / SDK surface | **Supported** |
+| Helm chart | **Supported** (`deploy/helm`) |
+| Live kubectl collect | **Supported** |
+| Live controller-runtime operator | **Reference** (JSON reconciler) |
+| PostgreSQL + S3 backends | **Interface / docs** (memory default) |
+| Multi-tenant SaaS | **Not supported** |
+| LLM in risk path | **Not supported** |
 
 ---
 
@@ -54,79 +56,72 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 ```bash
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
-make demo    # golden scenarios (expect block)
-make e2e     # full dump → graph → scoped change → verify path
-```
-
-```bash
-make build
-./bin/rehearsal version   # 0.7.2
+make demo && make e2e
+make build && ./bin/rehearsal version   # 1.0.0
 ```
 
 ### Offline iron path
 
 ```bash
 ./bin/rehearsal snapshot k8s --dir examples/e2e-pipeline/cluster-dump --out baseline.json
-./bin/rehearsal change manifests \
-  --baseline baseline.json \
-  --dir examples/e2e-pipeline/rendered-chart \
-  --namespace payments \
-  --out change.json
-./bin/rehearsal analyze --baseline baseline.json --change change.json --out out --store out/runs --quiet
+./bin/rehearsal change manifests --baseline baseline.json \
+  --dir examples/e2e-pipeline/rendered-chart --namespace payments --out change.json
+./bin/rehearsal analyze --baseline baseline.json --change change.json --out out --quiet
 # exit 3 = block
 
-./bin/rehearsal snapshot k8s \
-  --dir examples/e2e-pipeline/observed-dump \
-  --phase observed \
-  --meta examples/e2e-pipeline/observed-meta.json \
-  --out observed.json
-# production verify requires baseline + change (else max INCONCLUSIVE)
-./bin/rehearsal verify \
-  --report out/latest-report.json \
-  --observed observed.json \
-  --baseline baseline.json \
-  --change change.json
+./bin/rehearsal snapshot k8s --dir examples/e2e-pipeline/observed-dump \
+  --phase observed --meta examples/e2e-pipeline/observed-meta.json --out observed.json
+./bin/rehearsal verify --report out/latest-report.json --observed observed.json \
+  --baseline baseline.json --change change.json
+
+# evidence chain
+./bin/rehearsal evidence chain --baseline baseline.json --change change.json \
+  --report out/latest-report.json --observed observed.json --out out/chain.json
 ```
 
-### Live collect (read-only)
+### Full run lifecycle
 
 ```bash
-./bin/rehearsal snapshot k8s --live --cluster acme-prod --out baseline.json
-# optional: --kubeconfig ~/.kube/config --context prod
+./bin/rehearsal run execute \
+  --baseline baseline.json --change change.json --observed observed.json \
+  --out out/run.json
 ```
 
-### Exit codes
+### Control plane API
+
+```bash
+./bin/rehearsal serve --addr :8080
+curl -H "Authorization: Bearer local-dev" http://127.0.0.1:8080/v1/version
+```
+
+### Helm
+
+```bash
+helm upgrade --install rehearsal deploy/helm/architecture-rehearsal
+```
+
+---
+
+## Exit codes
 
 | Code | Meaning |
 | ---: | ------- |
 | 0 | approve / verified |
-| 1 | warn / verify diverged |
-| 2 | validation / usage error |
+| 1 | warn / diverged |
+| 2 | usage / authz |
 | 3 | block |
-| 4 | **unknown** (insufficient evidence) |
+| 4 | unknown / inconclusive |
 | 5 | internal error |
 
 ---
 
-## Scenarios
+## Docs
 
-Each scenario declares prerequisites. Missing data → **unknown**, not silent approve.
-
-1. **RWO + node loss** — needs PVC + volume edges  
-2. **CNI / scheduling capacity** — replica delta + surge; uses scheduling estimate unless `meta.cni_ip_available` is injected  
-3. **Prometheus zero-match** — metric-specific `meta.metric_labels`  
-4. **PDB disruption** — needs PROTECTED_BY edges; supports percentage minAvailable  
-5. **Service routing** — needs ROUTES_TO edges  
-6. **Volume AZ** — needs PVC zone + remaining nodes  
-
----
-
-## What this is (and is not)
-
-**Is:** offline (+ optional live kubectl) change-gate core you can run in CI, with independent verify and local run persistence.  
-**Is not yet:** signed immutable multi-party evidence store (Sigstore), published multi-arch image, multi-tenant control plane.
-
-Version line: **0.7.2** after honest 0.1–0.4 rebuild (inflated v1/v2 tags were retracted).
+- [API](docs/api.md)
+- [SLO](docs/slo.md)
+- [Threat model](docs/threat-model.md)
+- [Operations](docs/runbooks/operations.md)
+- [CHANGELOG](CHANGELOG.md)
 
 ---
 

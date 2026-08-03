@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rehearsal.io/schemas/v1beta1/ArchitectureSnapshot.json",
+  "title": "ArchitectureSnapshot",
+  "type": "object",
+  "required": ["id", "phase", "nodes"],
+  "properties": {
+    "apiVersion": { "type": "string", "enum": ["rehearsal.io/v1alpha1", "rehearsal.io/v1beta1", "rehearsal.io/v1"] },
+    "kind": { "const": "ArchitectureSnapshot" },
+    "id": { "type": "string", "minLength": 1 },
+    "phase": { "type": "string" },
+    "nodes": { "type": "array" },
+    "edges": { "type": "array" },
+    "meta": { "type": "object" }
+  }
+}
