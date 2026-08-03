@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
-
-	"path/filepath"
 
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
 	"github.com/justrunme/architecture-rehearsal/internal/api"
@@ -23,6 +23,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
 	"github.com/justrunme/architecture-rehearsal/internal/operator"
+	"github.com/justrunme/architecture-rehearsal/internal/persist"
 	"github.com/justrunme/architecture-rehearsal/internal/policy"
 	"github.com/justrunme/architecture-rehearsal/internal/rbac"
 	"github.com/justrunme/architecture-rehearsal/internal/run"
@@ -33,6 +34,11 @@ func cmdServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "listen address")
 	workdir := fs.String("workdir", "", "workspace root for file refs (recommended)")
+	dbDSN := fs.String("db", "", "SQLite path or postgres:// URL (default: memory if empty and --memory)")
+	blobDir := fs.String("blob", "", "content-addressed blob root (default: <workdir>/blobs or ./data/blobs)")
+	memory := fs.Bool("memory", false, "in-process store (tests/dev; no durability)")
+	async := fs.Bool("async", false, "enqueue run advances as durable jobs (requires SQL backend)")
+	workers := fs.Int("workers", 1, "number of background job workers when --async or --db")
 	insecureDev := fs.Bool("insecure-dev", false, "allow local-dev token (NEVER in production)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -41,19 +47,91 @@ func cmdServe(args []string) int {
 	if *insecureDev {
 		_ = os.Setenv("REHEARSAL_ALLOW_INSECURE_DEV", "1")
 	}
+	// env overrides for deployability
+	if env := os.Getenv("REHEARSAL_DATABASE_URL"); env != "" && *dbDSN == "" {
+		*dbDSN = env
+	}
+	if env := os.Getenv("REHEARSAL_BLOB_ROOT"); env != "" && *blobDir == "" {
+		*blobDir = env
+	}
+
 	auth, err := authnFromEnvServe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve refused: %v\n", err)
 		fmt.Fprintln(os.Stderr, "set REHEARSAL_API_TOKEN to a strong secret, or pass --insecure-dev for local only")
 		return 2
 	}
-	srv := api.NewServerWith(api.Options{AuthN: auth, WorkDirRoot: *workdir})
+
+	var backend api.Backend
+	var store *persist.Store
+	useSQL := !*memory && (*dbDSN != "" || os.Getenv("REHEARSAL_DATABASE_URL") != "")
+	// Default durable path: SQLite under workdir or ./data
+	if !*memory && *dbDSN == "" {
+		if *workdir != "" {
+			*dbDSN = filepath.Join(*workdir, "rehearsal.db")
+		} else {
+			*dbDSN = "data/rehearsal.db"
+		}
+		useSQL = true
+	}
+	if *memory {
+		backend = api.NewMemoryBackend()
+		fmt.Fprintln(os.Stderr, "backend: memory (non-durable)")
+	} else {
+		if *blobDir == "" {
+			if *workdir != "" {
+				*blobDir = filepath.Join(*workdir, "blobs")
+			} else {
+				*blobDir = "data/blobs"
+			}
+		}
+		store, err = persist.Open(*dbDSN, *blobDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "open store: %v\n", err)
+			return 5
+		}
+		defer store.Close()
+		backend = &api.SQLBackend{S: store}
+		fmt.Fprintf(os.Stderr, "backend: sql dsn=%s blob=%s\n", redactDSN(*dbDSN), *blobDir)
+		_ = useSQL
+	}
+
+	srv := api.NewServerWith(api.Options{
+		AuthN:       auth,
+		Backend:     backend,
+		WorkDirRoot: *workdir,
+		Async:       *async && store != nil,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if store != nil && (*async || *workers > 0) {
+		n := *workers
+		if n < 1 {
+			n = 1
+		}
+		// Only start workers when async is requested or explicitly multi-worker with SQL
+		if *async {
+			for i := 0; i < n; i++ {
+				w := &persist.Worker{
+					Store:    store,
+					Holder:   fmt.Sprintf("worker-%d", i+1),
+					WorkDir:  *workdir,
+					Interval: 300 * time.Millisecond,
+					LeaseTTL: 2 * time.Minute,
+				}
+				go w.Run(ctx)
+			}
+			fmt.Fprintf(os.Stderr, "workers: %d (async advance enabled)\n", n)
+		}
+	}
+
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		ReadTimeout:       120 * time.Second,
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -67,10 +145,26 @@ func cmdServe(args []string) int {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = httpSrv.Shutdown(ctx)
+	cancel()
+	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shCancel()
+	_ = httpSrv.Shutdown(shCtx)
 	return 0
+}
+
+func redactDSN(dsn string) string {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		// hide password
+		if i := strings.Index(dsn, "@"); i > 0 {
+			if j := strings.Index(dsn, "://"); j >= 0 {
+				userPart := dsn[j+3 : i]
+				if k := strings.Index(userPart, ":"); k >= 0 {
+					return dsn[:j+3] + userPart[:k] + ":***" + dsn[i:]
+				}
+			}
+		}
+	}
+	return dsn
 }
 
 func authnFromEnvServe() (authn.Authenticator, error) {

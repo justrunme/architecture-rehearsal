@@ -16,8 +16,8 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.1.0** — evidence-bound change gate + secure API (v1.0.1+).  
-Every analyze report carries content digests; verify refuses mismatched baseline/change.  
+**Status: v1.2.0** — durable control plane (SQLite/Postgres + blobs + async jobs).  
+Evidence integrity (v1.1) + secure API (v1.0.1+) remain required for production gates.  
 **v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
 ---
@@ -39,15 +39,17 @@ Every analyze report carries content digests; verify refuses mismatched baseline
 | DSSE-style sign (HMAC / Ed25519) | **Supported** (not full Sigstore) |
 | RehearsalRun lifecycle + operator loop | **Supported** (offline JSON CRDs) |
 | GitOps policy gate | **Supported** (policy engine + GH reference) |
-| Control plane HTTP API | **Supported** (v1.0.1 secure token required) |
+| Control plane HTTP API | **Supported** (v1.0.1+ secure token required) |
+| Durable SQL store | **Supported** (SQLite default; Postgres URL) |
+| Content-addressed blobs | **Supported** (local filesystem; S3-shaped API later) |
+| Async job workers + leases | **Supported** (`--async`) |
 | Hierarchical RBAC + bearer auth | **Supported** (org-scoped; no OIDC stub) |
 | GitOps GH/GL full gate | **Reference** skeleton only |
-| Calibration engine | **Supported** |
+| Calibration engine | **Supported** (SQL-backed in control plane) |
 | Scenario package registry / SDK surface | **Supported** |
 | Helm chart | **Supported** (`deploy/helm`) |
 | Live kubectl collect | **Supported** |
 | Live controller-runtime operator | **Reference** (JSON reconciler) |
-| PostgreSQL + S3 backends | **Interface / docs** (memory default) |
 | Multi-tenant SaaS | **Not supported** |
 | LLM in risk path | **Not supported** |
 
@@ -59,7 +61,7 @@ Every analyze report carries content digests; verify refuses mismatched baseline
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.1.0
+make build && ./bin/rehearsal version   # 1.2.0
 ```
 
 ### Offline iron path
@@ -94,17 +96,26 @@ export REHEARSAL_HMAC_SECRET="$(openssl rand -hex 32)"
   --out out/run.json
 ```
 
-### Control plane API (v1.0.1)
+### Control plane API (v1.2)
 
 ```bash
 # REQUIRED: strong token (serve refuses to start without it)
 export REHEARSAL_API_TOKEN="$(openssl rand -hex 32)"
 export REHEARSAL_API_ORG=my-org
-./bin/rehearsal serve --addr :8080 --workdir "$PWD"
-curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/version
 
-# local only (never production):
-# ./bin/rehearsal serve --insecure-dev --addr :8080
+# Durable default: SQLite + local blobs under workdir
+./bin/rehearsal serve --addr :8080 --workdir "$PWD" \
+  --db "$PWD/data/rehearsal.db" --blob "$PWD/data/blobs" --async --workers 2
+
+# Postgres (optional):
+# export REHEARSAL_DATABASE_URL='postgres://user:pass@localhost/rehearsal'
+# ./bin/rehearsal serve --workdir "$PWD" --async
+
+curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/version
+curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/metrics
+
+# non-durable local only:
+# ./bin/rehearsal serve --memory --insecure-dev --addr :8080
 ```
 
 **GitOps status:** `integrations/github-actions/gate.yml` is a **Reference** skeleton (not a full PR gate yet).
@@ -114,7 +125,7 @@ curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/ve
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
-  --set image.tag=1.0.1
+  --set image.tag=1.2.0
 # chart fails closed if api.token is empty
 ```
 

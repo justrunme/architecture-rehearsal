@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.2.0 — 2026-08-03
+
+**Real Control Plane** — durable storage, async jobs, metrics.
+
+### Storage
+- SQLite default (`--db path` or `data/rehearsal.db`); optional Postgres (`postgres://…` / `REHEARSAL_DATABASE_URL`)
+- Content-addressed blob store (`--blob DIR` / `REHEARSAL_BLOB_ROOT`) for evidence artifacts
+- Backend interface: memory (dev/tests) or SQL
+
+### Async jobs
+- Durable job queue with lease claim / complete / fail + retry budget
+- Background workers (`--async --workers N`) execute `run.advance`
+- `POST /v1/runs/{id}/advance` returns **202** with `jobId` when async
+
+### API
+- `GET /v1/metrics` Prometheus text (requests, jobs, uptime)
+- Org policy binding: active policy written to workdir for engine `PolicyPath`
+- Calibration + audit persisted in SQL
+
+### CLI
+```
+rehearsal serve --addr :8080 --workdir . --db data/rehearsal.db --blob data/blobs --async --workers 2
+rehearsal serve --memory --insecure-dev   # non-durable local only
+```
+
+### Security note
+- Authn/authz from v1.0.1 still required. Networked API without token is refused.
+
 ## 1.1.0 — 2026-08-03
 
 **Evidence Integrity** — product-grade binding of predictions to artifacts.

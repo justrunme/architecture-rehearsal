@@ -11,6 +11,7 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/api"
 	"github.com/justrunme/architecture-rehearsal/internal/authn"
+	"github.com/justrunme/architecture-rehearsal/internal/persist"
 )
 
 func auth(req *http.Request, tok string) {
@@ -212,5 +213,82 @@ func TestFromEnvRequiresToken(t *testing.T) {
 	_, err := authn.FromEnv(authn.Config{RequireToken: true})
 	if err == nil {
 		t.Fatal("expected error without token")
+	}
+}
+
+func TestAsyncAdvanceEnqueue(t *testing.T) {
+	s := api.NewServerWith(api.Options{
+		AuthN: authn.Default(),
+		Async: true,
+	})
+	h := s.Handler()
+	body := []byte(`{"id":"async-r1","baselineRef":"b.json","changeRef":"c.json"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+	auth(req, "local-dev")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 201 {
+		t.Fatalf("create %d %s", rr.Code, rr.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/runs/async-r1/advance", bytes.NewReader([]byte(`{}`)))
+	auth(req2, "local-dev")
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, req2)
+	if rr2.Code != 202 {
+		t.Fatalf("async advance want 202 got %d %s", rr2.Code, rr2.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rr2.Body.Bytes(), &out)
+	if out["jobId"] == nil || out["status"] != "queued" {
+		t.Fatalf("%v", out)
+	}
+
+	// metrics endpoint
+	req3 := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
+	rr3 := httptest.NewRecorder()
+	h.ServeHTTP(rr3, req3)
+	if rr3.Code != 200 {
+		t.Fatalf("metrics %d", rr3.Code)
+	}
+	if !bytes.Contains(rr3.Body.Bytes(), []byte("rehearsal_jobs")) {
+		t.Fatalf("metrics body: %s", rr3.Body.String())
+	}
+}
+
+func TestSQLBackendRuns(t *testing.T) {
+	dir := t.TempDir()
+	st, err := persist.Open(filepath.Join(dir, "api.db"), filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := api.NewServerWith(api.Options{
+		AuthN:   authn.Default(),
+		Backend: &api.SQLBackend{S: st},
+	})
+	h := s.Handler()
+	body := []byte(`{"id":"sql-r1","idempotencyKey":"sql-ik","baselineRef":"b.json","changeRef":"c.json"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+	auth(req, "local-dev")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 201 {
+		t.Fatalf("create %d %s", rr.Code, rr.Body.String())
+	}
+	// idempotent
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+	auth(req2, "local-dev")
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, req2)
+	if rr2.Code != 200 {
+		t.Fatalf("idem %d %s", rr2.Code, rr2.Body.String())
+	}
+	req3 := httptest.NewRequest(http.MethodGet, "/v1/runs/sql-r1", nil)
+	auth(req3, "local-dev")
+	rr3 := httptest.NewRecorder()
+	h.ServeHTTP(rr3, req3)
+	if rr3.Code != 200 {
+		t.Fatalf("get %d", rr3.Code)
 	}
 }
