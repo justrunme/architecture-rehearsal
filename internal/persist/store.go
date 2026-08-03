@@ -1,5 +1,5 @@
-// Package persist provides durable storage for the control plane (v1.2).
-// Default: SQLite (modernc). Optional: PostgreSQL via REHEARSAL_DATABASE_URL=postgres://...
+// Package persist provides durable storage for the control plane.
+// v1.2.1: tenant-aware identity (org, id), org-scoped idempotency, no cross-tenant overwrite.
 package persist
 
 import (
@@ -28,16 +28,13 @@ type Cluster struct {
 
 // Store is the durable control-plane repository.
 type Store struct {
-	db   *sql.DB
-	Blob *BlobStore
-	// dialect: sqlite|postgres
-	dialect string
+	db      *sql.DB
+	Blob    *BlobStore
+	dialect string // sqlite|postgres
 }
 
 // Open opens a database.
-// dsn:
-//   - empty or file path → sqlite (file:path or path)
-//   - postgres:// or postgresql:// → pgx stdlib
+// dsn: empty/file path → sqlite; postgres:// → pgx.
 func Open(dsn string, blobRoot string) (*Store, error) {
 	dialect := "sqlite"
 	driver := "sqlite"
@@ -48,15 +45,13 @@ func Open(dsn string, blobRoot string) (*Store, error) {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		dialect = "postgres"
 		driver = "pgx"
-		// register pgx if available
 		if err := registerPGX(); err != nil {
 			return nil, err
 		}
 		openDSN = dsn
 	} else if !strings.HasPrefix(dsn, "file:") && dsn != "" && !strings.Contains(dsn, "://") {
-		// plain path
-		if err := os.MkdirAll(filepath.Dir(dsn), 0o755); err != nil && filepath.Dir(dsn) != "." {
-			// ignore if dir is .
+		if dir := filepath.Dir(dsn); dir != "." && dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
 		}
 		openDSN = "file:" + dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 	}
@@ -86,28 +81,116 @@ func Open(dsn string, blobRoot string) (*Store, error) {
 }
 
 func (s *Store) migrate() error {
-	sqlText := schemaSQL
+	sqlText := schemaV2
 	if s.dialect == "postgres" {
 		sqlText = strings.ReplaceAll(sqlText, "INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
-		// postgres: unique on non-null only via partial index (NULLS DISTINCT in PG15+)
-		sqlText = strings.ReplaceAll(sqlText,
-			"CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_idem ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != '';",
-			"CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_idem ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> '';")
+		sqlText = strings.ReplaceAll(sqlText, "idempotency_key != ''", "idempotency_key <> ''")
+		sqlText = strings.ReplaceAll(sqlText, "operation_id != ''", "operation_id <> ''")
 	}
-	// multi-statement: exec each non-empty statement
+	// Detect legacy v1.2.0 runs table (global PK on id only) and rebuild.
+	if s.dialect == "sqlite" {
+		if err := s.upgradeLegacySQLite(); err != nil {
+			return err
+		}
+	}
 	for _, stmt := range strings.Split(sqlText, ";") {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
 		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
+			// ignore "already exists" style for concurrent open
+			if !strings.Contains(err.Error(), "already exists") {
+				return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
+			}
 		}
+	}
+	// Record schema version
+	if s.dialect == "postgres" {
+		_, _ = s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(2, $1) ON CONFLICT (version) DO NOTHING`, s.now())
+	} else {
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)`, s.now())
 	}
 	return nil
 }
 
-// rebind converts ? placeholders to $1,$2,... for PostgreSQL.
+func (s *Store) upgradeLegacySQLite() error {
+	var createSQL sql.NullString
+	err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'`).Scan(&createSQL)
+	if err == sql.ErrNoRows || !createSQL.Valid {
+		return nil // fresh
+	}
+	if err != nil {
+		// table may not exist yet
+		return nil
+	}
+	// Legacy: PRIMARY KEY on id alone (not composite)
+	if strings.Contains(createSQL.String, "PRIMARY KEY (org, id)") {
+		return nil
+	}
+	if !strings.Contains(createSQL.String, "PRIMARY KEY") {
+		return nil
+	}
+	// Rebuild tables with tenant keys. Data preserved where possible.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmts := []string{
+		`ALTER TABLE runs RENAME TO runs_legacy`,
+		`CREATE TABLE runs (
+  org TEXT NOT NULL DEFAULT '',
+  id TEXT NOT NULL,
+  idempotency_key TEXT,
+  project TEXT NOT NULL DEFAULT '',
+  environment TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL,
+  phase TEXT NOT NULL DEFAULT 'Pending',
+  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (org, id)
+)`,
+		`INSERT INTO runs(org, id, idempotency_key, project, environment, payload, phase, updated_at, created_at)
+ SELECT COALESCE(org,''), id, idempotency_key, COALESCE(project,''), COALESCE(environment,''), payload, phase, updated_at, created_at FROM runs_legacy`,
+		`DROP TABLE runs_legacy`,
+		`DROP INDEX IF EXISTS idx_runs_idem`,
+		// calibration: add org if missing
+	}
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("legacy upgrade: %w (%s)", err, q)
+		}
+	}
+	// calibration rebuild if no org column
+	var calSQL sql.NullString
+	_ = tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='calibration'`).Scan(&calSQL)
+	if calSQL.Valid && !strings.Contains(calSQL.String, "org") {
+		_, _ = tx.Exec(`ALTER TABLE calibration RENAME TO calibration_legacy`)
+		_, _ = tx.Exec(`CREATE TABLE calibration (
+  org TEXT NOT NULL DEFAULT '',
+  scenario TEXT NOT NULL,
+  predicted INTEGER NOT NULL,
+  observed INTEGER NOT NULL,
+  verified INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+)`)
+		_, _ = tx.Exec(`INSERT INTO calibration(org, scenario, predicted, observed, verified, created_at)
+ SELECT '', scenario, predicted, observed, verified, created_at FROM calibration_legacy`)
+		_, _ = tx.Exec(`DROP TABLE calibration_legacy`)
+	}
+	// jobs: add fence_token / operation_id if missing
+	var jobSQL sql.NullString
+	_ = tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'`).Scan(&jobSQL)
+	if jobSQL.Valid && !strings.Contains(jobSQL.String, "fence_token") {
+		_, _ = tx.Exec(`ALTER TABLE jobs ADD COLUMN fence_token INTEGER NOT NULL DEFAULT 0`)
+	}
+	if jobSQL.Valid && !strings.Contains(jobSQL.String, "operation_id") {
+		_, _ = tx.Exec(`ALTER TABLE jobs ADD COLUMN operation_id TEXT`)
+	}
+	return tx.Commit()
+}
+
 func (s *Store) rebind(q string) string {
 	if s.dialect != "postgres" {
 		return q
@@ -138,37 +221,103 @@ func (s *Store) queryRow(q string, args ...any) *sql.Row {
 	return s.db.QueryRow(s.rebind(q), args...)
 }
 
-func (s *Store) Close() error {
-	return s.db.Close()
-}
+func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
-// --- Runs ---
+func runOrg(r *run.RehearsalRun) string {
+	if r == nil || r.Labels == nil {
+		return ""
+	}
+	return r.Labels["org"]
+}
 
-func (s *Store) PutRun(r *run.RehearsalRun) error {
+// CreateRun inserts a new run. Returns ErrConflict if (org, id) already exists.
+func (s *Store) CreateRun(r *run.RehearsalRun) error {
+	if r == nil || r.ID == "" {
+		return fmt.Errorf("run id required")
+	}
+	org := runOrg(r)
+	if org == "" {
+		return fmt.Errorf("run org required")
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	org, project, env := "", "", ""
+	project, env := "", ""
 	if r.Labels != nil {
-		org, project, env = r.Labels["org"], r.Labels["project"], r.Labels["environment"]
+		project, env = r.Labels["project"], r.Labels["environment"]
 	}
 	now := s.now()
 	_, err = s.exec(`
-INSERT INTO runs(id, idempotency_key, org, project, environment, payload, phase, updated_at, created_at)
+INSERT INTO runs(org, id, idempotency_key, project, environment, payload, phase, updated_at, created_at)
 VALUES(?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET
-  payload=excluded.payload, phase=excluded.phase, updated_at=excluded.updated_at,
-  org=excluded.org, project=excluded.project, environment=excluded.environment
-`, r.ID, nullStr(r.IdempotencyKey), org, project, env, string(raw), string(r.Status.Phase), now, r.CreatedAt.UTC().Format(time.RFC3339Nano))
-	return err
+`, org, r.ID, nullStr(r.IdempotencyKey), project, env, string(raw), string(r.Status.Phase), now, r.CreatedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	return nil
 }
 
-func (s *Store) GetRun(id string) (*run.RehearsalRun, error) {
+// UpdateRun updates an existing run in the same org. Never changes org.
+func (s *Store) UpdateRun(r *run.RehearsalRun) error {
+	if r == nil || r.ID == "" {
+		return fmt.Errorf("run id required")
+	}
+	org := runOrg(r)
+	if org == "" {
+		return fmt.Errorf("run org required")
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	project, env := "", ""
+	if r.Labels != nil {
+		project, env = r.Labels["project"], r.Labels["environment"]
+	}
+	res, err := s.exec(`
+UPDATE runs SET payload=?, phase=?, project=?, environment=?, updated_at=?
+WHERE org=? AND id=?
+`, string(raw), string(r.Status.Phase), project, env, s.now(), org, r.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PutRun is UpdateRun if exists else CreateRun (same org only). Used by workers.
+func (s *Store) PutRun(r *run.RehearsalRun) error {
+	org := runOrg(r)
+	existing, err := s.GetRun(org, r.ID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return s.CreateRun(r)
+	}
+	// refuse org reassignment
+	if runOrg(existing) != org {
+		return ErrConflict
+	}
+	return s.UpdateRun(r)
+}
+
+// GetRun returns a run only if it belongs to org.
+func (s *Store) GetRun(org, id string) (*run.RehearsalRun, error) {
+	if org == "" || id == "" {
+		return nil, nil
+	}
 	var payload string
-	err := s.queryRow(`SELECT payload FROM runs WHERE id=?`, id).Scan(&payload)
+	err := s.queryRow(`SELECT payload FROM runs WHERE org=? AND id=?`, org, id).Scan(&payload)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -182,12 +331,13 @@ func (s *Store) GetRun(id string) (*run.RehearsalRun, error) {
 	return &r, nil
 }
 
-func (s *Store) GetRunByIdempotency(key string) (*run.RehearsalRun, error) {
-	if key == "" {
+// GetRunByIdempotency looks up within org only.
+func (s *Store) GetRunByIdempotency(org, key string) (*run.RehearsalRun, error) {
+	if org == "" || key == "" {
 		return nil, nil
 	}
 	var payload string
-	err := s.queryRow(`SELECT payload FROM runs WHERE idempotency_key=?`, key).Scan(&payload)
+	err := s.queryRow(`SELECT payload FROM runs WHERE org=? AND idempotency_key=?`, org, key).Scan(&payload)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -202,13 +352,10 @@ func (s *Store) GetRunByIdempotency(key string) (*run.RehearsalRun, error) {
 }
 
 func (s *Store) ListRuns(org string) ([]*run.RehearsalRun, error) {
-	var rows *sql.Rows
-	var err error
 	if org == "" {
-		rows, err = s.query(`SELECT payload FROM runs ORDER BY updated_at DESC LIMIT 500`)
-	} else {
-		rows, err = s.query(`SELECT payload FROM runs WHERE org=? ORDER BY updated_at DESC LIMIT 500`, org)
+		return nil, nil
 	}
+	rows, err := s.query(`SELECT payload FROM runs WHERE org=? ORDER BY updated_at DESC LIMIT 500`, org)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +390,10 @@ ON CONFLICT(org, name) DO UPDATE SET payload=excluded.payload
 }
 
 func (s *Store) ListClusters(org string) ([]Cluster, error) {
-	rows, err := s.query(`SELECT payload FROM clusters WHERE org=? OR ?='' ORDER BY name`, org, org)
+	if org == "" {
+		return nil, nil
+	}
+	rows, err := s.query(`SELECT payload FROM clusters WHERE org=? ORDER BY name`, org)
 	if err != nil {
 		return nil, err
 	}
@@ -256,9 +406,6 @@ func (s *Store) ListClusters(org string) ([]Cluster, error) {
 		}
 		var c Cluster
 		if json.Unmarshal([]byte(payload), &c) == nil {
-			if org != "" && c.Org != org {
-				continue
-			}
 			out = append(out, c)
 		}
 	}
@@ -299,7 +446,6 @@ func (s *Store) ListPolicies(org string) ([]map[string]any, error) {
 	return out, nil
 }
 
-// GetOrgPolicy returns the first policy for org (product: one active policy per org).
 func (s *Store) GetOrgPolicy(org string) (map[string]any, error) {
 	var payload string
 	err := s.queryRow(`SELECT payload FROM policies WHERE org=? ORDER BY created_at DESC LIMIT 1`, org).Scan(&payload)
@@ -316,17 +462,23 @@ func (s *Store) GetOrgPolicy(org string) (map[string]any, error) {
 	return m, nil
 }
 
-// --- Calibration ---
+// --- Calibration (org-scoped) ---
 
-func (s *Store) RecordCalibration(o calibrate.Outcome) error {
-	_, err := s.exec(`INSERT INTO calibration(scenario, predicted, observed, verified, created_at) VALUES(?,?,?,?,?)`,
-		o.Scenario, boolInt(o.Predicted), boolInt(o.Observed), boolInt(o.Verified), s.now())
+func (s *Store) RecordCalibration(org string, o calibrate.Outcome) error {
+	if org == "" {
+		return fmt.Errorf("org required for calibration")
+	}
+	_, err := s.exec(`INSERT INTO calibration(org, scenario, predicted, observed, verified, created_at) VALUES(?,?,?,?,?,?)`,
+		org, o.Scenario, boolInt(o.Predicted), boolInt(o.Observed), boolInt(o.Verified), s.now())
 	return err
 }
 
-func (s *Store) CalibrationReport() calibrate.Report {
+func (s *Store) CalibrationReport(org string) calibrate.Report {
 	st := calibrate.NewStore()
-	rows, err := s.query(`SELECT scenario, predicted, observed, verified FROM calibration`)
+	if org == "" {
+		return st.Report()
+	}
+	rows, err := s.query(`SELECT scenario, predicted, observed, verified FROM calibration WHERE org=?`, org)
 	if err != nil {
 		return st.Report()
 	}
@@ -344,9 +496,9 @@ func (s *Store) CalibrationReport() calibrate.Report {
 
 // --- Audit ---
 
-func (s *Store) Audit(actor, action, target, detail string) error {
-	_, err := s.exec(`INSERT INTO audit(time, actor, action, target, detail) VALUES(?,?,?,?,?)`,
-		s.now(), actor, action, target, detail)
+func (s *Store) Audit(actor, action, target, detail, org string) error {
+	_, err := s.exec(`INSERT INTO audit(time, actor, action, target, detail, org) VALUES(?,?,?,?,?,?)`,
+		s.now(), actor, action, target, detail, org)
 	return err
 }
 
@@ -358,24 +510,37 @@ type Job struct {
 	Kind        string
 	RunID       string
 	Org         string
-	Status      string // pending|leased|done|failed
+	Status      string // pending|leased|done|failed|cancelled
 	Attempts    int
 	MaxAttempts int
+	FenceToken  int64
 	Payload     string
 	LastError   string
+	OperationID string
 }
 
-func (s *Store) Enqueue(kind, runID, org, payload string) (string, error) {
+// Enqueue creates a job. operationID enables exactly-once logical enqueue (same op returns existing).
+func (s *Store) Enqueue(kind, runID, org, payload, operationID string) (string, error) {
+	if org == "" {
+		return "", fmt.Errorf("org required")
+	}
+	if operationID != "" {
+		var existing string
+		err := s.queryRow(`SELECT id FROM jobs WHERE org=? AND operation_id=?`, org, operationID).Scan(&existing)
+		if err == nil && existing != "" {
+			return existing, nil
+		}
+	}
 	id := fmt.Sprintf("job-%d", time.Now().UTC().UnixNano())
 	now := s.now()
 	_, err := s.exec(`
-INSERT INTO jobs(id, kind, run_id, org, status, attempts, max_attempts, payload, created_at, updated_at)
-VALUES(?,?,?,?, 'pending', 0, 5, ?, ?, ?)
-`, id, kind, runID, org, payload, now, now)
+INSERT INTO jobs(id, kind, run_id, org, status, attempts, max_attempts, fence_token, payload, operation_id, created_at, updated_at)
+VALUES(?,?,?,?, 'pending', 0, 5, 0, ?, ?, ?, ?)
+`, id, kind, runID, org, payload, nullStr(operationID), now, now)
 	return id, err
 }
 
-// ClaimJob leases the next pending job (SKIP LOCKED style for sqlite: update where pending).
+// ClaimJob leases the next pending job with a fencing token.
 func (s *Store) ClaimJob(ctx context.Context, holder string, ttl time.Duration) (*Job, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -384,16 +549,16 @@ func (s *Store) ClaimJob(ctx context.Context, holder string, ttl time.Duration) 
 	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UTC()
-	// reclaim expired leases
 	_, _ = tx.Exec(s.rebind(`UPDATE jobs SET status='pending', lease_holder=NULL, lease_until=NULL
 		WHERE status='leased' AND lease_until IS NOT NULL AND lease_until < ?`), now.Format(time.RFC3339Nano))
 
 	var j Job
 	var payload sql.NullString
+	var op sql.NullString
 	err = tx.QueryRow(s.rebind(`
-SELECT id, kind, run_id, org, status, attempts, max_attempts, COALESCE(payload,''), COALESCE(last_error,'')
+SELECT id, kind, run_id, org, status, attempts, max_attempts, fence_token, COALESCE(payload,''), COALESCE(last_error,''), COALESCE(operation_id,'')
 FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1
-`)).Scan(&j.ID, &j.Kind, &j.RunID, &j.Org, &j.Status, &j.Attempts, &j.MaxAttempts, &payload, &j.LastError)
+`)).Scan(&j.ID, &j.Kind, &j.RunID, &j.Org, &j.Status, &j.Attempts, &j.MaxAttempts, &j.FenceToken, &payload, &j.LastError, &op)
 	if err == sql.ErrNoRows {
 		_ = tx.Commit()
 		return nil, nil
@@ -402,9 +567,11 @@ FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1
 		return nil, err
 	}
 	j.Payload = payload.String
+	j.OperationID = op.String
 	until := now.Add(ttl).Format(time.RFC3339Nano)
-	res, err := tx.Exec(s.rebind(`UPDATE jobs SET status='leased', lease_holder=?, lease_until=?, attempts=attempts+1, updated_at=?
-		WHERE id=? AND status='pending'`), holder, until, s.now(), j.ID)
+	newFence := j.FenceToken + 1
+	res, err := tx.Exec(s.rebind(`UPDATE jobs SET status='leased', lease_holder=?, lease_until=?, attempts=attempts+1,
+		fence_token=?, updated_at=? WHERE id=? AND status='pending'`), holder, until, newFence, s.now(), j.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -414,6 +581,7 @@ FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1
 		return nil, nil
 	}
 	j.Attempts++
+	j.FenceToken = newFence
 	j.Status = "leased"
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -421,22 +589,63 @@ FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1
 	return &j, nil
 }
 
-func (s *Store) CompleteJob(id string) error {
-	_, err := s.exec(`UPDATE jobs SET status='done', lease_holder=NULL, lease_until=NULL, updated_at=? WHERE id=?`, s.now(), id)
-	return err
+// RenewLease extends lease if holder still owns the fence token.
+func (s *Store) RenewLease(id, holder string, fence int64, ttl time.Duration) error {
+	until := time.Now().UTC().Add(ttl).Format(time.RFC3339Nano)
+	res, err := s.exec(`UPDATE jobs SET lease_until=?, updated_at=?
+		WHERE id=? AND status='leased' AND lease_holder=? AND fence_token=?`,
+		until, s.now(), id, holder, fence)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrStaleFence
+	}
+	return nil
 }
 
-func (s *Store) FailJob(id, lastErr string) error {
-	// requeue if attempts remaining
+func (s *Store) CompleteJob(id string, fence int64) error {
+	res, err := s.exec(`UPDATE jobs SET status='done', lease_holder=NULL, lease_until=NULL, updated_at=?
+		WHERE id=? AND fence_token=? AND status='leased'`, s.now(), id, fence)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrStaleFence
+	}
+	return nil
+}
+
+func (s *Store) FailJob(id string, fence int64, lastErr string) error {
 	var attempts, max int
-	_ = s.queryRow(`SELECT attempts, max_attempts FROM jobs WHERE id=?`, id).Scan(&attempts, &max)
+	var curFence int64
+	err := s.queryRow(`SELECT attempts, max_attempts, fence_token FROM jobs WHERE id=?`, id).Scan(&attempts, &max, &curFence)
+	if err != nil {
+		return err
+	}
+	if curFence != fence {
+		return ErrStaleFence
+	}
 	status := "pending"
 	if attempts >= max {
 		status = "failed"
 	}
-	_, err := s.exec(`UPDATE jobs SET status=?, last_error=?, lease_holder=NULL, lease_until=NULL, updated_at=? WHERE id=?`,
-		status, lastErr, s.now(), id)
+	_, err = s.exec(`UPDATE jobs SET status=?, last_error=?, lease_holder=NULL, lease_until=NULL, updated_at=?
+		WHERE id=? AND fence_token=?`, status, lastErr, s.now(), id, fence)
 	return err
+}
+
+// CancelJobsForRun cancels pending/leased jobs for a run (tenant-scoped).
+func (s *Store) CancelJobsForRun(org, runID string) (int, error) {
+	res, err := s.exec(`UPDATE jobs SET status='cancelled', lease_holder=NULL, lease_until=NULL, updated_at=?, last_error='cancelled'
+		WHERE org=? AND run_id=? AND status IN ('pending','leased')`, s.now(), org, runID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 func (s *Store) JobStats() (pending, leased, done, failed int) {
@@ -446,6 +655,13 @@ func (s *Store) JobStats() (pending, leased, done, failed int) {
 	_ = s.queryRow(`SELECT COUNT(*) FROM jobs WHERE status='failed'`).Scan(&failed)
 	return
 }
+
+// Ping checks database connectivity for readiness.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
+func (s *Store) DB() *sql.DB { return s.db }
 
 func nullStr(s string) any {
 	if s == "" {
@@ -461,5 +677,10 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// DB exposes underlying handle for health checks.
-func (s *Store) DB() *sql.DB { return s.db }
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "constraint") || strings.Contains(msg, "duplicate")
+}

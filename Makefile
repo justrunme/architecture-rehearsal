@@ -28,10 +28,10 @@ e2e: build
 	bash scripts/e2e_pipeline.sh
 
 docker image:
-	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.2.0 -f Dockerfile .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.2.1 -f Dockerfile .
 
 release-assets:
-	bash scripts/release-assets.sh 1.2.0
+	bash scripts/release-assets.sh 1.2.1
 
 verify-example: build
 	$(BIN) analyze \

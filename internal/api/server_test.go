@@ -11,6 +11,7 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/api"
 	"github.com/justrunme/architecture-rehearsal/internal/authn"
+	"github.com/justrunme/architecture-rehearsal/internal/calibrate"
 	"github.com/justrunme/architecture-rehearsal/internal/persist"
 )
 
@@ -19,8 +20,18 @@ func auth(req *http.Request, tok string) {
 	req.Header.Set("Content-Type", "application/json")
 }
 
+func withWorkdir(t *testing.T, opts api.Options) *api.Server {
+	t.Helper()
+	if opts.WorkDirRoot == "" {
+		opts.WorkDirRoot = t.TempDir()
+	}
+	if opts.AuthN == nil {
+		opts.AuthN = authn.Default()
+	}
+	return api.NewServerWith(opts)
+}
+
 func TestCreateAndGetRun(t *testing.T) {
-	// NewServer uses insecure local-dev for unit tests
 	s := api.NewServer()
 	h := s.Handler()
 
@@ -68,10 +79,9 @@ func TestHardcodedTokensRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := api.NewServerWith(api.Options{AuthN: a})
+	s := withWorkdir(t, api.Options{AuthN: a})
 	h := s.Handler()
 
-	// create with valid token
 	body := []byte(`{"id":"victim-run","baselineRef":"b.json","changeRef":"c.json"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
 	auth(req, "only-secret-token")
@@ -81,11 +91,9 @@ func TestHardcodedTokensRemoved(t *testing.T) {
 		t.Fatalf("create %d %s", rr.Code, rr.Body.String())
 	}
 
-	// known viewer-token must fail
 	for _, tok := range []string{"viewer-token", "ci", "local-dev"} {
 		req := httptest.NewRequest(http.MethodGet, "/v1/runs/victim-run", nil)
 		auth(req, tok)
-		// even with X-Org spoof
 		req.Header.Set("X-Org", "default")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -97,16 +105,16 @@ func TestHardcodedTokensRemoved(t *testing.T) {
 
 func TestCrossTenantIsolation(t *testing.T) {
 	tokens := map[string]authn.Principal{
-		"tok-victim":  {ID: "v", Roles: []string{"operator"}, Org: "victim"},
+		"tok-victim":   {ID: "v", Roles: []string{"operator"}, Org: "victim"},
 		"tok-attacker": {ID: "a", Roles: []string{"operator"}, Org: "attacker"},
 	}
-	s := api.NewServerWith(api.Options{AuthN: &authn.StaticToken{Tokens: tokens}})
+	s := withWorkdir(t, api.Options{AuthN: &authn.StaticToken{Tokens: tokens}})
 	h := s.Handler()
 
 	body := []byte(`{"id":"secret-run","baselineRef":"b.json","changeRef":"c.json","org":"should-be-ignored"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
 	auth(req, "tok-victim")
-	req.Header.Set("X-Org", "attacker") // must not rebind principal org
+	req.Header.Set("X-Org", "attacker")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != 201 {
@@ -119,37 +127,16 @@ func TestCrossTenantIsolation(t *testing.T) {
 		t.Fatalf("org must be principal org victim, got %v", labels)
 	}
 
-	// attacker cannot read
-	req2 := httptest.NewRequest(http.MethodGet, "/v1/runs/secret-run", nil)
-	auth(req2, "tok-attacker")
-	req2.Header.Set("X-Org", "victim") // spoof
-	rr2 := httptest.NewRecorder()
-	h.ServeHTTP(rr2, req2)
-	if rr2.Code != 404 {
-		t.Fatalf("cross-tenant read want 404 got %d body=%s", rr2.Code, rr2.Body.String())
+	// attacker cannot overwrite same ID into victim org (creates in own org only)
+	bodyAtt := []byte(`{"id":"secret-run","baselineRef":"b.json","changeRef":"c.json"}`)
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(bodyAtt))
+	auth(reqA, "tok-attacker")
+	rrA := httptest.NewRecorder()
+	h.ServeHTTP(rrA, reqA)
+	if rrA.Code != 201 {
+		t.Fatalf("attacker own run with same id should be 201 (tenant PK), got %d %s", rrA.Code, rrA.Body.String())
 	}
-
-	// attacker advance/evidence denied
-	for _, path := range []string{
-		"/v1/runs/secret-run/evidence",
-	} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		auth(req, "tok-attacker")
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code != 404 {
-			t.Fatalf("%s want 404 got %d", path, rec.Code)
-		}
-	}
-	req3 := httptest.NewRequest(http.MethodPost, "/v1/runs/secret-run/advance", bytes.NewReader([]byte(`{"action":"cancel"}`)))
-	auth(req3, "tok-attacker")
-	rr3 := httptest.NewRecorder()
-	h.ServeHTTP(rr3, req3)
-	if rr3.Code != 404 {
-		t.Fatalf("advance want 404 got %d", rr3.Code)
-	}
-
-	// victim can read
+	// victim still owns original
 	req4 := httptest.NewRequest(http.MethodGet, "/v1/runs/secret-run", nil)
 	auth(req4, "tok-victim")
 	rr4 := httptest.NewRecorder()
@@ -157,16 +144,94 @@ func TestCrossTenantIsolation(t *testing.T) {
 	if rr4.Code != 200 {
 		t.Fatalf("owner read %d", rr4.Code)
 	}
+	var victimRun map[string]any
+	_ = json.Unmarshal(rr4.Body.Bytes(), &victimRun)
+	if victimRun["labels"].(map[string]any)["org"] != "victim" {
+		t.Fatal("victim run overwritten")
+	}
+
+	// attacker cannot read victim
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/runs/secret-run", nil)
+	auth(req2, "tok-attacker")
+	req2.Header.Set("X-Org", "victim")
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, req2)
+	// attacker gets their own secret-run (same id different org), not victim's
+	if rr2.Code != 200 {
+		t.Fatalf("attacker own run %d", rr2.Code)
+	}
+	var attRun map[string]any
+	_ = json.Unmarshal(rr2.Body.Bytes(), &attRun)
+	if attRun["labels"].(map[string]any)["org"] != "attacker" {
+		t.Fatal("must not return victim run")
+	}
+
+	// attacker cannot cancel victim's run: use id only known to victim — create unique
+	bodyV := []byte(`{"id":"only-victim","baselineRef":"b.json","changeRef":"c.json"}`)
+	reqV := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(bodyV))
+	auth(reqV, "tok-victim")
+	h.ServeHTTP(httptest.NewRecorder(), reqV)
+
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/runs/only-victim/advance", bytes.NewReader([]byte(`{"action":"cancel"}`)))
+	auth(req3, "tok-attacker")
+	rr3 := httptest.NewRecorder()
+	h.ServeHTTP(rr3, req3)
+	if rr3.Code != 404 {
+		t.Fatalf("advance want 404 got %d", rr3.Code)
+	}
+}
+
+func TestCrossTenantIDConflictNoOverwrite(t *testing.T) {
+	// Same org duplicate id → 409
+	s := withWorkdir(t, api.Options{})
+	h := s.Handler()
+	body := []byte(`{"id":"dup","baselineRef":"b.json","changeRef":"c.json"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+	auth(req, "local-dev")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 201 {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"id":"dup","baselineRef":"b2.json","changeRef":"c2.json"}`)))
+	auth(req2, "local-dev")
+	rr2 := httptest.NewRecorder()
+	h.ServeHTTP(rr2, req2)
+	if rr2.Code != 409 {
+		t.Fatalf("want 409 got %d %s", rr2.Code, rr2.Body.String())
+	}
+}
+
+func TestIdempotencyOrgScoped(t *testing.T) {
+	tokens := map[string]authn.Principal{
+		"tok-a": {ID: "a", Roles: []string{"operator"}, Org: "org-a"},
+		"tok-b": {ID: "b", Roles: []string{"operator"}, Org: "org-b"},
+	}
+	s := withWorkdir(t, api.Options{AuthN: &authn.StaticToken{Tokens: tokens}})
+	h := s.Handler()
+	body := []byte(`{"id":"r-a","idempotencyKey":"shared-key","baselineRef":"b.json","changeRef":"c.json"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+	auth(req, "tok-a")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 201 {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	// org-b can use same idempotency key
+	bodyB := []byte(`{"id":"r-b","idempotencyKey":"shared-key","baselineRef":"b.json","changeRef":"c.json"}`)
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(bodyB))
+	auth(reqB, "tok-b")
+	rrB := httptest.NewRecorder()
+	h.ServeHTTP(rrB, reqB)
+	if rrB.Code != 201 {
+		t.Fatalf("org-b same key want 201 got %d %s", rrB.Code, rrB.Body.String())
+	}
 }
 
 func TestWorkDirSandbox(t *testing.T) {
 	root := t.TempDir()
-	s := api.NewServerWith(api.Options{
-		AuthN:       authn.Default(),
-		WorkDirRoot: root,
-	})
+	s := withWorkdir(t, api.Options{WorkDirRoot: root})
 	h := s.Handler()
-	// absolute path outside root rejected on create
 	body := []byte(`{"id":"r2","baselineRef":"/etc/passwd","changeRef":"c.json"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
 	auth(req, "local-dev")
@@ -175,7 +240,20 @@ func TestWorkDirSandbox(t *testing.T) {
 	if rr.Code != 400 {
 		t.Fatalf("want 400 for path escape, got %d %s", rr.Code, rr.Body.String())
 	}
-	// relative ok
+	// symlink escape
+	outside := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outside, "secret.json"), []byte(`{}`), 0o644)
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, link); err == nil {
+		body = []byte(`{"id":"r-sym","baselineRef":"escape/secret.json","changeRef":"c.json"}`)
+		req = httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+		auth(req, "local-dev")
+		rr = httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != 400 {
+			t.Fatalf("symlink escape want 400 got %d %s", rr.Code, rr.Body.String())
+		}
+	}
 	_ = os.WriteFile(filepath.Join(root, "b.json"), []byte(`{}`), 0o644)
 	body = []byte(`{"id":"r3","baselineRef":"b.json","changeRef":"c.json"}`)
 	req = httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
@@ -195,7 +273,6 @@ func TestOIDCStubRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// fake JWT
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
 	req.Header.Set("Authorization", "Bearer aaa.bbb.ccc")
 	_, err = a.Authenticate(req)
@@ -217,10 +294,7 @@ func TestFromEnvRequiresToken(t *testing.T) {
 }
 
 func TestAsyncAdvanceEnqueue(t *testing.T) {
-	s := api.NewServerWith(api.Options{
-		AuthN: authn.Default(),
-		Async: true,
-	})
+	s := withWorkdir(t, api.Options{Async: true})
 	h := s.Handler()
 	body := []byte(`{"id":"async-r1","baselineRef":"b.json","changeRef":"c.json"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
@@ -244,15 +318,20 @@ func TestAsyncAdvanceEnqueue(t *testing.T) {
 		t.Fatalf("%v", out)
 	}
 
-	// metrics endpoint
+	// cancel cancels jobs
+	reqC := httptest.NewRequest(http.MethodPost, "/v1/runs/async-r1/advance", bytes.NewReader([]byte(`{"action":"cancel"}`)))
+	auth(reqC, "local-dev")
+	rrC := httptest.NewRecorder()
+	h.ServeHTTP(rrC, reqC)
+	if rrC.Code != 200 {
+		t.Fatalf("cancel %d %s", rrC.Code, rrC.Body.String())
+	}
+
 	req3 := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
 	rr3 := httptest.NewRecorder()
 	h.ServeHTTP(rr3, req3)
-	if rr3.Code != 200 {
-		t.Fatalf("metrics %d", rr3.Code)
-	}
-	if !bytes.Contains(rr3.Body.Bytes(), []byte("rehearsal_jobs")) {
-		t.Fatalf("metrics body: %s", rr3.Body.String())
+	if rr3.Code != 200 || !bytes.Contains(rr3.Body.Bytes(), []byte("rehearsal_jobs")) {
+		t.Fatalf("metrics %d %s", rr3.Code, rr3.Body.String())
 	}
 }
 
@@ -263,8 +342,7 @@ func TestSQLBackendRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := api.NewServerWith(api.Options{
-		AuthN:   authn.Default(),
+	s := withWorkdir(t, api.Options{
 		Backend: &api.SQLBackend{S: st},
 	})
 	h := s.Handler()
@@ -276,7 +354,6 @@ func TestSQLBackendRuns(t *testing.T) {
 	if rr.Code != 201 {
 		t.Fatalf("create %d %s", rr.Code, rr.Body.String())
 	}
-	// idempotent
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
 	auth(req2, "local-dev")
 	rr2 := httptest.NewRecorder()
@@ -290,5 +367,27 @@ func TestSQLBackendRuns(t *testing.T) {
 	h.ServeHTTP(rr3, req3)
 	if rr3.Code != 200 {
 		t.Fatalf("get %d", rr3.Code)
+	}
+}
+
+func TestCalibrationOrgScoped(t *testing.T) {
+	tokens := map[string]authn.Principal{
+		"tok-a": {ID: "a", Roles: []string{"operator"}, Org: "org-a"},
+		"tok-b": {ID: "b", Roles: []string{"operator"}, Org: "org-b"},
+	}
+	be := api.NewMemoryBackend()
+	_ = be.RecordCalibration("org-a", calibrate.Outcome{Scenario: "s1", Predicted: true, Observed: true, Verified: true})
+	_ = be.RecordCalibration("org-b", calibrate.Outcome{Scenario: "s1", Predicted: true, Observed: false, Verified: true})
+	s := withWorkdir(t, api.Options{AuthN: &authn.StaticToken{Tokens: tokens}, Backend: be})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/calibration", nil)
+	auth(req, "tok-a")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("org-a")) {
+		t.Fatalf("%s", rr.Body.String())
 	}
 }

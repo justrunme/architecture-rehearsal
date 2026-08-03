@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.2.1 — 2026-08-03
+
+**Trust Boundaries + Durability** — production isolation and evidence integrity.
+
+### Multi-tenant write isolation (P0)
+- Run primary key is **`(org, id)`** — same run ID allowed across tenants, never overwrites another org
+- Create returns **409 Conflict** on duplicate `(org, id)` or idempotency key in the same org
+- Idempotency unique on **`(org, idempotency_key)`** — one tenant cannot block another’s key
+- All run/job access is org-scoped (`GetRun(org,id)`, enqueue, cancel)
+
+### Evidence chain (P0)
+- `VerifyChain` **always recomputes** live baseline/change/report/observed digests
+- Embedded report digests alone are **not trusted**; live mismatch always fails
+- Mutation tests: baseline, change, report digest, observed, lying bindings
+
+### Workspace sandbox (P1)
+- `serve` **requires `--workdir`** (refuses to start without it)
+- Blocks absolute escape, `..`, and **symlink escape** outside root
+- Ready checks backend (DB) + workdir
+
+### Calibration (P1)
+- Calibration rows are **org-scoped**; `/v1/calibration` returns only caller org
+
+### Policy snapshots (P1)
+- Per-run immutable policy file under `policies/<org>/snapshots/<digest>-<runId>.yaml`
+- Run labels carry `policyDigest`
+
+### Jobs / leases (P1)
+- Lease TTL default **15m** (covers 10m run timeout) + **heartbeat renew**
+- **Fencing token** on claim; stale complete/fail rejected
+- Cancel advances cancel pending/leased jobs for the run
+- Operation ID for exactly-once logical enqueue
+
+### Helm durability (P1)
+- **PVC** by default (`persistence.enabled=true`) instead of emptyDir
+- Postgres via `REHEARSAL_DATABASE_URL` **wins** over `--db` (no SQLite override when PG set)
+
 ## 1.2.0 — 2026-08-03
 
 **Real Control Plane** — durable storage, async jobs, metrics.
