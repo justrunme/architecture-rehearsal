@@ -16,7 +16,10 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.5.1** — production-oriented control plane + packaged K8s operator (trust boundary fixed).  
+**Status: v1.5.1 (flagship freeze)** — deterministic change-safety control plane + secured K8s operator.  
+
+> Architecture Rehearsal is a deterministic Kubernetes change-safety control plane that predicts deployment failures, enforces policy gates, verifies production outcomes, and produces cryptographically bound evidence.
+
 Evidence integrity + secure API + trust boundaries required for production.  
 **v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
@@ -49,7 +52,7 @@ Evidence integrity + secure API + trust boundaries required for production.
 | GitOps full admission gate | **Reference** workflow + adapters |
 | Calibration engine | **Supported** (org-scoped SQL) |
 | Operator JSON CR ↔ control plane | **Supported** (`operator --api`) |
-| Live controller-runtime operator | **Supported** (v1.5.1 packaged: CRD, Helm, Deployment, RBAC, NetworkPolicy) |
+| Live controller-runtime operator | **Supported** (v1.5.1: CRD, Helm, RBAC, NetworkPolicy; URL/token deployment-only) |
 | Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
 | LLM in risk path | **Not supported** |
 
@@ -133,19 +136,22 @@ helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
 
 ### Kubernetes operator (v1.5.1)
 
+Full docs: [docs/operator.md](docs/operator.md) · security: [docs/operator-security.md](docs/operator-security.md) · example: [examples/operator/rehearsalrun.yaml](examples/operator/rehearsalrun.yaml)
+
 ```bash
 kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
-# standalone manifests:
-# kubectl apply -f deploy/operator/deployment.yaml  # edit Secret + API URL first
+kubectl create secret generic rehearsal-operator-token --from-literal=token="$REHEARSAL_API_TOKEN"
+kubectl apply -k config/operator/
 
-# or Helm with operator.enabled=true (shares api.token Secret)
-export REHEARSAL_API_URL=http://architecture-rehearsal:8080   # operator Deployment env only
-export REHEARSAL_API_TOKEN=...
-go run ./cmd/rehearsal-operator
+# Helm opt-in (default operator.enabled=false):
+# helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
+#   --set api.token=... --set operator.enabled=true --set image.tag=1.5.1
 ```
 
 **Trust boundary:** `REHEARSAL_API_URL` / token only from operator Deployment/Secret.  
 `spec.controlPlaneURL` was removed — CRs cannot redirect the operator or steal the token.
+
+**Generation:** run id is `{namespace}-{name}-g{generation}` — Spec changes create a new control-plane run.
 
 
 ---

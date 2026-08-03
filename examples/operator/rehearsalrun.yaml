@@ -1,0 +1,12 @@
+apiVersion: rehearsal.io/v1beta1
+kind: RehearsalRun
+metadata:
+  name: payments-rollout
+  namespace: default
+spec:
+  baselineRef: baselines/prod.json
+  changeRef: changes/payments-v2.json
+  # observedRef: observed/prod-after.json
+  async: true
+  # NEVER set controlPlaneURL — removed in v1.5.1 for security.
+  # Operator uses REHEARSAL_API_URL from its Deployment only.

@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rehearsal-operator
+  labels:
+    app.kubernetes.io/name: rehearsal-operator
+rules:
+  - apiGroups: [rehearsal.io]
+    resources: [rehearsalruns]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rehearsal.io]
+    resources: [rehearsalruns/status]
+    verbs: [get, update, patch]
+  - apiGroups: [rehearsal.io]
+    resources: [rehearsalruns/finalizers]
+    verbs: [update]
+  # leader election
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]

@@ -1,0 +1,39 @@
+# Egress: DNS + control plane only. Adjust labels/namespace for your install.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rehearsal-operator-egress
+  labels:
+    app.kubernetes.io/name: rehearsal-operator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rehearsal-operator
+  policyTypes: [Egress]
+  egress:
+    # Control plane Service (same namespace by default)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: architecture-rehearsal
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Kubernetes API (leader election, CR watch) — cluster network
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+      ports:
+        - protocol: TCP
+          port: 443
+    # CoreDNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

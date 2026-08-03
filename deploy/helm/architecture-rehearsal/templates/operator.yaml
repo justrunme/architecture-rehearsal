@@ -20,6 +20,12 @@ rules:
   - apiGroups: [rehearsal.io]
     resources: [rehearsalruns/finalizers]
     verbs: [update]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -60,17 +66,17 @@ spec:
           image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           args:
-            - --leader-elect={{ .Values.operator.leaderElect | default false }}
+            - --leader-elect={{ .Values.operator.leaderElection | default true }}
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8082
           env:
             # Trust boundary: URL only from deployment, never from RehearsalRun CR.
             - name: REHEARSAL_API_URL
-              value: {{ .Values.operator.apiURL | default (printf "http://%s:%v" (include "architecture-rehearsal.fullname" .) .Values.service.port) | quote }}
+              value: {{ coalesce .Values.operator.controlPlaneURL .Values.operator.apiURL (printf "http://%s:%v" (include "architecture-rehearsal.fullname" .) .Values.service.port) | quote }}
             - name: REHEARSAL_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ if .Values.api.existingSecret }}{{ .Values.api.existingSecret }}{{ else }}{{ include "architecture-rehearsal.fullname" . }}-api{{ end }}
+                  name: {{ if .Values.operator.existingSecret }}{{ .Values.operator.existingSecret }}{{ else if .Values.api.existingSecret }}{{ .Values.api.existingSecret }}{{ else }}{{ include "architecture-rehearsal.fullname" . }}-api{{ end }}
                   key: {{ .Values.api.existingSecretKey | default "token" }}
           ports:
             - name: health

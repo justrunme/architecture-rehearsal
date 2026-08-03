@@ -32,11 +32,20 @@ type RehearsalRunReconciler struct {
 	APIBase string
 	// Token is REHEARSAL_API_TOKEN (from Secret).
 	Token string
+	// ClientFactory builds a control-plane client (tests inject).
+	ClientFactory func(base, token string) *operator.ControlPlaneClient
 }
 
 // +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns/finalizers,verbs=update
+
+func (r *RehearsalRunReconciler) cpClient(base, token string) *operator.ControlPlaneClient {
+	if r.ClientFactory != nil {
+		return r.ClientFactory(base, token)
+	}
+	return &operator.ControlPlaneClient{BaseURL: base, Token: token}
+}
 
 func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -63,19 +72,23 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.fail(ctx, &cr, "REHEARSAL_API_TOKEN required (Secret mount)")
 	}
 
+	// Accepted: CR schema valid and operator config present.
+	setCond(&cr, rehearsalv1beta1.ConditionAccepted, metav1.ConditionTrue, "Accepted", "spec accepted by operator")
+	setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionFalse, "None", "")
+
 	digest, err := SpecDigest(cr.Spec)
 	if err != nil {
 		return r.fail(ctx, &cr, "spec digest: "+err.Error())
 	}
 
-	// New control-plane run id per generation so spec changes never silently reuse old baseline/change.
+	// Run ID is immutable per generation: new generation → new control-plane run.
 	runID := fmt.Sprintf("%s-%s-g%d", cr.Namespace, cr.Name, cr.Generation)
-	// Keep previous id if generation unchanged and we already have one.
-	if cr.Status.ObservedGeneration == cr.Generation && cr.Status.ControlPlaneRunID != "" && cr.Status.SpecDigest == digest {
+	sameGen := cr.Status.ObservedGeneration == cr.Generation && cr.Status.SpecDigest == digest
+	if sameGen && cr.Status.ControlPlaneRunID != "" {
 		runID = cr.Status.ControlPlaneRunID
 	}
 
-	cp := &operator.ControlPlaneClient{BaseURL: apiURL, Token: token}
+	cp := r.cpClient(apiURL, token)
 	rr := run.NewRun(runID, runID, run.Spec{
 		BaselineRef: cr.Spec.BaselineRef,
 		ChangeRef:   cr.Spec.ChangeRef,
@@ -95,15 +108,11 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.fail(ctx, &cr, err.Error())
 	}
 	if ens.Conflict {
-		// Existing run with same id — verify it matches this generation's digests via labels/refs.
-		if ens.Run != nil {
-			if !specMatchesRun(cr.Spec, ens.Run) {
-				// Spec drift: create a new immutable run id with generation suffix is already set;
-				// if still conflict, fail loudly rather than overwrite.
-				return r.fail(ctx, &cr, fmt.Sprintf(
-					"control plane run %q exists with different refs (immutable); delete CR or change name", runID))
-			}
+		if ens.Run != nil && !specMatchesRun(cr.Spec, ens.Run) {
+			return r.fail(ctx, &cr, fmt.Sprintf(
+				"control plane run %q exists with different refs (immutable); delete CR or bump generation via name change", runID))
 		}
+		// 409 with matching spec is OK (idempotent re-create).
 	}
 
 	async := true
@@ -111,10 +120,13 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		async = *cr.Spec.Async
 	}
 
-	// Advance if not terminal, or if this is a new generation that needs first advance.
-	needAdvance := cr.Status.Phase == "" || !isTerminal(cr.Status.Phase) ||
-		cr.Status.ObservedGeneration != cr.Generation || cr.Status.SpecDigest != digest
-	if needAdvance && (ens.Run == nil || !ens.Run.Status.Phase.Terminal()) {
+	// Do not re-advance if we already enqueued a job for this generation, or run is terminal.
+	alreadyAdvanced := sameGen && cr.Status.JobID != ""
+	existingTerminal := ens.Run != nil && ens.Run.Status.Phase.Terminal()
+	needAdvance := !alreadyAdvanced && !existingTerminal &&
+		(cr.Status.Phase == "" || !isTerminal(cr.Status.Phase) || !sameGen)
+
+	if needAdvance {
 		adv, err := cp.Advance(runID, async)
 		if err != nil {
 			logger.Error(err, "advance")
@@ -123,6 +135,7 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if adv != nil && adv.JobID != "" {
 			cr.Status.JobID = adv.JobID
 		}
+		setCond(&cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionTrue, "Advancing", "control plane advance requested")
 	}
 
 	latest, err := cp.GetRun(runID)
@@ -136,7 +149,22 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	cr.Status.Message = latest.Status.Message
 	cr.Status.ObservedGeneration = cr.Generation
 	cr.Status.SpecDigest = digest
-	setCond(&cr, "Ready", metav1.ConditionTrue, "Synced", "synced with control plane")
+	cr.Status.EvidenceDigest = evidenceFromRun(latest)
+
+	if isTerminal(cr.Status.Phase) {
+		setCond(&cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionFalse, "Terminal", "run finished")
+		if cr.Status.Phase == string(run.PhaseFailed) {
+			setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "Failed", latest.Status.Message)
+			setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionTrue, "Failed", latest.Status.Message)
+		} else {
+			setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionTrue, "Complete", "run reached terminal phase")
+			setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionFalse, "None", "")
+		}
+	} else {
+		setCond(&cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionTrue, "InProgress", "run not terminal")
+		setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "InProgress", "waiting for control plane")
+	}
+
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -156,6 +184,24 @@ func SpecDigest(spec rehearsalv1beta1.RehearsalRunSpec) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func evidenceFromRun(rr *run.RehearsalRun) string {
+	if rr == nil {
+		return ""
+	}
+	if rr.Labels != nil {
+		if d := rr.Labels["chainBlob"]; d != "" {
+			return d
+		}
+		if d := rr.Labels["_semanticDigest"]; d != "" {
+			return d
+		}
+	}
+	if rr.Digests.ReportDigest != "" {
+		return string(rr.Digests.ReportDigest)
+	}
+	return ""
+}
+
 func specMatchesRun(spec rehearsalv1beta1.RehearsalRunSpec, rr *run.RehearsalRun) bool {
 	if rr == nil {
 		return false
@@ -168,21 +214,31 @@ func specMatchesRun(spec rehearsalv1beta1.RehearsalRunSpec, rr *run.RehearsalRun
 
 func (r *RehearsalRunReconciler) fail(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun, msg string) (ctrl.Result, error) {
 	cr.Status.Message = msg
-	setCond(cr, "Ready", metav1.ConditionFalse, "Error", msg)
+	setCond(cr, rehearsalv1beta1.ConditionAccepted, metav1.ConditionTrue, "Accepted", "spec accepted")
+	setCond(cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionFalse, "Error", msg)
+	setCond(cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "Error", msg)
+	setCond(cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionTrue, "Error", msg)
 	_ = r.Status().Update(ctx, cr)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
+// setCond updates a condition. lastTransitionTime changes only when status/reason/message change.
 func setCond(cr *rehearsalv1beta1.RehearsalRun, typ string, status metav1.ConditionStatus, reason, msg string) {
 	now := metav1.Now()
 	for i := range cr.Status.Conditions {
-		if cr.Status.Conditions[i].Type == typ {
-			cr.Status.Conditions[i].Status = status
-			cr.Status.Conditions[i].Reason = reason
-			cr.Status.Conditions[i].Message = msg
-			cr.Status.Conditions[i].LastTransitionTime = now
+		c := &cr.Status.Conditions[i]
+		if c.Type != typ {
+			continue
+		}
+		if c.Status == status && c.Reason == reason && c.Message == msg {
+			// no transition — keep lastTransitionTime
 			return
 		}
+		c.Status = status
+		c.Reason = reason
+		c.Message = msg
+		c.LastTransitionTime = now
+		return
 	}
 	cr.Status.Conditions = append(cr.Status.Conditions, metav1.Condition{
 		Type: typ, Status: status, Reason: reason, Message: msg, LastTransitionTime: now,
@@ -204,3 +260,6 @@ func (r *RehearsalRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&rehearsalv1beta1.RehearsalRun{}).
 		Complete(r)
 }
+
+// unused import guard for time (probes may need)
+var _ = time.Second

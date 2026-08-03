@@ -52,14 +52,16 @@ postgresql:
 # controller-runtime operator (v1.5.1). API URL is deployment-only (no CR override).
 operator:
   enabled: false
-  replicas: 1
-  leaderElect: false
+  replicas: 2
+  leaderElection: true
   image:
     repository: ghcr.io/justrunme/architecture-rehearsal-operator
     tag: "1.5.1"
     pullPolicy: IfNotPresent
-  # Empty → in-cluster Service of this chart.
-  apiURL: ""
+  # controlPlaneURL is the in-cluster URL set on the operator Deployment only.
+  # Never expose this as a CR field.
+  controlPlaneURL: "" # empty → http://{{fullname}}:{{service.port}}
+  existingSecret: "" # empty → use chart api secret
   networkPolicy:
     enabled: true
   resources:
