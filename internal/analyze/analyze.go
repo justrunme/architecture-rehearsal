@@ -15,7 +15,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-const Version = "0.4.0"
+const Version = "0.7.0"
 
 // Run builds proposed graph, validates, runs scenarios, returns Report.
 func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
@@ -51,6 +51,8 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 		cov.RequiredMissing = append(cov.RequiredMissing, r.ID)
 		cov.Gaps = append(cov.Gaps, r.Message)
 	}
+	// Active ingestion/coverage gaps must never silently approve (v0.4.1 fail-closed).
+	applyActiveCoverageGaps(ch, base, &cov)
 	cov.RequiredMissing = uniqueStrings(cov.RequiredMissing)
 	for _, f := range findings {
 		if f.Risk == RiskUnknown {
@@ -65,7 +67,8 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 			hasConfidentFinding = true
 		}
 	}
-	// Insufficient only forces unknown when we lack a confident matched finding.
+	// Insufficient forces unknown when we lack a confident matched finding.
+	// Active coverage_gap always blocks approve even when empty findings.
 	insufficient := len(cov.RequiredMissing) > 0 && !hasConfidentFinding
 
 	rep := &Report{
@@ -200,10 +203,12 @@ func computeCoverage(base *graph.Snapshot, ch *loader.ChangeEnvelope, findings [
 	}
 	cov.Domains["observability"] = oScore
 
-	// network / capacity
+	// network / capacity (scheduling estimate or explicit capacity meta)
 	nScore := 0.0
 	if base.Meta != nil {
-		if _, ok := base.Meta["pod_ip_capacity_available"]; ok {
+		if _, ok := base.Meta["pod_scheduling_capacity_estimate"]; ok {
+			nScore = 0.8
+		} else if _, ok := base.Meta["pod_ip_capacity_available"]; ok {
 			nScore = 0.8
 		}
 	}
@@ -232,9 +237,8 @@ func computeCoverage(base *graph.Snapshot, ch *loader.ChangeEnvelope, findings [
 			cov.RequiredMissing = append(cov.RequiredMissing, "metric_labels")
 		}
 	}
-	if kind == "helm-upgrade" || kind == "scale-up" || loader.FactString(facts, "scenario", "") == "cni-ip-capacity" {
-		if base.Meta == nil || base.Meta["pod_ip_capacity_available"] == nil {
-			// can still derive from nodes sometimes — only require if no node capacity attrs
+	if kind == "helm-upgrade" || kind == "scale-up" || kind == "k8s-manifest" || loader.FactString(facts, "scenario", "") == "cni-ip-capacity" {
+		if !hasCapacityMeta(base) {
 			hasNodeCap := false
 			for _, n := range base.Nodes {
 				if n.Kind == graph.KindNode && n.AttrInt("allocatablePods") > 0 {
@@ -243,7 +247,7 @@ func computeCoverage(base *graph.Snapshot, ch *loader.ChangeEnvelope, findings [
 				}
 			}
 			if !hasNodeCap {
-				cov.RequiredMissing = append(cov.RequiredMissing, "pod_ip_capacity")
+				cov.RequiredMissing = append(cov.RequiredMissing, "pod_scheduling_capacity")
 			}
 		}
 	}
@@ -305,4 +309,41 @@ func maxF(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func hasCapacityMeta(base *graph.Snapshot) bool {
+	if base == nil || base.Meta == nil {
+		return false
+	}
+	if _, ok := base.Meta["pod_scheduling_capacity_estimate"]; ok {
+		return true
+	}
+	if _, ok := base.Meta["pod_ip_capacity_available"]; ok {
+		return true
+	}
+	return false
+}
+
+// applyActiveCoverageGaps elevates change/baseline ingestion gaps so approve is impossible.
+func applyActiveCoverageGaps(ch *loader.ChangeEnvelope, base *graph.Snapshot, cov *Coverage) {
+	if ch != nil && ch.Facts != nil {
+		if gap, ok := ch.Facts["coverage_gap"].(string); ok && gap != "" {
+			cov.RequiredMissing = append(cov.RequiredMissing, "coverage_gap:"+gap)
+			cov.Gaps = append(cov.Gaps, "change coverage_gap: "+gap)
+		}
+		if n := loader.FactInt(ch.Facts, "yaml_parse_errors", 0); n > 0 {
+			cov.RequiredMissing = append(cov.RequiredMissing, "yaml_parse_errors")
+			cov.Gaps = append(cov.Gaps, fmt.Sprintf("change yaml_parse_errors=%d", n))
+		}
+	}
+	if base != nil && base.Meta != nil {
+		if gap, ok := base.Meta["coverage_gap"].(string); ok && gap != "" {
+			cov.RequiredMissing = append(cov.RequiredMissing, "baseline_coverage_gap:"+gap)
+			cov.Gaps = append(cov.Gaps, "baseline coverage_gap: "+gap)
+		}
+		if n, ok := base.Meta["yaml_parse_errors"]; ok {
+			cov.RequiredMissing = append(cov.RequiredMissing, "baseline_yaml_parse_errors")
+			cov.Gaps = append(cov.Gaps, fmt.Sprintf("baseline yaml_parse_errors=%v", n))
+		}
+	}
 }
