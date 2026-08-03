@@ -21,6 +21,11 @@ jobs:
         run: go test ./...
       - name: Build multi-arch assets
         run: bash scripts/release-assets.sh "${GITHUB_REF_NAME#v}"
+      - name: Build Docker images (validation)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          docker build -t "ghcr.io/justrunme/architecture-rehearsal:${VER}" -f Dockerfile .
+          docker build -t "ghcr.io/justrunme/architecture-rehearsal-operator:${VER}" -f Dockerfile.operator .
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

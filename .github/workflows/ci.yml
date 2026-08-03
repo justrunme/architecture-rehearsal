@@ -80,8 +80,29 @@ jobs:
           ./bin/rehearsal backup --db "$PWD/rehearsal.db" --out /tmp/rehearsal-bak.db || \
             ./bin/rehearsal backup --db data/rehearsal.db --out /tmp/rehearsal-bak.db || true
           kill $pid
-      - name: Docker build (reference image)
-        run: docker build -t architecture-rehearsal:ci -f Dockerfile .
+      - name: Docker build (control plane + operator)
+        run: |
+          docker build -t architecture-rehearsal:ci -f Dockerfile .
+          docker build -t architecture-rehearsal-operator:ci -f Dockerfile.operator .
+      - name: Helm template (operator enabled)
+        run: |
+          if command -v helm >/dev/null; then
+            helm template e2e deploy/helm/architecture-rehearsal \
+              --set api.token=ci-token \
+              --set operator.enabled=true \
+              --set operator.leaderElection=true >/tmp/helm-out.yaml
+            grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
+            # CRD schema must not define a controlPlaneURL property
+            ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
+            ! grep -r 'ControlPlaneURL' api/v1beta1/ --include='*.go'
+          else
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            helm template e2e deploy/helm/architecture-rehearsal \
+              --set api.token=ci-token \
+              --set operator.enabled=true >/tmp/helm-out.yaml
+            grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
+            ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
+          fi
 
   postgres:
     runs-on: ubuntu-latest

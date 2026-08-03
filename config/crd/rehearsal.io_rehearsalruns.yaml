@@ -34,7 +34,7 @@ spec:
       schema:
         openAPIV3Schema:
           type: object
-          description: RehearsalRun drives a control-plane run. controlPlaneURL is intentionally NOT on the CR (v1.5.1 trust boundary).
+          description: RehearsalRun drives a control-plane run. API endpoint is never set on the CR (v1.5.1 trust boundary).
           properties:
             apiVersion:
               type: string
@@ -45,7 +45,7 @@ spec:
             spec:
               type: object
               required: [baselineRef, changeRef]
-              # Forbid controlPlaneURL and any other user-supplied override fields (v1.5.1).
+              # Forbid unknown fields (no API URL override on CR).
               additionalProperties: false
               properties:
                 baselineRef:
@@ -79,6 +79,8 @@ spec:
                 controlPlaneRunId:
                   type: string
                 jobId:
+                  type: string
+                evidenceDigest:
                   type: string
                 message:
                   type: string
