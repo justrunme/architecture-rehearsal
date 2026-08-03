@@ -84,5 +84,21 @@ func (b *SQLBackend) JobStats() (pending, leased, done, failed int) { return b.S
 func (b *SQLBackend) Ready() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	return b.S.Ping(ctx)
+	if err := b.S.Ping(ctx); err != nil {
+		return err
+	}
+	if b.S.Blob != nil {
+		return b.S.Blob.Ready()
+	}
+	return nil
 }
+func (b *SQLBackend) GetJob(org, id string) (*persist.JobView, error) { return b.S.GetJob(org, id) }
+func (b *SQLBackend) ListJobs(org, runID string, limit int) ([]persist.JobView, error) {
+	return b.S.ListJobs(org, runID, limit)
+}
+func (b *SQLBackend) CancelJob(org, id string) error { return mapErr(b.S.CancelJob(org, id)) }
+func (b *SQLBackend) RetryJob(org, id string) error  { return mapErr(b.S.RetryJob(org, id)) }
+func (b *SQLBackend) ListAudit(org string, limit int) ([]persist.AuditEntry, error) {
+	return b.S.ListAudit(org, limit)
+}
+func (b *SQLBackend) SchemaVersion() int { return b.S.SchemaVersion() }

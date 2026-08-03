@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.4.0 — 2026-08-03
+
+**Platform hooks** — operator ↔ control plane, GitHub/GitLab status adapters.
+
+### Operator
+- `rehearsal operator --api URL --token TOK` syncs RehearsalRun JSON CR → HTTP control plane
+- Local engine path retained when `--api` omitted
+
+### CI status
+- `rehearsal status github|gitlab --sha --state|--decision|--exit-code`
+- Library: `internal/integrations/status` (Checks/Commit Status)
+
+### Gate references
+- GitHub Actions / GitLab CI examples point at v1.4.0
+
+## 1.3.0 — 2026-08-03
+
+**Operational control plane** — jobs, audit, OIDC, metrics, S3 blobs.
+
+### Job API
+- `GET /v1/jobs`, `GET /v1/jobs/{id}`, `POST .../cancel`, `POST .../retry`
+- Exactly-once enqueue via operation ID (unchanged) + cancel/retry
+
+### Audit API
+- `GET /v1/audit?limit=` tenant-filtered
+
+### Auth
+- Optional **real OIDC/JWKS** (`REHEARSAL_OIDC_ISSUER`, `REHEARSAL_OIDC_JWKS_URL`, `REHEARSAL_OIDC_AUDIENCE`)
+- Static tokens remain for self-hosted; unsigned JWT never accepted
+
+### Ops
+- Pagination `limit` on list runs
+- Metrics: `rehearsal_queue_depth`, `rehearsal_schema_version`
+- Readyz checks DB + blob
+- S3-compatible blob interface (`persist.S3Blob`) for multi-replica
+
+## 1.2.2 — 2026-08-03
+
+**Durable means durable** — migrations, Postgres CI, backup, concurrent workers.
+
+### Storage
+- Versioned migrations (schema v3 indexes)
+- `rehearsal backup --db --out` SQLite backup smoke
+- Concurrent worker claim test (exactly one lease)
+
+### CI
+- Postgres service job: Open / CreateRun / ClaimJob / Complete with fence
+
 ## 1.2.1 — 2026-08-03
 
 **Trust Boundaries + Durability** — production isolation and evidence integrity.

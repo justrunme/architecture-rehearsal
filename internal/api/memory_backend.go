@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/justrunme/architecture-rehearsal/internal/calibrate"
+	"github.com/justrunme/architecture-rehearsal/internal/persist"
 	"github.com/justrunme/architecture-rehearsal/internal/run"
 )
 
@@ -257,3 +258,79 @@ func (s *MemoryBackend) JobStats() (pending, leased, done, failed int) {
 }
 
 func (s *MemoryBackend) Ready() error { return nil }
+
+func (s *MemoryBackend) GetJob(org, id string) (*persist.JobView, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, j := range s.jobs {
+		if j.Org == org && j.ID == id {
+			return &persist.JobView{ID: j.ID, Kind: j.Kind, RunID: j.RunID, Org: j.Org, Status: j.Status, OperationID: j.OpID}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *MemoryBackend) ListJobs(org, runID string, limit int) ([]persist.JobView, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	var out []persist.JobView
+	for i := len(s.jobs) - 1; i >= 0 && len(out) < limit; i-- {
+		j := s.jobs[i]
+		if j.Org != org {
+			continue
+		}
+		if runID != "" && j.RunID != runID {
+			continue
+		}
+		out = append(out, persist.JobView{ID: j.ID, Kind: j.Kind, RunID: j.RunID, Org: j.Org, Status: j.Status, OperationID: j.OpID})
+	}
+	return out, nil
+}
+
+func (s *MemoryBackend) CancelJob(org, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, j := range s.jobs {
+		if j.Org == org && j.ID == id && (j.Status == "pending" || j.Status == "leased") {
+			s.jobs[i].Status = "cancelled"
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *MemoryBackend) RetryJob(org, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, j := range s.jobs {
+		if j.Org == org && j.ID == id {
+			s.jobs[i].Status = "pending"
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *MemoryBackend) ListAudit(org string, limit int) ([]persist.AuditEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []persist.AuditEntry
+	for i := len(s.audit) - 1; i >= 0 && len(out) < limit; i-- {
+		a := s.audit[i]
+		if a.Org != org {
+			continue
+		}
+		out = append(out, persist.AuditEntry{
+			Time: a.Time.Format(time.RFC3339Nano), Actor: a.Actor, Action: a.Action, Target: a.Target, Detail: a.Detail, Org: a.Org,
+		})
+	}
+	return out, nil
+}
+
+func (s *MemoryBackend) SchemaVersion() int { return persist.CurrentSchema }
