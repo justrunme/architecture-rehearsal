@@ -45,7 +45,7 @@ jobs:
           # must be verified (exit 0)
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.0.0'
+        run: ./bin/rehearsal version | grep -q '1.0.1'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null
@@ -56,13 +56,17 @@ jobs:
           code=$?
           set -e
           test "$code" -eq 3
-      - name: Control plane API smoke
+      - name: Control plane API smoke (requires explicit token)
         run: |
-          ./bin/rehearsal serve --addr 127.0.0.1:18080 &
+          export REHEARSAL_API_TOKEN="ci-test-$(openssl rand -hex 16)"
+          ./bin/rehearsal serve --addr 127.0.0.1:18080 --workdir "$PWD" &
           pid=$!
           sleep 1
           curl -sf http://127.0.0.1:18080/healthz
-          curl -sf -H "Authorization: Bearer local-dev" http://127.0.0.1:18080/v1/version
+          # known bad tokens must fail
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
+          test "$code" = "401"
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version
           kill $pid
       - name: Docker build (reference image)
         run: docker build -t architecture-rehearsal:ci -f Dockerfile .

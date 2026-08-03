@@ -16,8 +16,8 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.0.0** — stable production **contract** for offline + self-hosted control plane.  
-Still not a multi-tenant SaaS; still not a published multi-arch GHCR product until your registry publish pipeline runs.
+**Status: v1.0.1** — offline change-gate is strong; networked API requires **explicit secure token** (see security notes).  
+**v1.0.0 network API was unsafe** (hardcoded tokens + tenant header bypass) — do not deploy `v1.0.0` API to a network.
 
 ---
 
@@ -38,8 +38,9 @@ Still not a multi-tenant SaaS; still not a published multi-arch GHCR product unt
 | DSSE-style sign (HMAC / Ed25519) | **Supported** (not full Sigstore) |
 | RehearsalRun lifecycle + operator loop | **Supported** (offline JSON CRDs) |
 | GitOps policy gate | **Supported** (policy engine + GH reference) |
-| Control plane HTTP API | **Supported** (`rehearsal serve`) |
-| Hierarchical RBAC + bearer auth | **Supported** (local; OIDC stub) |
+| Control plane HTTP API | **Supported** (v1.0.1 secure token required) |
+| Hierarchical RBAC + bearer auth | **Supported** (org-scoped; no OIDC stub) |
+| GitOps GH/GL full gate | **Reference** skeleton only |
 | Calibration engine | **Supported** |
 | Scenario package registry / SDK surface | **Supported** |
 | Helm chart | **Supported** (`deploy/helm`) |
@@ -87,17 +88,28 @@ make build && ./bin/rehearsal version   # 1.0.0
   --out out/run.json
 ```
 
-### Control plane API
+### Control plane API (v1.0.1)
 
 ```bash
-./bin/rehearsal serve --addr :8080
-curl -H "Authorization: Bearer local-dev" http://127.0.0.1:8080/v1/version
+# REQUIRED: strong token (serve refuses to start without it)
+export REHEARSAL_API_TOKEN="$(openssl rand -hex 32)"
+export REHEARSAL_API_ORG=my-org
+./bin/rehearsal serve --addr :8080 --workdir "$PWD"
+curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/version
+
+# local only (never production):
+# ./bin/rehearsal serve --insecure-dev --addr :8080
 ```
+
+**GitOps status:** `integrations/github-actions/gate.yml` is a **Reference** skeleton (not a full PR gate yet).
 
 ### Helm
 
 ```bash
-helm upgrade --install rehearsal deploy/helm/architecture-rehearsal
+helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
+  --set api.token="$(openssl rand -hex 32)" \
+  --set image.tag=1.0.1
+# chart fails closed if api.token is empty
 ```
 
 ---

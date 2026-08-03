@@ -13,6 +13,7 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
 	"github.com/justrunme/architecture-rehearsal/internal/api"
+	"github.com/justrunme/architecture-rehearsal/internal/authn"
 	"github.com/justrunme/architecture-rehearsal/internal/calibrate"
 	"github.com/justrunme/architecture-rehearsal/internal/chain"
 	"github.com/justrunme/architecture-rehearsal/internal/contract"
@@ -29,14 +30,33 @@ import (
 func cmdServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "listen address")
+	workdir := fs.String("workdir", "", "workspace root for file refs (recommended)")
+	insecureDev := fs.Bool("insecure-dev", false, "allow local-dev token (NEVER in production)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	srv := api.NewServer()
-	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}
+	if *insecureDev {
+		_ = os.Setenv("REHEARSAL_ALLOW_INSECURE_DEV", "1")
+	}
+	auth, err := authnFromEnvServe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve refused: %v\n", err)
+		fmt.Fprintln(os.Stderr, "set REHEARSAL_API_TOKEN to a strong secret, or pass --insecure-dev for local only")
+		return 2
+	}
+	srv := api.NewServerWith(api.Options{AuthN: auth, WorkDirRoot: *workdir})
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	go func() {
-		fmt.Fprintf(os.Stderr, "architecture-rehearsal control plane listening on %s\n", *addr)
+		fmt.Fprintf(os.Stderr, "architecture-rehearsal control plane listening on %s (secure token required)\n", *addr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 			os.Exit(5)
@@ -49,6 +69,10 @@ func cmdServe(args []string) int {
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
 	return 0
+}
+
+func authnFromEnvServe() (authn.Authenticator, error) {
+	return authn.FromEnv(authn.Config{RequireToken: true})
 }
 
 func cmdRun(args []string) int {
