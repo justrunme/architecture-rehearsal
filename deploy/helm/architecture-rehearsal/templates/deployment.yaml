@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}
+  labels:
+    app.kubernetes.io/name: architecture-rehearsal
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: architecture-rehearsal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: architecture-rehearsal
+    spec:
+      serviceAccountName: {{ include "architecture-rehearsal.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "--addr", ":8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: REHEARSAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "architecture-rehearsal.fullname" . }}-api
+                  key: token
+                  optional: true
+            - name: REHEARSAL_OIDC_ISSUER
+              value: {{ .Values.api.oidcIssuer | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

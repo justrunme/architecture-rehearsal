@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rehearsal.io/schemas/v1beta1/ImpactReport.json",
+  "title": "ImpactReport",
+  "type": "object",
+  "required": ["changeId", "decision", "risk"],
+  "properties": {
+    "apiVersion": { "type": "string" },
+    "kind": { "const": "ImpactReport" },
+    "changeId": { "type": "string" },
+    "baselineId": { "type": "string" },
+    "decision": { "type": "string", "enum": ["approve", "warn", "block", "unknown"] },
+    "risk": { "type": "string" },
+    "semanticDigest": { "type": "string" },
+    "findings": { "type": "array" },
+    "baselineDigest": { "type": "string" },
+    "changeDigest": { "type": "string" }
+  }
+}

@@ -1,0 +1,128 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rehearsalruns.rehearsal.io
+spec:
+  group: rehearsal.io
+  names:
+    kind: RehearsalRun
+    listKind: RehearsalRunList
+    plural: rehearsalruns
+    singular: rehearsalrun
+    shortNames: [rrun]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                clusterRef:
+                  type: string
+                baselineRef:
+                  type: string
+                changeRef:
+                  type: string
+                observedRef:
+                  type: string
+                scenarios:
+                  type: array
+                  items:
+                    type: string
+                gate:
+                  type: object
+                  properties:
+                    blockOn:
+                      type: array
+                      items:
+                        type: string
+                timeoutSeconds:
+                  type: integer
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                decision:
+                  type: string
+                risk:
+                  type: string
+                message:
+                  type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Decision
+          type: string
+          jsonPath: .status.decision
+        - name: Risk
+          type: string
+          jsonPath: .status.risk
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterconnections.rehearsal.io
+spec:
+  group: rehearsal.io
+  names:
+    kind: ClusterConnection
+    plural: clusterconnections
+    singular: clusterconnection
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                kubeconfigSecretRef:
+                  type: string
+                  description: "Secret name holding kubeconfig — never inline credentials"
+                server:
+                  type: string
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rehearsalpolicies.rehearsal.io
+spec:
+  group: rehearsal.io
+  names:
+    kind: RehearsalPolicy
+    plural: rehearsalpolicies
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                block:
+                  type: array
+                  items:
+                    type: string
+                warn:
+                  type: array
+                  items:
+                    type: string
+                unknownAsBlock:
+                  type: boolean
