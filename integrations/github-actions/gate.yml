@@ -1,0 +1,48 @@
+# Reference GitOps gate for GitHub Actions (v0.10 / v1.0)
+name: Architecture Rehearsal Gate
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "charts/**"
+      - "k8s/**"
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Install rehearsal
+        run: go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v1.0.0
+      - name: Render (example)
+        run: |
+          # helm template myapp ./charts/myapp > /tmp/rendered.yaml
+          # kustomize build ./k8s > /tmp/rendered.yaml
+          echo "wire your render step"
+      - name: Snapshot baseline (artifact or live)
+        run: |
+          # rehearsal snapshot k8s --dir baseline-dump --out baseline.json
+          true
+      - name: Analyze
+        id: analyze
+        run: |
+          set +e
+          rehearsal analyze --baseline baseline.json --change change.json --out out --quiet
+          echo "code=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+      - name: Policy
+        run: |
+          rehearsal policy --risk high --decision block || true
+      - name: Publish check summary
+        if: always()
+        run: |
+          echo "### Architecture Rehearsal" >> $GITHUB_STEP_SUMMARY
+          echo "Decision from analyze exit code: ${{ steps.analyze.outputs.code }}" >> $GITHUB_STEP_SUMMARY
+          echo "0=approve 1=warn 3=block 4=unknown" >> $GITHUB_STEP_SUMMARY

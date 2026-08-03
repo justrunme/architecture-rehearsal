@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rehearsal.io/schemas/v1beta1/ChangeEnvelope.json",
+  "title": "ChangeEnvelope",
+  "type": "object",
+  "required": ["id", "kind"],
+  "properties": {
+    "apiVersion": { "type": "string" },
+    "kind": { "type": "string" },
+    "id": { "type": "string" },
+    "title": { "type": "string" },
+    "seeds": { "type": "array", "items": { "type": "string" } },
+    "facts": { "type": "object" },
+    "patchNodes": { "type": "array" },
+    "removedNodes": { "type": "array", "items": { "type": "string" } }
+  }
+}
