@@ -1,10 +1,12 @@
-// Package api provides the self-hosted control-plane HTTP API (v0.11).
+// Package api provides the self-hosted control-plane HTTP API.
+// v1.0.1: tenant isolation, secure token bootstrap, object-level authz, WorkDir sandbox.
 package api
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,16 +24,34 @@ type Server struct {
 	AuthN     authn.Authenticator
 	AuthZ     *authz.Authorizer
 	Calibrate *calibrate.Store
-	mu        sync.Mutex
+	// WorkDirRoot if set, client WorkDir must stay within this directory.
+	WorkDirRoot string
+	mu          sync.Mutex
 }
 
-// NewServer constructs a default in-memory control plane.
+// Options for NewServer.
+type Options struct {
+	AuthN       authn.Authenticator
+	WorkDirRoot string
+}
+
+// NewServer constructs a control plane (tests may use insecure Default auth).
 func NewServer() *Server {
+	return NewServerWith(Options{AuthN: authn.Default()})
+}
+
+// NewServerWith allows production wiring (FromEnv authenticator + workspace root).
+func NewServerWith(opts Options) *Server {
+	a := opts.AuthN
+	if a == nil {
+		a = authn.Default()
+	}
 	return &Server{
-		Store:     NewMemoryStore(),
-		AuthN:     authn.Default(),
-		AuthZ:     authz.Default(),
-		Calibrate: calibrate.NewStore(),
+		Store:       NewMemoryStore(),
+		AuthN:       a,
+		AuthZ:       authz.Default(),
+		Calibrate:   calibrate.NewStore(),
+		WorkDirRoot: opts.WorkDirRoot,
 	}
 }
 
@@ -49,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/clusters", s.withAuth(authz.ActionClusterWrite, s.createCluster))
 	mux.HandleFunc("GET /v1/clusters", s.withAuth(authz.ActionClusterRead, s.listClusters))
 	mux.HandleFunc("POST /v1/policies", s.withAuth(authz.ActionPolicyWrite, s.createPolicy))
+	mux.HandleFunc("GET /v1/policies", s.withAuth(authz.ActionPolicyRead, s.listPolicies))
 	mux.HandleFunc("GET /v1/calibration", s.withAuth(authz.ActionRunRead, s.getCalibration))
 	mux.HandleFunc("GET /v1/schemas", s.listSchemas)
 	return mux
@@ -60,7 +81,7 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]string{
-		"version":    "1.0.0",
+		"version":    "1.0.1",
 		"apiVersion": contract.APIVersionV1,
 		"product":    "architecture-rehearsal",
 	})
@@ -78,20 +99,37 @@ type createRunReq struct {
 	ChangeRef      string   `json:"changeRef"`
 	ObservedRef    string   `json:"observedRef"`
 	Scenarios      []string `json:"scenarios"`
-	Org            string   `json:"org"`
-	Project        string   `json:"project"`
-	Environment    string   `json:"environment"`
+	// Org in body is IGNORED for tenant binding — principal.Org is authoritative.
+	Org         string `json:"org"`
+	Project     string `json:"project"`
+	Environment string `json:"environment"`
 }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
 	var req createRunReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	// Idempotency
+	// Tenant: force org from principal; body/header org is ignored (not trusted).
+	org := actor.Org
+	if org == "" {
+		http.Error(w, "principal has no org", 403)
+		return
+	}
+	_ = req.Org // deliberately discarded
+	// Authorize create in principal's org
+	if !s.AuthZ.Allow(actor, authz.ActionRunCreate, authz.Resource{Org: org, Project: req.Project, Environment: req.Environment}) {
+		http.Error(w, "forbidden", 403)
+		return
+	}
+
 	if req.IdempotencyKey != "" {
 		if existing := s.Store.GetByIdempotency(req.IdempotencyKey); existing != nil {
+			if !s.AuthZ.CanAccessObject(actor, authz.ActionRunRead, resourceFromRun(existing)) {
+				http.Error(w, "forbidden", 403)
+				return
+			}
 			writeJSON(w, 200, existing)
 			return
 		}
@@ -99,34 +137,49 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, actor authn.P
 	if req.ID == "" {
 		req.ID = fmt.Sprintf("run-%d", time.Now().UTC().UnixNano())
 	}
+	// Sandbox file refs
+	baseRef, err := s.sandboxPath(req.BaselineRef)
+	if err != nil {
+		http.Error(w, "baselineRef: "+err.Error(), 400)
+		return
+	}
+	changeRef, err := s.sandboxPath(req.ChangeRef)
+	if err != nil {
+		http.Error(w, "changeRef: "+err.Error(), 400)
+		return
+	}
+	obsRef := req.ObservedRef
+	if obsRef != "" {
+		obsRef, err = s.sandboxPath(obsRef)
+		if err != nil {
+			http.Error(w, "observedRef: "+err.Error(), 400)
+			return
+		}
+	}
+
 	rr := run.NewRun(req.ID, req.IdempotencyKey, run.Spec{
-		ClusterName: req.ClusterName,
-		BaselineRef: req.BaselineRef,
-		ChangeRef:   req.ChangeRef,
-		ObservedRef: req.ObservedRef,
-		Scenarios:   req.Scenarios,
+		ClusterName:    req.ClusterName,
+		BaselineRef:    baseRef,
+		ChangeRef:      changeRef,
+		ObservedRef:    obsRef,
+		Scenarios:      req.Scenarios,
 		TimeoutSeconds: 600,
 	})
 	rr.Labels = map[string]string{
-		"org": req.Org, "project": req.Project, "environment": req.Environment,
+		"org": org, "project": req.Project, "environment": req.Environment,
 		"actor": actor.ID,
 	}
 	s.Store.Put(rr)
-	s.Store.Audit(actor.ID, "run.create", rr.ID, "")
+	s.Store.Audit(actor.ID, "run.create", rr.ID, "org="+org)
 	writeJSON(w, 201, rr)
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	org := r.URL.Query().Get("org")
 	all := s.Store.ListRuns()
 	var out []*run.RehearsalRun
 	for _, rr := range all {
-		if org != "" && rr.Labels["org"] != org {
-			continue
-		}
-		if !s.AuthZ.Allow(actor, authz.ActionRunRead, authz.Resource{
-			Org: rr.Labels["org"], Project: rr.Labels["project"], Environment: rr.Labels["environment"],
-		}) {
+		res := resourceFromRun(rr)
+		if !s.AuthZ.CanAccessObject(actor, authz.ActionRunRead, res) {
 			continue
 		}
 		out = append(out, rr)
@@ -135,9 +188,13 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request, actor authn.Pr
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	id := r.PathValue("id")
-	rr := s.Store.Get(id)
+	rr := s.Store.Get(r.PathValue("id"))
 	if rr == nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	if !s.AuthZ.CanAccessObject(actor, authz.ActionRunRead, resourceFromRun(rr)) {
+		// Do not leak existence across tenants
 		http.Error(w, "not found", 404)
 		return
 	}
@@ -145,53 +202,61 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request, actor authn.Prin
 }
 
 func (s *Server) advanceRun(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	id := r.PathValue("id")
-	rr := s.Store.Get(id)
+	rr := s.Store.Get(r.PathValue("id"))
 	if rr == nil {
 		http.Error(w, "not found", 404)
 		return
 	}
-	// Optional execute engine if workdir provided
+	if !s.AuthZ.CanAccessObject(actor, authz.ActionRunWrite, resourceFromRun(rr)) {
+		http.Error(w, "not found", 404)
+		return
+	}
 	var body struct {
 		WorkDir string `json:"workDir"`
-		Action  string `json:"action"` // execute|cancel
+		Action  string `json:"action"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 	if body.Action == "cancel" {
 		_ = rr.Transition(run.PhaseCancelled, "cancelled by "+actor.ID)
 		s.Store.Put(rr)
 		writeJSON(w, 200, rr)
 		return
 	}
-	eng := &run.Engine{WorkDir: body.WorkDir, Holder: actor.ID}
+	wd := body.WorkDir
+	if wd != "" {
+		var err error
+		wd, err = s.sandboxPath(wd)
+		if err != nil {
+			http.Error(w, "workDir: "+err.Error(), 400)
+			return
+		}
+	} else if s.WorkDirRoot != "" {
+		wd = s.WorkDirRoot
+	}
+	eng := &run.Engine{WorkDir: wd, Holder: actor.ID}
 	if err := eng.Execute(rr); err != nil {
 		s.Store.Put(rr)
 		writeJSON(w, 200, map[string]any{"run": rr, "error": err.Error()})
 		return
 	}
 	s.Store.Put(rr)
-	// Feed calibration if completed
-	if rr.Status.Phase == run.PhaseCompleted || rr.Status.Phase == run.PhaseFailed || rr.Status.Phase == run.PhaseInconclusive {
-		s.Calibrate.Record(calibrate.Outcome{
-			Scenario:  "gate",
-			Predicted: rr.Status.Decision != "approve",
-			Observed:  rr.Status.Phase == run.PhaseFailed || stringsContains(rr.Status.Message, "diverged"),
-			Verified:  rr.Status.Phase == run.PhaseCompleted,
-		})
-	}
 	s.Store.Audit(actor.ID, "run.advance", rr.ID, string(rr.Status.Phase))
 	writeJSON(w, 200, rr)
 }
 
 func (s *Server) getEvidence(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	id := r.PathValue("id")
-	rr := s.Store.Get(id)
+	rr := s.Store.Get(r.PathValue("id"))
 	if rr == nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	if !s.AuthZ.CanAccessObject(actor, authz.ActionEvidenceRead, resourceFromRun(rr)) {
 		http.Error(w, "not found", 404)
 		return
 	}
 	writeJSON(w, 200, map[string]any{
 		"runId":   rr.ID,
+		"org":     rr.Labels["org"],
 		"digests": rr.Digests,
 		"phase":   rr.Status.Phase,
 	})
@@ -199,7 +264,7 @@ func (s *Server) getEvidence(w http.ResponseWriter, r *http.Request, actor authn
 
 func (s *Server) createCluster(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
 	var c Cluster
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&c); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
@@ -207,20 +272,36 @@ func (s *Server) createCluster(w http.ResponseWriter, r *http.Request, actor aut
 		http.Error(w, "name required", 400)
 		return
 	}
-	// Never store raw kubeconfig secrets in logs; accept ref only.
+	// Force tenant from principal
+	c.Org = actor.Org
+	if c.Org == "" {
+		http.Error(w, "principal has no org", 403)
+		return
+	}
+	if !s.AuthZ.Allow(actor, authz.ActionClusterWrite, authz.Resource{Org: c.Org}) {
+		http.Error(w, "forbidden", 403)
+		return
+	}
 	c.CreatedAt = time.Now().UTC()
 	s.Store.PutCluster(c)
-	s.Store.Audit(actor.ID, "cluster.create", c.Name, "")
+	s.Store.Audit(actor.ID, "cluster.create", c.Name, "org="+c.Org)
 	writeJSON(w, 201, c)
 }
 
 func (s *Server) listClusters(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	writeJSON(w, 200, s.Store.ListClusters())
+	var out []Cluster
+	for _, c := range s.Store.ListClusters() {
+		if !s.AuthZ.CanAccessObject(actor, authz.ActionClusterRead, authz.Resource{Org: c.Org}) {
+			continue
+		}
+		out = append(out, c)
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
 	var p map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&p); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
@@ -229,13 +310,47 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request, actor auth
 		id = fmt.Sprintf("policy-%d", time.Now().UnixNano())
 		p["id"] = id
 	}
+	// Force org
+	p["org"] = actor.Org
+	if actor.Org == "" {
+		http.Error(w, "principal has no org", 403)
+		return
+	}
+	if !s.AuthZ.Allow(actor, authz.ActionPolicyWrite, authz.Resource{Org: actor.Org}) {
+		http.Error(w, "forbidden", 403)
+		return
+	}
 	s.Store.PutPolicy(id, p)
-	s.Store.Audit(actor.ID, "policy.create", id, "")
+	s.Store.Audit(actor.ID, "policy.create", id, "org="+actor.Org)
 	writeJSON(w, 201, p)
 }
 
+func (s *Server) listPolicies(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
+	var out []map[string]any
+	for _, p := range s.Store.ListPolicies() {
+		org, _ := p["org"].(string)
+		if !s.AuthZ.CanAccessObject(actor, authz.ActionPolicyRead, authz.Resource{Org: org}) {
+			continue
+		}
+		out = append(out, p)
+	}
+	writeJSON(w, 200, out)
+}
+
 func (s *Server) getCalibration(w http.ResponseWriter, r *http.Request, actor authn.Principal) {
-	writeJSON(w, 200, s.Calibrate.Report())
+	// Calibration is org-scoped in labels when recorded; report is global model for now —
+	// only platform-admin or same-org operators may read (require org-bound principal).
+	if actor.Org == "" {
+		http.Error(w, "forbidden", 403)
+		return
+	}
+	// Non-admin: still allow read of aggregate (no per-run PII) but only if authenticated.
+	if !s.AuthZ.Allow(actor, authz.ActionRunRead, authz.Resource{Org: actor.Org}) {
+		http.Error(w, "forbidden", 403)
+		return
+	}
+	rep := s.Calibrate.Report()
+	writeJSON(w, 200, map[string]any{"org": actor.Org, "report": rep})
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request, authn.Principal)
@@ -247,16 +362,58 @@ func (s *Server) withAuth(action authz.Action, next handlerFunc) http.HandlerFun
 			http.Error(w, "unauthorized: "+err.Error(), 401)
 			return
 		}
-		res := authz.Resource{
-			Org:         r.Header.Get("X-Org"),
-			Project:     r.Header.Get("X-Project"),
-			Environment: r.Header.Get("X-Environment"),
-		}
+		// Authorization for collection endpoints uses principal org only.
+		// Object endpoints re-check after load.
+		res := authz.Resource{Org: p.Org}
 		if !s.AuthZ.Allow(p, action, res) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
 		next(w, r, p)
+	}
+}
+
+// sandboxPath ensures path is under WorkDirRoot when configured.
+func (s *Server) sandboxPath(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	if s.WorkDirRoot == "" {
+		// Production serve should set WorkDirRoot; without it, reject absolute escapes of ".."
+		clean := filepath.Clean(p)
+		if strings.Contains(clean, "..") {
+			return "", fmt.Errorf("path must not contain ..")
+		}
+		return clean, nil
+	}
+	root, err := filepath.Abs(s.WorkDirRoot)
+	if err != nil {
+		return "", err
+	}
+	// Relative paths join root
+	target := p
+	if !filepath.IsAbs(p) {
+		target = filepath.Join(root, p)
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path outside workspace root")
+	}
+	return abs, nil
+}
+
+func resourceFromRun(rr *run.RehearsalRun) authz.Resource {
+	if rr == nil {
+		return authz.Resource{}
+	}
+	return authz.Resource{
+		Org:         rr.Labels["org"],
+		Project:     rr.Labels["project"],
+		Environment: rr.Labels["environment"],
 	}
 }
 
@@ -268,15 +425,11 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
-func stringsContains(s, sub string) bool {
-	return strings.Contains(s, sub)
-}
-
 // Cluster is a registered cluster connection (no raw credentials).
 type Cluster struct {
-	Name           string    `json:"name"`
-	Org            string    `json:"org,omitempty"`
-	KubeconfigRef  string    `json:"kubeconfigRef,omitempty"` // external secret ref, never inline
-	Server         string    `json:"server,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
+	Name          string    `json:"name"`
+	Org           string    `json:"org,omitempty"`
+	KubeconfigRef string    `json:"kubeconfigRef,omitempty"`
+	Server        string    `json:"server,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
 }

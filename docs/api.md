@@ -2,9 +2,14 @@
 
 Base URL: `http://localhost:8080`
 
-Auth: `Authorization: Bearer <token>` (`REHEARSAL_API_TOKEN`, default `local-dev`).
+Auth (v1.0.1): `Authorization: Bearer <token>`.
 
-Optional tenant headers: `X-Org`, `X-Project`, `X-Environment`.
+- Set `REHEARSAL_API_TOKEN` (required to start `serve` in production).
+- Optional multi-token map: `REHEARSAL_API_TOKENS` JSON.
+- Local only: `rehearsal serve --insecure-dev` enables `local-dev`.
+- **Hardcoded `ci` / `viewer-token` removed.**
+- Client `X-Org` does **not** change principal org; tenant is bound to the token.
+- Object reads use labels of the stored object (cross-tenant → 404).
 
 | Method | Path | Action |
 | ------ | ---- | ------ |

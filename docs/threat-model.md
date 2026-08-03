@@ -21,7 +21,9 @@
 | kubectl injection | Fixed resource list; no shell interpolation of user args into shell |
 | Secret leakage | Collect never stores Secret data; only references |
 | Forged evidence | HMAC/DSSE/Ed25519; document HMAC is not non-repudiation |
-| Tenant escape | Org-scoped authz; path isolation; admin role explicit |
+| Tenant escape | Org-scoped authz on loaded objects; no X-Org principal rewrite (v1.0.1); path isolation |
+| Hardcoded API tokens | Removed in v1.0.1; serve requires REHEARSAL_API_TOKEN |
+| Unsigned OIDC JWT | Rejected in v1.0.1 (no stub acceptance) |
 
 ## Explicit non-goals (current)
 
