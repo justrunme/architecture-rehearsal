@@ -106,13 +106,19 @@ kubectl wait --for=condition=available deploy/architecture-rehearsal --timeout=1
 
 echo "==> operator (2 replicas, leader election ON, no NetworkPolicy)"
 kubectl create secret generic rehearsal-operator-token --from-literal=token="$TOKEN"
-sed \
-  -e 's|ghcr.io/justrunme/architecture-rehearsal-operator:1.5.2|architecture-rehearsal-operator:e2e|g' \
-  -e 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|g' \
+# Apply each manifest separately — concatenating YAML without '---' merges
+# documents and leaves roleRef/rules/subjects on the Deployment (strict decode fail).
+for f in \
   config/operator/serviceaccount.yaml \
   config/operator/clusterrole.yaml \
   config/operator/clusterrolebinding.yaml \
-  config/operator/deployment.yaml | kubectl apply -f -
+  config/operator/deployment.yaml
+do
+  sed \
+    -e 's|ghcr.io/justrunme/architecture-rehearsal-operator:1.5.2|architecture-rehearsal-operator:e2e|g' \
+    -e 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|g' \
+    "$f" | kubectl apply -f -
+done
 
 kubectl wait --for=condition=available deploy/rehearsal-operator --timeout=180s
 # ensure 2 pods
