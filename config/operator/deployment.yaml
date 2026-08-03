@@ -19,6 +19,8 @@ spec:
       serviceAccountName: rehearsal-operator
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -46,13 +48,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: health
+              port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: health
+              port: 8081
             initialDelaySeconds: 3
             periodSeconds: 5
           securityContext:
@@ -60,6 +62,9 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 20m
@@ -67,3 +72,6 @@ spec:
             limits:
               cpu: 200m
               memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

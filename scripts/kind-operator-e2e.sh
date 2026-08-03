@@ -16,13 +16,15 @@ echo "==> kind create $CLUSTER"
 kind create cluster --name "$CLUSTER"
 
 echo "==> build + load images"
-docker build -t architecture-rehearsal:e2e -f Dockerfile .
-docker build -t architecture-rehearsal-operator:e2e -f Dockerfile.operator .
+# Disable provenance/SBOM attestations — kind load of multi-manifest images is flaky.
+docker build --provenance=false --sbom=false -t architecture-rehearsal:e2e -f Dockerfile .
+docker build --provenance=false --sbom=false -t architecture-rehearsal-operator:e2e -f Dockerfile.operator .
 kind load docker-image architecture-rehearsal:e2e --name "$CLUSTER"
 kind load docker-image architecture-rehearsal-operator:e2e --name "$CLUSTER"
 
 echo "==> CRD"
 kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
+kubectl wait --for=condition=Established crd/rehearsalruns.rehearsal.io --timeout=60s
 
 echo "==> control plane with SQLite (not memory) + real fixtures"
 kubectl create secret generic rehearsal-api --from-literal=token="$TOKEN"
@@ -104,7 +106,17 @@ EOF
 
 kubectl wait --for=condition=available deploy/architecture-rehearsal --timeout=180s
 
-echo "==> operator (2 replicas, leader election ON, no NetworkPolicy)"
+dump_operator() {
+  echo "==> DIAG: operator"
+  kubectl get deploy,pods,sa -l app.kubernetes.io/name=rehearsal-operator -o wide || true
+  kubectl describe deploy/rehearsal-operator || true
+  kubectl get pods -l app.kubernetes.io/name=rehearsal-operator -o yaml || true
+  kubectl describe pods -l app.kubernetes.io/name=rehearsal-operator || true
+  kubectl logs -l app.kubernetes.io/name=rehearsal-operator --all-containers --tail=100 || true
+  kubectl get events --sort-by=.lastTimestamp | tail -40 || true
+}
+
+echo "==> operator (start 1 replica, then HA; leader election ON; no NetworkPolicy)"
 kubectl create secret generic rehearsal-operator-token --from-literal=token="$TOKEN"
 # Apply each manifest separately — concatenating YAML without '---' merges
 # documents and leaves roleRef/rules/subjects on the Deployment (strict decode fail).
@@ -117,11 +129,14 @@ do
   sed \
     -e 's|ghcr.io/justrunme/architecture-rehearsal-operator:1.5.2|architecture-rehearsal-operator:e2e|g' \
     -e 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|g' \
+    -e 's|replicas: 2|replicas: 1|g' \
     "$f" | kubectl apply -f -
 done
 
-kubectl wait --for=condition=available deploy/rehearsal-operator --timeout=180s
-# ensure 2 pods
+if ! kubectl wait --for=condition=available deploy/rehearsal-operator --timeout=180s; then
+  dump_operator
+  exit 1
+fi
 kubectl get pods -l app.kubernetes.io/name=rehearsal-operator
 
 echo "==> create RehearsalRun gen1"
