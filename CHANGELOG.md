@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 — 2026-08-03
+
+**CI hotfix** — golden multi-scenario verify.
+
+- Component presence only for primary survivors (`workload/*`, `pvc/*`) — not lost nodes / cascade svc/pdb/slo
+- Independent predicates for `volume-az` and `pdb-disruption` (workload Pending markers, PVC zone/boundNode)
+- Golden `rwo-node-loss/observed.json` includes Pending Pod + full `observed_failures`
+- Regression test for CI verify loop
+
 ## 0.7.0 — 2026-08-03
 
 **Platform layer** (local control-plane primitives — not a hosted SaaS).

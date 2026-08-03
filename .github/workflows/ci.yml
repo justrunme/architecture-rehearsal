@@ -28,7 +28,7 @@ jobs:
         run: bash scripts/demo.sh
       - name: E2E pipeline (dump → graph → scoped change → block → verify)
         run: bash scripts/e2e_pipeline.sh
-      - name: Verify loop (golden)
+      - name: Verify loop (golden multi-scenario)
         run: |
           ./bin/rehearsal analyze \
             --baseline examples/golden/rwo-node-loss/baseline.json \
@@ -39,4 +39,8 @@ jobs:
           ./bin/rehearsal verify \
             --report out/latest-report.json \
             --observed examples/golden/rwo-node-loss/observed.json \
+            --baseline examples/golden/rwo-node-loss/baseline.json \
+            --change examples/golden/rwo-node-loss/change.json \
             --out out/verify.json
+          # must be verified (exit 0)
+          test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"

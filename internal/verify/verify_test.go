@@ -1,6 +1,7 @@
 package verify_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
@@ -191,6 +192,39 @@ func TestChangeIdentityAndDelta(t *testing.T) {
 	}
 	if res.DeployedChangeDigest == "" {
 		t.Fatal("expected deployed change digest")
+	}
+}
+
+func TestGoldenRWOVerifyIndependent(t *testing.T) {
+	// Mirrors CI verify loop against golden fixtures after multi-scenario prediction.
+	base, err := loader.LoadSnapshot("../../examples/golden/rwo-node-loss/baseline.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := loader.LoadChange("../../examples/golden/rwo-node-loss/change.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := analyze.Run(base, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Decision != analyze.DecisionBlock {
+		t.Fatalf("decision=%s", rep.Decision)
+	}
+	obs, err := loader.LoadSnapshot("../../examples/golden/rwo-node-loss/observed.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := verify.RunWithOptions(rep, obs, verify.Options{Baseline: base, Change: ch})
+	if res.Outcome != verify.OutcomeVerified {
+		t.Fatalf("outcome=%s summary=%s checks=%+v", res.Outcome, res.Summary, res.Checks)
+	}
+	// Must not hard-fail on cascade components (svc/pdb/lost node)
+	for _, c := range res.Checks {
+		if strings.HasPrefix(c.Name, "component_missing:") && !c.Passed {
+			t.Fatalf("unexpected component_missing hard fail: %+v", c)
+		}
 	}
 }
 
