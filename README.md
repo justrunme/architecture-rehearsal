@@ -16,7 +16,7 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.5.1 (flagship freeze)** — deterministic change-safety control plane + secured K8s operator.  
+**Status: v1.5.2 (flagship freeze)** — deterministic change-safety control plane + installable K8s operator.  
 
 > Architecture Rehearsal is a deterministic Kubernetes change-safety control plane that predicts deployment failures, enforces policy gates, verifies production outcomes, and produces cryptographically bound evidence.
 
@@ -52,7 +52,7 @@ Evidence integrity + secure API + trust boundaries required for production.
 | GitOps full admission gate | **Reference** workflow + adapters |
 | Calibration engine | **Supported** (org-scoped SQL) |
 | Operator JSON CR ↔ control plane | **Supported** (`operator --api`) |
-| Live controller-runtime operator | **Supported** (v1.5.1: CRD, Helm, RBAC, NetworkPolicy; URL/token deployment-only) |
+| Live controller-runtime operator | **Supported** (v1.5.2: Helm CRDs, GHCR images, Kind E2E; URL/token deployment-only) |
 | Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
 | LLM in risk path | **Not supported** |
 
@@ -64,7 +64,7 @@ Evidence integrity + secure API + trust boundaries required for production.
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.5.1
+make build && ./bin/rehearsal version   # 1.5.2
 ```
 
 ### Offline iron path
@@ -128,13 +128,13 @@ curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/me
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
-  --set image.tag=1.5.1 \
+  --set image.tag=1.5.2 \
   --set operator.enabled=true
-# chart fails closed if api.token is empty; PVC on by default (persistence.enabled)
+# CRD installs from chart crds/; operator NetworkPolicy off by default
 # operator REHEARSAL_API_URL is deployment-only — never set on RehearsalRun CR
 ```
 
-### Kubernetes operator (v1.5.1)
+### Kubernetes operator (v1.5.2)
 
 Full docs: [docs/operator.md](docs/operator.md) · security: [docs/operator-security.md](docs/operator-security.md) · example: [examples/operator/rehearsalrun.yaml](examples/operator/rehearsalrun.yaml)
 

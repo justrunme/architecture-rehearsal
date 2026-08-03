@@ -1,4 +1,4 @@
-// Package controller implements the Kubernetes RehearsalRun reconciler (v1.5.1).
+// Package controller implements the Kubernetes RehearsalRun reconciler (v1.5.2).
 // Trust boundary: control plane URL and token come ONLY from operator deployment.
 package controller
 
@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,15 +38,33 @@ type RehearsalRunReconciler struct {
 	ClientFactory func(base, token string) *operator.ControlPlaneClient
 }
 
-// +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns,verbs=get;list;watch;create;update;patch;delete
+// Least-privilege: no create/delete of CRs — only watch + status update.
+// +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=rehearsal.io,resources=rehearsalruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *RehearsalRunReconciler) cpClient(base, token string) *operator.ControlPlaneClient {
 	if r.ClientFactory != nil {
 		return r.ClientFactory(base, token)
 	}
 	return &operator.ControlPlaneClient{BaseURL: base, Token: token}
+}
+
+// ControlPlaneRunID builds an immutable run id including CR UID (survives delete/recreate).
+// Format: {namespace}-{name}-{uid8}-g{generation}
+func ControlPlaneRunID(namespace, name, uid string, generation int64) string {
+	uidShort := string(uid)
+	if len(uidShort) > 8 {
+		uidShort = uidShort[:8]
+	}
+	if uidShort == "" {
+		uidShort = "nouid"
+	}
+	// sanitize name for id safety
+	name = strings.ReplaceAll(name, "/", "-")
+	return fmt.Sprintf("%s-%s-%s-g%d", namespace, name, uidShort, generation)
 }
 
 func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -72,7 +92,6 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.fail(ctx, &cr, "REHEARSAL_API_TOKEN required (Secret mount)")
 	}
 
-	// Accepted: CR schema valid and operator config present.
 	setCond(&cr, rehearsalv1beta1.ConditionAccepted, metav1.ConditionTrue, "Accepted", "spec accepted by operator")
 	setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionFalse, "None", "")
 
@@ -81,8 +100,7 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.fail(ctx, &cr, "spec digest: "+err.Error())
 	}
 
-	// Run ID is immutable per generation: new generation → new control-plane run.
-	runID := fmt.Sprintf("%s-%s-g%d", cr.Namespace, cr.Name, cr.Generation)
+	runID := ControlPlaneRunID(cr.Namespace, cr.Name, string(cr.UID), cr.Generation)
 	sameGen := cr.Status.ObservedGeneration == cr.Generation && cr.Status.SpecDigest == digest
 	if sameGen && cr.Status.ControlPlaneRunID != "" {
 		runID = cr.Status.ControlPlaneRunID
@@ -99,6 +117,7 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	rr.Labels = map[string]string{
 		"k8s.namespace": cr.Namespace,
 		"k8s.name":      cr.Name,
+		"k8s.uid":       string(cr.UID),
 		"specDigest":    digest,
 	}
 
@@ -107,12 +126,10 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		logger.Error(err, "ensure run")
 		return r.fail(ctx, &cr, err.Error())
 	}
-	if ens.Conflict {
-		if ens.Run != nil && !specMatchesRun(cr.Spec, ens.Run) {
-			return r.fail(ctx, &cr, fmt.Sprintf(
-				"control plane run %q exists with different refs (immutable); delete CR or bump generation via name change", runID))
-		}
-		// 409 with matching spec is OK (idempotent re-create).
+	// Always validate existing run matches Spec (200 idempotent + 409 conflict paths).
+	if ens != nil && ens.Run != nil && !specMatchesRun(cr.Spec, ens.Run) {
+		return r.fail(ctx, &cr, fmt.Sprintf(
+			"control plane run %q does not match CR spec (immutable); delete CR or use a new name", runID))
 	}
 
 	async := true
@@ -120,7 +137,6 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		async = *cr.Spec.Async
 	}
 
-	// Do not re-advance if we already enqueued a job for this generation, or run is terminal.
 	alreadyAdvanced := sameGen && cr.Status.JobID != ""
 	existingTerminal := ens.Run != nil && ens.Run.Status.Phase.Terminal()
 	needAdvance := !alreadyAdvanced && !existingTerminal &&
@@ -142,6 +158,11 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
+	// Re-check after get (race with external mutation)
+	if !specMatchesRun(cr.Spec, latest) {
+		return r.fail(ctx, &cr, fmt.Sprintf("control plane run %q drifted from CR spec", runID))
+	}
+
 	cr.Status.ControlPlaneRunID = runID
 	cr.Status.Phase = string(latest.Status.Phase)
 	cr.Status.Decision = latest.Status.Decision
@@ -206,10 +227,49 @@ func specMatchesRun(spec rehearsalv1beta1.RehearsalRunSpec, rr *run.RehearsalRun
 	if rr == nil {
 		return false
 	}
-	return rr.Spec.BaselineRef == spec.BaselineRef &&
-		rr.Spec.ChangeRef == spec.ChangeRef &&
-		rr.Spec.ObservedRef == spec.ObservedRef &&
-		rr.Spec.ClusterName == spec.ClusterName
+	if !refMatches(spec.BaselineRef, rr.Spec.BaselineRef) ||
+		!refMatches(spec.ChangeRef, rr.Spec.ChangeRef) ||
+		!refMatches(spec.ObservedRef, rr.Spec.ObservedRef) ||
+		rr.Spec.ClusterName != spec.ClusterName {
+		return false
+	}
+	return equalStringSlices(rr.Spec.Scenarios, spec.Scenarios)
+}
+
+// refMatches compares a CR ref to the control-plane stored ref.
+// createRun sandboxes relative paths to absolute workdir paths (e.g. baseline.json → /data/baseline.json).
+func refMatches(crRef, stored string) bool {
+	if crRef == stored {
+		return true
+	}
+	if crRef == "" || stored == "" {
+		return crRef == stored
+	}
+	cr := filepath.Clean(crRef)
+	st := filepath.Clean(stored)
+	if cr == st {
+		return true
+	}
+	// Stored is workdir-absolute form of a relative CR ref.
+	if !filepath.IsAbs(cr) {
+		sep := string(filepath.Separator)
+		if strings.HasSuffix(st, sep+cr) {
+			return true
+		}
+	}
+	return false
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *RehearsalRunReconciler) fail(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun, msg string) (ctrl.Result, error) {
@@ -231,7 +291,6 @@ func setCond(cr *rehearsalv1beta1.RehearsalRun, typ string, status metav1.Condit
 			continue
 		}
 		if c.Status == status && c.Reason == reason && c.Message == msg {
-			// no transition — keep lastTransitionTime
 			return
 		}
 		c.Status = status
@@ -261,5 +320,4 @@ func (r *RehearsalRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// unused import guard for time (probes may need)
 var _ = time.Second

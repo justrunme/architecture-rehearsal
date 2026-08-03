@@ -13,7 +13,7 @@ metadata:
 rules:
   - apiGroups: [rehearsal.io]
     resources: [rehearsalruns]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [get, list, watch, update, patch]
   - apiGroups: [rehearsal.io]
     resources: [rehearsalruns/status]
     verbs: [get, update, patch]
@@ -59,6 +59,8 @@ spec:
       serviceAccountName: {{ include "architecture-rehearsal.fullname" . }}-operator
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -84,18 +86,24 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: health
+              port: 8081
           readinessProbe:
             httpGet:
               path: /readyz
-              port: health
+              port: 8081
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 {{- if .Values.operator.networkPolicy.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -108,6 +116,7 @@ spec:
       app.kubernetes.io/name: rehearsal-operator
   policyTypes: [Egress]
   egress:
+    # Control plane
     - to:
         - podSelector:
             matchLabels:
@@ -115,6 +124,18 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.service.port }}
+    # Kubernetes API (required for watch/status/leader election)
+    {{- range .Values.operator.networkPolicy.kubeAPIServerCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    {{- end }}
+    # CoreDNS
     - to:
         - namespaceSelector:
             matchLabels:

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Kind operator E2E (v1.5.1). Requires: kind, kubectl, docker, go.
-# Optional in CI when KIND_E2E=1.
+# Kind operator E2E (v1.5.2). Requires: kind, kubectl, docker.
+# CI: operator-kind-e2e job.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 CLUSTER="${KIND_CLUSTER:-rehearsal-e2e}"
-NS=default
 TOKEN="e2e-$(openssl rand -hex 16)"
 
 cleanup() {
@@ -16,17 +15,25 @@ trap cleanup EXIT
 echo "==> kind create $CLUSTER"
 kind create cluster --name "$CLUSTER"
 
-echo "==> build images"
-docker build -t architecture-rehearsal:e2e -f Dockerfile .
-docker build -t architecture-rehearsal-operator:e2e -f Dockerfile.operator .
+echo "==> build + load images"
+# Disable provenance/SBOM attestations — kind load of multi-manifest images is flaky.
+docker build --provenance=false --sbom=false -t architecture-rehearsal:e2e -f Dockerfile .
+docker build --provenance=false --sbom=false -t architecture-rehearsal-operator:e2e -f Dockerfile.operator .
 kind load docker-image architecture-rehearsal:e2e --name "$CLUSTER"
 kind load docker-image architecture-rehearsal-operator:e2e --name "$CLUSTER"
 
 echo "==> CRD"
 kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
+kubectl wait --for=condition=Established crd/rehearsalruns.rehearsal.io --timeout=60s
 
-echo "==> control plane (serve)"
+echo "==> control plane with SQLite (not memory) + real fixtures"
 kubectl create secret generic rehearsal-api --from-literal=token="$TOKEN"
+# ConfigMap with golden fixtures
+kubectl create configmap rehearsal-fixtures \
+  --from-file=baseline.json=examples/golden/rwo-node-loss/baseline.json \
+  --from-file=change.json=examples/golden/rwo-node-loss/change.json \
+  --from-file=change2.json=examples/golden/rwo-node-loss/change.json
+
 cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
@@ -47,7 +54,15 @@ spec:
       containers:
         - name: api
           image: architecture-rehearsal:e2e
-          args: ["serve", "--addr", ":8080", "--workdir", "/data", "--memory", "--async"]
+          imagePullPolicy: Never
+          args:
+            - serve
+            - --addr=:8080
+            - --workdir=/data
+            - --db=/data/rehearsal.db
+            - --blob=/data/blobs
+            - --async
+            - --workers=1
           env:
             - name: REHEARSAL_API_TOKEN
               valueFrom:
@@ -61,9 +76,21 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: fixtures
+              mountPath: /data/baseline.json
+              subPath: baseline.json
+            - name: fixtures
+              mountPath: /data/change.json
+              subPath: change.json
+            - name: fixtures
+              mountPath: /data/change2.json
+              subPath: change2.json
       volumes:
         - name: data
           emptyDir: {}
+        - name: fixtures
+          configMap:
+            name: rehearsal-fixtures
 ---
 apiVersion: v1
 kind: Service
@@ -77,70 +104,135 @@ spec:
       targetPort: 8080
 EOF
 
-kubectl wait --for=condition=available deploy/architecture-rehearsal --timeout=120s
+kubectl wait --for=condition=available deploy/architecture-rehearsal --timeout=180s
 
-echo "==> operator"
+dump_operator() {
+  echo "==> DIAG: operator"
+  kubectl get deploy,pods,sa -l app.kubernetes.io/name=rehearsal-operator -o wide || true
+  kubectl describe deploy/rehearsal-operator || true
+  kubectl get pods -l app.kubernetes.io/name=rehearsal-operator -o yaml || true
+  kubectl describe pods -l app.kubernetes.io/name=rehearsal-operator || true
+  kubectl logs -l app.kubernetes.io/name=rehearsal-operator --all-containers --tail=100 || true
+  kubectl get events --sort-by=.lastTimestamp | tail -40 || true
+}
+
+echo "==> operator (start 1 replica, then HA; leader election ON; no NetworkPolicy)"
 kubectl create secret generic rehearsal-operator-token --from-literal=token="$TOKEN"
-# Patch deploy to use e2e images and in-cluster URL
-sed \
-  -e 's|ghcr.io/justrunme/architecture-rehearsal-operator:1.5.1|architecture-rehearsal-operator:e2e|g' \
-  -e 's|replicas: 2|replicas: 1|g' \
-  -e 's|--leader-elect=true|--leader-elect=false|g' \
+# Apply each manifest separately — concatenating YAML without '---' merges
+# documents and leaves roleRef/rules/subjects on the Deployment (strict decode fail).
+for f in \
   config/operator/serviceaccount.yaml \
   config/operator/clusterrole.yaml \
   config/operator/clusterrolebinding.yaml \
-  config/operator/deployment.yaml | kubectl apply -f -
+  config/operator/deployment.yaml
+do
+  sed \
+    -e 's|ghcr.io/justrunme/architecture-rehearsal-operator:1.5.2|architecture-rehearsal-operator:e2e|g' \
+    -e 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|g' \
+    -e 's|replicas: 2|replicas: 1|g' \
+    "$f" | kubectl apply -f -
+done
 
-kubectl wait --for=condition=available deploy/rehearsal-operator --timeout=120s
+if ! kubectl wait --for=condition=available deploy/rehearsal-operator --timeout=180s; then
+  dump_operator
+  exit 1
+fi
+kubectl get pods -l app.kubernetes.io/name=rehearsal-operator
 
-echo "==> create RehearsalRun"
-# Place dummy refs — memory backend accepts create without files existing for API
+echo "==> create RehearsalRun gen1"
 kubectl apply -f - <<'EOF'
 apiVersion: rehearsal.io/v1beta1
 kind: RehearsalRun
 metadata:
   name: e2e-run
 spec:
-  baselineRef: b.json
-  changeRef: c.json
+  baselineRef: baseline.json
+  changeRef: change.json
   async: true
 EOF
 
-echo "==> wait for status"
-for i in $(seq 1 30); do
-  PHASE=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.phase}' 2>/dev/null || true)
+wait_status() {
+  local want_field=$1 want_prefix=$2
+  for i in $(seq 1 45); do
+    val=$(kubectl get rehearsalrun e2e-run -o jsonpath="{${want_field}}" 2>/dev/null || true)
+    echo "  [$i] ${want_field}=${val}"
+    if [[ -n "$val" && "$val" == ${want_prefix}* ]]; then
+      return 0
+    fi
+    if [[ -n "$val" && -z "$want_prefix" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+echo "==> wait jobId + runId"
+JOB=""
+RUNID=""
+for i in $(seq 1 45); do
   JOB=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}' 2>/dev/null || true)
-  GEN=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.observedGeneration}' 2>/dev/null || true)
   RUNID=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.controlPlaneRunId}' 2>/dev/null || true)
-  echo "  attempt $i phase=$PHASE job=$JOB gen=$GEN runId=$RUNID"
-  if [[ -n "$RUNID" && -n "$GEN" ]]; then
+  GEN=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.observedGeneration}' 2>/dev/null || true)
+  echo "  [$i] job=$JOB runId=$RUNID gen=$GEN"
+  if [[ -n "$JOB" && -n "$RUNID" && "$GEN" == "1" ]]; then
     break
   fi
   sleep 2
 done
 
-RUNID=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.controlPlaneRunId}')
-[[ "$RUNID" == "default-e2e-run-g1" || "$RUNID" == default-e2e-run-g* ]] || {
-  echo "unexpected run id: $RUNID"
+if [[ -z "$JOB" ]]; then
+  echo "FAIL: jobId empty"
   kubectl describe rehearsalrun e2e-run || true
-  kubectl logs deploy/rehearsal-operator --tail=50 || true
+  kubectl logs -l app.kubernetes.io/name=rehearsal-operator --tail=80 || true
+  kubectl logs deploy/architecture-rehearsal --tail=40 || true
   exit 1
-}
-
-echo "==> operator restart — no duplicate job"
-JOB1=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}')
-kubectl rollout restart deploy/rehearsal-operator
-kubectl rollout status deploy/rehearsal-operator --timeout=90s
-sleep 5
-JOB2=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}')
-if [[ -n "$JOB1" && -n "$JOB2" && "$JOB1" != "$JOB2" ]]; then
-  echo "jobId changed after restart: $JOB1 -> $JOB2 (duplicate enqueue?)"
-  # soft fail warning only if both set and different on same generation
-  GEN=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.observedGeneration}')
-  if [[ "$GEN" == "1" ]]; then
-    echo "FAIL: duplicate job on same generation"
-    exit 1
-  fi
 fi
+if [[ "$RUNID" != default-e2e-run-*-g1 ]]; then
+  echo "FAIL: unexpected run id $RUNID (want ...-g1 with uid)"
+  exit 1
+fi
+echo "gen1 OK: job=$JOB runId=$RUNID"
 
-echo "==> kind operator e2e OK"
+echo "==> patch changeRef → generation 2"
+kubectl patch rehearsalrun e2e-run --type=merge -p '{"spec":{"changeRef":"change2.json"}}'
+# wait for generation
+for i in $(seq 1 30); do
+  G=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.metadata.generation}')
+  OG=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.observedGeneration}')
+  RID=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.controlPlaneRunId}')
+  J2=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}')
+  echo "  [$i] metadata.generation=$G observed=$OG runId=$RID job=$J2"
+  if [[ "$G" == "2" && "$OG" == "2" && "$RID" == *-g2 ]]; then
+    break
+  fi
+  sleep 2
+done
+RID=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.controlPlaneRunId}')
+J2=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}')
+[[ "$RID" == *-g2 ]] || { echo "FAIL: expected g2 run id got $RID"; exit 1; }
+[[ -n "$J2" ]] || { echo "FAIL: jobId empty on gen2"; exit 1; }
+[[ "$J2" != "$JOB" ]] || { echo "FAIL: gen2 jobId same as gen1"; exit 1; }
+echo "gen2 OK: runId=$RID job=$J2"
+
+echo "==> restart operator — no duplicate job on same generation"
+kubectl rollout restart deploy/rehearsal-operator
+kubectl rollout status deploy/rehearsal-operator --timeout=120s
+sleep 8
+J3=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}')
+OG=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.observedGeneration}')
+if [[ "$OG" == "2" && "$J3" != "$J2" ]]; then
+  echo "FAIL: jobId changed after restart on same gen: $J2 -> $J3"
+  exit 1
+fi
+echo "restart OK: jobId stable=$J3"
+
+echo "==> scale operator to 2 replicas (leader election)"
+kubectl scale deploy/rehearsal-operator --replicas=2
+kubectl rollout status deploy/rehearsal-operator --timeout=120s
+sleep 5
+kubectl get pods -l app.kubernetes.io/name=rehearsal-operator
+J4=$(kubectl get rehearsalrun e2e-run -o jsonpath='{.status.jobId}')
+[[ "$J4" == "$J3" ]] || { echo "FAIL: jobId changed under 2 replicas"; exit 1; }
+
+echo "==> kind operator e2e PASSED"

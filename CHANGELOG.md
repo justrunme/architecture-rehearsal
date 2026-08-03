@@ -1,12 +1,32 @@
 # Changelog
 
+## 1.5.2 — 2026-08-03
+
+**Operator installation path** — Helm CRDs, GHCR push, real Kind E2E, install fixes.
+
+### Helm
+- CRD installed from `deploy/helm/.../crds/` on `helm install`
+- CRD structural schema: drop invalid `additionalProperties`+`properties` (Kind apply)
+- NetworkPolicy **disabled by default** (requires `kubeAPIServerCIDRs` when enabled)
+- RBAC: no create/delete of CRs (get/list/watch/update/status only)
+
+### Reconciliation
+- Spec compared on **every** EnsureRun result (200 and 409)
+- `Scenarios` included in spec match
+- Run ID includes CR UID: `{ns}-{name}-{uid8}-g{generation}`
+
+### CI / Release
+- Mandatory `operator-kind-e2e` job (SQLite, golden fixtures, gen2, restart, 2 replicas)
+- GHCR push for both images on tag
+- Tag **not moved** — new version only
+
 ## 1.5.1 — 2026-08-03
 
-**Operator Trust Boundary** — final security packaging; **flagship freeze**.
+**Operator Trust Boundary** — security packaging.
 
 ### P0: no token exfiltration
 - Removed `spec.controlPlaneURL` from CRD/types (API URL is **deployment-only** via `REHEARSAL_API_URL`)
-- CRD `additionalProperties: false` on spec
+- CRD has no Spec field for API URL (structural schema; typed client ignores unknowns)
 - CI guard: no `ControlPlaneURL` in api types
 
 ### Spec immutability / drift
