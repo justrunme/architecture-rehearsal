@@ -4,6 +4,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Condition types for RehearsalRun status (v1.5.1).
+const (
+	ConditionAccepted = "Accepted"
+	ConditionRunning  = "Running"
+	ConditionReady    = "Ready"
+	ConditionFailed   = "Failed"
+)
+
 // RehearsalRunSpec defines the desired state of RehearsalRun.
 // Control plane URL is NEVER set on the CR — only via operator env REHEARSAL_API_URL (v1.5.1).
 type RehearsalRunSpec struct {
@@ -38,11 +46,14 @@ type RehearsalRunStatus struct {
 	Risk string `json:"risk,omitempty"`
 	// ControlPlaneRunID is the durable run id (includes generation for immutability).
 	ControlPlaneRunID string `json:"controlPlaneRunId,omitempty"`
-	// JobID last enqueue id when async.
+	// JobID last enqueue id when async (set once per generation).
 	JobID string `json:"jobId,omitempty"`
+	// EvidenceDigest is chain/report digest from control plane when available.
+	// +optional
+	EvidenceDigest string `json:"evidenceDigest,omitempty"`
 	// Message human status.
 	Message string `json:"message,omitempty"`
-	// Conditions standard k8s conditions.
+	// Conditions: Accepted, Running, Ready, Failed.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

@@ -2,33 +2,36 @@
 
 ## 1.5.1 — 2026-08-03
 
-**Operator Trust Boundary** — final security packaging for the K8s operator.
+**Operator Trust Boundary** — final security packaging; **flagship freeze**.
 
 ### P0: no token exfiltration
 - Removed `spec.controlPlaneURL` from CRD/types (API URL is **deployment-only** via `REHEARSAL_API_URL`)
 - CRD `additionalProperties: false` on spec
+- CI guard: no `ControlPlaneURL` in api types
 
 ### Spec immutability / drift
-- `status.observedGeneration` + `status.specDigest`
-- Control-plane run id includes generation: `{ns}-{name}-g{generation}`
-- `EnsureRun` on **409** fetches existing run and reports Conflict (not silent success)
-- Spec ref mismatch fails reconcile loudly
+- `status.observedGeneration` + `status.specDigest` + `status.evidenceDigest`
+- Control-plane run id: `{ns}-{name}-g{generation}`
+- `EnsureRun` on **409** → Conflict (not silent success); ref mismatch fails
+- No re-enqueue when `jobId` already set for same generation
+
+### Conditions
+- `Accepted`, `Running`, `Ready`, `Failed`
+- `lastTransitionTime` only on real condition change
 
 ### JobID
-- `Advance` decodes `jobId` from 202 response into `status.jobId`
+- `Advance` decodes `jobId` from 202 → `status.jobId`
 
 ### Packaging
-- `deploy/operator/deployment.yaml` — SA, ClusterRole, Deployment, Secret, NetworkPolicy
-- `Dockerfile.operator` + multi-arch operator binaries in release assets
-- Helm `operator.enabled` (default false)
-- Helm: no stub Secret when `api.existingSecret` is set
-- README: operator = **Supported (packaged)**; S3 remains MinIO reference
+- `config/operator/*` (SA, ClusterRole, Deployment, NetworkPolicy, kustomize)
+- `Dockerfile.operator` + multi-arch operator binaries
+- Helm `operator.enabled` (default false), leader election, NetworkPolicy
+- Docs: `docs/operator.md`, `docs/operator-security.md`
+- Kind E2E script: `scripts/kind-operator-e2e.sh`
 
 ### Tests
-- SpecDigest stability/drift
-- EnsureRun conflict path
-- Advance jobId
-- controlPlaneURL not on Spec type
+- SpecDigest, EnsureRun conflict, Advance jobId, no ControlPlaneURL
+- Fake-client reconcile: jobId, evidenceDigest, generation run id, no duplicate advance
 
 ## 1.5.0 — 2026-08-03
 

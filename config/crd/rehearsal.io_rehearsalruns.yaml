@@ -80,6 +80,8 @@ spec:
                   type: string
                 jobId:
                   type: string
+                evidenceDigest:
+                  type: string
                 message:
                   type: string
                 conditions:

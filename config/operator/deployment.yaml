@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rehearsal-operator
+  labels:
+    app.kubernetes.io/name: rehearsal-operator
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rehearsal-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rehearsal-operator
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: rehearsal-operator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: ghcr.io/justrunme/architecture-rehearsal-operator:1.5.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --leader-elect=true
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8082
+          env:
+            # Trust boundary: URL only from Deployment. Never from RehearsalRun CR.
+            - name: REHEARSAL_API_URL
+              value: http://architecture-rehearsal:8080
+            - name: REHEARSAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: rehearsal-operator-token
+                  key: token
+          ports:
+            - name: health
+              containerPort: 8081
+            - name: metrics
+              containerPort: 8082
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
