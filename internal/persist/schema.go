@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS runs (
   environment TEXT NOT NULL DEFAULT '',
   payload TEXT NOT NULL,
   phase TEXT NOT NULL DEFAULT 'Pending',
+  version INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   PRIMARY KEY (org, id)
