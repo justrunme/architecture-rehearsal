@@ -252,22 +252,35 @@ WHERE table_name = 'runs' AND constraint_name IN (
 			return fmt.Errorf("postgres legacy upgrade: %w (%s)", err, q)
 		}
 	}
-	// calibration org column
-	var calHasOrg int
-	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name='calibration' AND column_name='org'`).Scan(&calHasOrg)
-	if calHasOrg == 0 {
-		_, _ = tx.Exec(`ALTER TABLE calibration ADD COLUMN org TEXT NOT NULL DEFAULT ''`)
+	// Optional calibration/jobs upgrades only if tables exist (legacy smoke may only seed runs).
+	var calExists int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='calibration'`).Scan(&calExists)
+	if calExists > 0 {
+		var calHasOrg int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='calibration' AND column_name='org'`).Scan(&calHasOrg)
+		if calHasOrg == 0 {
+			if _, err := tx.Exec(`ALTER TABLE calibration ADD COLUMN org TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("postgres legacy cal org: %w", err)
+			}
+		}
 	}
-	// jobs fence/operation
-	var hasFence int
-	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name='jobs' AND column_name='fence_token'`).Scan(&hasFence)
-	if hasFence == 0 {
-		_, _ = tx.Exec(`ALTER TABLE jobs ADD COLUMN fence_token INTEGER NOT NULL DEFAULT 0`)
-	}
-	var hasOp int
-	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_name='jobs' AND column_name='operation_id'`).Scan(&hasOp)
-	if hasOp == 0 {
-		_, _ = tx.Exec(`ALTER TABLE jobs ADD COLUMN operation_id TEXT`)
+	var jobsExist int
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='jobs'`).Scan(&jobsExist)
+	if jobsExist > 0 {
+		var hasFence int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='jobs' AND column_name='fence_token'`).Scan(&hasFence)
+		if hasFence == 0 {
+			if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN fence_token INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("postgres legacy fence: %w", err)
+			}
+		}
+		var hasOp int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='jobs' AND column_name='operation_id'`).Scan(&hasOp)
+		if hasOp == 0 {
+			if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN operation_id TEXT`); err != nil {
+				return fmt.Errorf("postgres legacy op: %w", err)
+			}
+		}
 	}
 	return tx.Commit()
 }
