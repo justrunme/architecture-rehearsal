@@ -54,8 +54,8 @@ func usage() {
 Usage:
   rehearsal analyze  --baseline FILE --change FILE [flags]
   rehearsal verify   --report FILE --observed FILE
-  rehearsal snapshot k8s --dir MANIFESTS [--cluster NAME] --out FILE
-  rehearsal change   manifests --baseline FILE --dir RENDERED --out FILE
+  rehearsal snapshot k8s --dir MANIFESTS [--cluster NAME] [--phase baseline|observed] [--meta FILE] --out FILE
+  rehearsal change   manifests --baseline FILE --dir RENDERED [--namespace NS] [--allow-remove] --out FILE
   rehearsal change   terraform --plan FILE --out FILE
   rehearsal version
 
@@ -196,6 +196,8 @@ func cmdSnapshot(args []string) int {
 		dir := fs.String("dir", "", "directory of Kubernetes YAML manifests")
 		cluster := fs.String("cluster", "acme-prod", "cluster name label")
 		out := fs.String("out", "baseline.json", "output snapshot path")
+		phase := fs.String("phase", "baseline", "snapshot phase: baseline|observed|deployed")
+		metaPath := fs.String("meta", "", "optional JSON file merged into snapshot meta (e.g. observed_failures)")
 		fs.SetOutput(os.Stderr)
 		if err := fs.Parse(args[1:]); err != nil {
 			return 2
@@ -204,7 +206,16 @@ func cmdSnapshot(args []string) int {
 			fmt.Fprintln(os.Stderr, "--dir required")
 			return 2
 		}
-		snap, err := collect.K8sFromManifests(nil, *dir, collect.K8sOptions{ClusterName: *cluster})
+		opts := collect.K8sOptions{ClusterName: *cluster, Phase: graph.Phase(*phase)}
+		if *metaPath != "" {
+			extra, err := collect.LoadMetaFile(*metaPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "meta: %v\n", err)
+				return 2
+			}
+			opts.ExtraMeta = extra
+		}
+		snap, err := collect.K8sFromManifests(nil, *dir, opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "collect: %v\n", err)
 			return 5
@@ -216,7 +227,7 @@ func cmdSnapshot(args []string) int {
 		if err := os.WriteFile(*out, b, 0o644); err != nil {
 			return 5
 		}
-		fmt.Fprintf(os.Stderr, "wrote snapshot %s (%d nodes)\n", *out, len(snap.Nodes))
+		fmt.Fprintf(os.Stderr, "wrote snapshot %s phase=%s (%d nodes)\n", *out, snap.Phase, len(snap.Nodes))
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown snapshot source: %s\n", args[0])

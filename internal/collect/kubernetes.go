@@ -4,6 +4,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,6 +23,12 @@ type K8sOptions struct {
 	ClusterName string
 	// StrictYAML if true, YAML parse errors fail the collect.
 	StrictYAML bool
+	// Phase overrides snapshot phase (default baseline). Use observed for post-deploy dumps.
+	Phase graph.Phase
+	// ExtraMeta is merged into snap.Meta after capacity derivation (e.g. observed_failures).
+	ExtraMeta map[string]any
+	// SnapshotID overrides default k8s-<cluster> id when non-empty.
+	SnapshotID string
 }
 
 // K8sFromManifests builds a snapshot from a directory tree of Kubernetes YAML
@@ -35,21 +42,31 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 	if opts.ClusterName == "" {
 		opts.ClusterName = "cluster"
 	}
+	phase := opts.Phase
+	if phase == "" {
+		phase = graph.PhaseBaseline
+	}
 	start := time.Now().UTC()
+	id := "k8s-" + opts.ClusterName
+	if opts.SnapshotID != "" {
+		id = opts.SnapshotID
+	} else if phase == graph.PhaseObserved {
+		id = "k8s-" + opts.ClusterName + "-observed"
+	}
 	snap := &graph.Snapshot{
 		APIVersion: graph.APIVersionV1Alpha1,
 		Kind:       graph.DocKindSnapshot,
-		ID:         "k8s-" + opts.ClusterName,
+		ID:         id,
 		Name:       opts.ClusterName,
 		Source:     "kubernetes-manifests",
-		Phase:      graph.PhaseBaseline,
+		Phase:      phase,
 		CreatedAt:  start,
 		Labels:     map[string]string{"cluster": opts.ClusterName},
 		Meta:       map[string]any{},
 		Cluster: &graph.ClusterInfo{
 			Name:             opts.ClusterName,
 			CollectedFrom:    start,
-			CollectorVersion: "0.3.0",
+			CollectorVersion: "0.4.0",
 		},
 	}
 	snap.Nodes = append(snap.Nodes, graph.Node{
@@ -129,10 +146,43 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		snap.Meta["node_allocatable_pods_total"] = alloc
 	}
 
+	// Operator/CI annotations (observed_failures, incident notes, …) after derived capacity.
+	for k, v := range opts.ExtraMeta {
+		snap.Meta[k] = v
+	}
+
+	// Mark Pending pods as unschedulable signals for verify (post-deploy evidence).
+	if phase == graph.PhaseObserved {
+		for i, n := range snap.Nodes {
+			if n.Kind == graph.KindPod && n.AttrString("phase") == "Pending" {
+				if snap.Nodes[i].Attributes == nil {
+					snap.Nodes[i].Attributes = map[string]any{}
+				}
+				snap.Nodes[i].Attributes["unschedulable"] = true
+			}
+		}
+	}
+
 	if err := validate.Snapshot(snap); err != nil {
 		return nil, fmt.Errorf("collected snapshot invalid: %w", err)
 	}
 	return snap, nil
+}
+
+// LoadMetaFile reads a JSON object for snapshot meta merge.
+func LoadMetaFile(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("parse meta %s: %w", path, err)
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	return m, nil
 }
 
 // Back-compat wrapper.
