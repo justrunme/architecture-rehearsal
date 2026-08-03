@@ -50,7 +50,12 @@ jobs:
         run: |
           ./bin/rehearsal schemas >/dev/null
           ./bin/rehearsal calibrate --demo >/dev/null
-          ./bin/rehearsal policy --risk critical --decision block; test $? -eq 3
+          # policy returns gate exit codes (3=block); must not trip set -e
+          set +e
+          ./bin/rehearsal policy --risk critical --decision block
+          code=$?
+          set -e
+          test "$code" -eq 3
       - name: Control plane API smoke
         run: |
           ./bin/rehearsal serve --addr 127.0.0.1:18080 &
