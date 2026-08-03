@@ -5,9 +5,10 @@ metadata:
   labels:
     app.kubernetes.io/name: rehearsal-operator
 rules:
+  # Least privilege: no create/delete of user CRs — only reconcile + status.
   - apiGroups: [rehearsal.io]
     resources: [rehearsalruns]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [get, list, watch, update, patch]
   - apiGroups: [rehearsal.io]
     resources: [rehearsalruns/status]
     verbs: [get, update, patch]

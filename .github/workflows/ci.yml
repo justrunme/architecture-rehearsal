@@ -48,7 +48,7 @@ jobs:
             --out out/verify.json
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.5.1'
+        run: ./bin/rehearsal version | grep -q '1.5.2'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null
@@ -68,7 +68,7 @@ jobs:
           curl -sf http://127.0.0.1:18080/readyz
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
           test "$code" = "401"
-          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.5.1
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.5.2
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/metrics | grep -q rehearsal_queue_depth
           # create run + job list + audit
           curl -sf -X POST -H "Authorization: Bearer $REHEARSAL_API_TOKEN" -H "Content-Type: application/json" \
@@ -92,7 +92,7 @@ jobs:
               --set operator.enabled=true \
               --set operator.leaderElection=true >/tmp/helm-out.yaml
             grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
-            # CRD schema must not define a controlPlaneURL property
+            test -f deploy/helm/architecture-rehearsal/crds/rehearsal.io_rehearsalruns.yaml
             ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
             ! grep -r 'ControlPlaneURL' api/v1beta1/ --include='*.go'
           else
@@ -101,8 +101,25 @@ jobs:
               --set api.token=ci-token \
               --set operator.enabled=true >/tmp/helm-out.yaml
             grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
-            ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
+            test -f deploy/helm/architecture-rehearsal/crds/rehearsal.io_rehearsalruns.yaml
           fi
+
+  operator-kind-e2e:
+    runs-on: ubuntu-latest
+    # Full Kind lifecycle; ~8–12 min
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Kind operator E2E
+        run: bash scripts/kind-operator-e2e.sh
 
   postgres:
     runs-on: ubuntu-latest

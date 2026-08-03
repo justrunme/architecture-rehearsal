@@ -138,8 +138,12 @@ func TestSetCondKeepsTimestampWithoutTransition(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
 			w.WriteHeader(201)
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]any
+			_ = json.Unmarshal(body, &req)
+			w.WriteHeader(201)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "default-demo-g1", "spec": map[string]any{"baselineRef": "b.json", "changeRef": "c.json"},
+				"id": req["id"], "spec": map[string]any{"baselineRef": "b.json", "changeRef": "c.json"},
 				"status": map[string]any{"phase": "Pending"},
 			})
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/advance"):
@@ -152,7 +156,7 @@ func TestSetCondKeepsTimestampWithoutTransition(t *testing.T) {
 				phase = "Completed"
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "default-demo-g1",
+				"id": "x",
 				"spec": map[string]any{"baselineRef": "b.json", "changeRef": "c.json"},
 				"status": map[string]any{"phase": phase, "decision": "approve", "message": "ok"},
 				"labels": map[string]string{"chainBlob": "abc123"},
@@ -165,7 +169,7 @@ func TestSetCondKeepsTimestampWithoutTransition(t *testing.T) {
 
 	s := scheme(t)
 	cr := &v1beta1.RehearsalRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default", Generation: 1},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default", Generation: 1, UID: "aaaaaaaa-bbbb-cccc"},
 		Spec:       v1beta1.RehearsalRunSpec{BaselineRef: "b.json", ChangeRef: "c.json"},
 	}
 	// Generation is not set by fake client automatically for Create — set ResourceVersion
@@ -260,7 +264,7 @@ func TestGenerationCreatesNewRunID(t *testing.T) {
 
 	s := scheme(t)
 	cr := &v1beta1.RehearsalRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "ns", Generation: 2},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "ns", Generation: 2, UID: "abcdef12-3456-7890"},
 		Spec:       v1beta1.RehearsalRunSpec{BaselineRef: "b.json", ChangeRef: "c2.json"},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(cr).WithObjects(cr).Build()
@@ -274,13 +278,69 @@ func TestGenerationCreatesNewRunID(t *testing.T) {
 	if _, err := rec.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if len(createIDs) != 1 || createIDs[0] != "ns-demo-g2" {
-		t.Fatalf("create ids=%v", createIDs)
+	want := controller.ControlPlaneRunID("ns", "demo", "abcdef12-3456-7890", 2)
+	if len(createIDs) != 1 || createIDs[0] != want {
+		t.Fatalf("create ids=%v want %s", createIDs, want)
 	}
 	var got v1beta1.RehearsalRun
 	_ = cl.Get(context.Background(), req.NamespacedName, &got)
-	if got.Status.ControlPlaneRunID != "ns-demo-g2" {
-		t.Fatalf("runId=%q", got.Status.ControlPlaneRunID)
+	if got.Status.ControlPlaneRunID != want {
+		t.Fatalf("runId=%q want %s", got.Status.ControlPlaneRunID, want)
+	}
+}
+
+func TestSpecMatchesIncludesScenarios(t *testing.T) {
+	// 200 idempotent return with different scenarios must fail via EnsureRun path
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
+			w.WriteHeader(200)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "x",
+				"spec": map[string]any{
+					"baselineRef": "b", "changeRef": "c",
+					"scenarios": []string{"old"},
+				},
+				"status": map[string]any{"phase": "Pending"},
+			})
+		case r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "x",
+				"spec": map[string]any{"baselineRef": "b", "changeRef": "c", "scenarios": []string{"old"}},
+				"status": map[string]any{"phase": "Pending"},
+			})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	s := scheme(t)
+	cr := &v1beta1.RehearsalRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "ns", Generation: 1, UID: "uid-1"},
+		Spec:       v1beta1.RehearsalRunSpec{BaselineRef: "b", ChangeRef: "c", Scenarios: []string{"new"}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(cr).WithObjects(cr).Build()
+	rec := &controller.RehearsalRunReconciler{
+		Client: cl, Scheme: s, APIBase: srv.URL, Token: "tok",
+		ClientFactory: func(base, token string) *operator.ControlPlaneClient {
+			return &operator.ControlPlaneClient{BaseURL: base, Token: token, HTTP: srv.Client()}
+		},
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "demo", Namespace: "ns"}}
+	if _, err := rec.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var got v1beta1.RehearsalRun
+	_ = cl.Get(context.Background(), req.NamespacedName, &got)
+	// should be Failed condition due to spec mismatch
+	failed := false
+	for _, c := range got.Status.Conditions {
+		if c.Type == v1beta1.ConditionFailed && c.Status == metav1.ConditionTrue {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatalf("want Failed condition on scenario mismatch, status=%+v", got.Status)
 	}
 }
 

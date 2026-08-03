@@ -1,0 +1,102 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rehearsalruns.rehearsal.io
+spec:
+  group: rehearsal.io
+  names:
+    kind: RehearsalRun
+    listKind: RehearsalRunList
+    plural: rehearsalruns
+    singular: rehearsalrun
+    shortNames:
+      - rrun
+  scope: Namespaced
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Decision
+          type: string
+          jsonPath: .status.decision
+        - name: Gen
+          type: integer
+          jsonPath: .status.observedGeneration
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: RehearsalRun drives a control-plane run. API endpoint is never set on the CR (v1.5.1 trust boundary).
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [baselineRef, changeRef]
+              # Forbid unknown fields (no API URL override on CR).
+              additionalProperties: false
+              properties:
+                baselineRef:
+                  type: string
+                changeRef:
+                  type: string
+                observedRef:
+                  type: string
+                clusterName:
+                  type: string
+                scenarios:
+                  type: array
+                  items:
+                    type: string
+                async:
+                  type: boolean
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                specDigest:
+                  type: string
+                phase:
+                  type: string
+                decision:
+                  type: string
+                risk:
+                  type: string
+                controlPlaneRunId:
+                  type: string
+                jobId:
+                  type: string
+                evidenceDigest:
+                  type: string
+                message:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time

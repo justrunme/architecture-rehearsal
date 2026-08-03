@@ -1,4 +1,4 @@
-# Kubernetes Operator (v1.5.1)
+# Kubernetes Operator (v1.5.2)
 
 The `rehearsal-operator` reconciles `RehearsalRun` CRs against the Architecture Rehearsal **control plane HTTP API**.
 
@@ -38,12 +38,15 @@ kubectl apply -k config/operator/
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$REHEARSAL_API_TOKEN" \
-  --set image.tag=1.5.1 \
+  --set image.tag=1.5.2 \
   --set operator.enabled=true \
-  --set operator.image.tag=1.5.1
+  --set operator.image.tag=1.5.2
+# CRD is installed from chart crds/ automatically
+kubectl get crd rehearsalruns.rehearsal.io
 ```
 
-Default: `operator.enabled=false` (no cluster-wide RBAC until you opt in).
+Default: `operator.enabled=false` (no cluster-wide RBAC until you opt in).  
+Default: `operator.networkPolicy.enabled=false` (enable only with real `kubeAPIServerCIDRs`).
 
 ## CR example
 
@@ -66,7 +69,7 @@ spec:
 | ----- | ------- |
 | `status.observedGeneration` | Last reconciled `metadata.generation` |
 | `status.specDigest` | sha256 of Spec |
-| `status.controlPlaneRunId` | `{namespace}-{name}-g{generation}` |
+| `status.controlPlaneRunId` | `{namespace}-{name}-{uid8}-g{generation}` |
 | `status.jobId` | Async job id (set once per generation) |
 | `status.evidenceDigest` | Chain/report digest when available |
 | `status.phase` | Control-plane phase |

@@ -1,4 +1,6 @@
-# Egress: DNS + control plane only. Adjust labels/namespace for your install.
+# OPTIONAL — not applied by kustomization by default (breaks API watch without API CIDR).
+# Enable only after setting kube API server CIDRs for your cluster.
+# kubectl apply -f networkpolicy.yaml  # after editing ipBlock
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,7 +13,6 @@ spec:
       app.kubernetes.io/name: rehearsal-operator
   policyTypes: [Egress]
   egress:
-    # Control plane Service (same namespace by default)
     - to:
         - podSelector:
             matchLabels:
@@ -19,15 +20,15 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
-    # Kubernetes API (leader election, CR watch) — cluster network
+    # REPLACE with your apiserver address(es), e.g. from `kubectl get endpoints kubernetes`
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: default
+        - ipBlock:
+            cidr: 0.0.0.0/0 # DANGEROUS placeholder — replace with real API CIDR
       ports:
         - protocol: TCP
           port: 443
-    # CoreDNS
+        - protocol: TCP
+          port: 6443
     - to:
         - namespaceSelector:
             matchLabels:
