@@ -1,0 +1,122 @@
+{{- if .Values.operator.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator
+  labels:
+    app.kubernetes.io/name: rehearsal-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator
+rules:
+  - apiGroups: [rehearsal.io]
+    resources: [rehearsalruns]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rehearsal.io]
+    resources: [rehearsalruns/status]
+    verbs: [get, update, patch]
+  - apiGroups: [rehearsal.io]
+    resources: [rehearsalruns/finalizers]
+    verbs: [update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "architecture-rehearsal.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator
+  labels:
+    app.kubernetes.io/name: rehearsal-operator
+spec:
+  replicas: {{ .Values.operator.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rehearsal-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rehearsal-operator
+    spec:
+      serviceAccountName: {{ include "architecture-rehearsal.fullname" . }}-operator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          args:
+            - --leader-elect={{ .Values.operator.leaderElect | default false }}
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8082
+          env:
+            # Trust boundary: URL only from deployment, never from RehearsalRun CR.
+            - name: REHEARSAL_API_URL
+              value: {{ .Values.operator.apiURL | default (printf "http://%s:%v" (include "architecture-rehearsal.fullname" .) .Values.service.port) | quote }}
+            - name: REHEARSAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.api.existingSecret }}{{ .Values.api.existingSecret }}{{ else }}{{ include "architecture-rehearsal.fullname" . }}-api{{ end }}
+                  key: {{ .Values.api.existingSecretKey | default "token" }}
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+---
+{{- if .Values.operator.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rehearsal-operator
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: architecture-rehearsal
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+{{- end }}

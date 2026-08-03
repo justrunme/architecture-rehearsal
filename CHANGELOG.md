@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.5.1 — 2026-08-03
+
+**Operator Trust Boundary** — final security packaging for the K8s operator.
+
+### P0: no token exfiltration
+- Removed `spec.controlPlaneURL` from CRD/types (API URL is **deployment-only** via `REHEARSAL_API_URL`)
+- CRD `additionalProperties: false` on spec
+
+### Spec immutability / drift
+- `status.observedGeneration` + `status.specDigest`
+- Control-plane run id includes generation: `{ns}-{name}-g{generation}`
+- `EnsureRun` on **409** fetches existing run and reports Conflict (not silent success)
+- Spec ref mismatch fails reconcile loudly
+
+### JobID
+- `Advance` decodes `jobId` from 202 response into `status.jobId`
+
+### Packaging
+- `deploy/operator/deployment.yaml` — SA, ClusterRole, Deployment, Secret, NetworkPolicy
+- `Dockerfile.operator` + multi-arch operator binaries in release assets
+- Helm `operator.enabled` (default false)
+- Helm: no stub Secret when `api.existingSecret` is set
+- README: operator = **Supported (packaged)**; S3 remains MinIO reference
+
+### Tests
+- SpecDigest stability/drift
+- EnsureRun conflict path
+- Advance jobId
+- controlPlaneURL not on Spec type
+
 ## 1.5.0 — 2026-08-03
 
 **Kubernetes Operator** — controller-runtime RehearsalRun CR → control plane.

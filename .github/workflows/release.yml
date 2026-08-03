@@ -31,6 +31,11 @@ jobs:
             dist/rehearsal-darwin-amd64
             dist/rehearsal-darwin-arm64
             dist/rehearsal-windows-amd64.exe
+            dist/rehearsal-operator-linux-amd64
+            dist/rehearsal-operator-linux-arm64
+            dist/rehearsal-operator-darwin-amd64
+            dist/rehearsal-operator-darwin-arm64
+            dist/rehearsal-operator-windows-amd64.exe
             dist/SHA256SUMS
             dist/sbom.gomod.json
         env:

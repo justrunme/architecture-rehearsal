@@ -1,8 +1,12 @@
-// Package controller implements the Kubernetes RehearsalRun reconciler (v1.5).
+// Package controller implements the Kubernetes RehearsalRun reconciler (v1.5.1).
+// Trust boundary: control plane URL and token come ONLY from operator deployment.
 package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -20,12 +24,13 @@ import (
 )
 
 // RehearsalRunReconciler reconciles RehearsalRun CRs against the control plane.
+// APIBase and Token MUST be set from deployment env — never from CR.
 type RehearsalRunReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	// DefaultAPI is REHEARSAL_API_URL.
-	DefaultAPI string
-	// Token is REHEARSAL_API_TOKEN.
+	// APIBase is REHEARSAL_API_URL (deployment-only).
+	APIBase string
+	// Token is REHEARSAL_API_TOKEN (from Secret).
 	Token string
 }
 
@@ -43,27 +48,31 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	apiURL := cr.Spec.ControlPlaneURL
-	if apiURL == "" {
-		apiURL = r.DefaultAPI
-	}
+	apiURL := r.APIBase
 	if apiURL == "" {
 		apiURL = os.Getenv("REHEARSAL_API_URL")
 	}
 	if apiURL == "" {
-		return r.fail(&cr, "ControlPlaneURL or REHEARSAL_API_URL required")
+		return r.fail(ctx, &cr, "REHEARSAL_API_URL required (set only on operator Deployment, never on CR)")
 	}
 	token := r.Token
 	if token == "" {
 		token = os.Getenv("REHEARSAL_API_TOKEN")
 	}
 	if token == "" {
-		return r.fail(&cr, "REHEARSAL_API_TOKEN required")
+		return r.fail(ctx, &cr, "REHEARSAL_API_TOKEN required (Secret mount)")
 	}
 
-	runID := cr.Status.ControlPlaneRunID
-	if runID == "" {
-		runID = fmt.Sprintf("%s-%s", cr.Namespace, cr.Name)
+	digest, err := SpecDigest(cr.Spec)
+	if err != nil {
+		return r.fail(ctx, &cr, "spec digest: "+err.Error())
+	}
+
+	// New control-plane run id per generation so spec changes never silently reuse old baseline/change.
+	runID := fmt.Sprintf("%s-%s-g%d", cr.Namespace, cr.Name, cr.Generation)
+	// Keep previous id if generation unchanged and we already have one.
+	if cr.Status.ObservedGeneration == cr.Generation && cr.Status.ControlPlaneRunID != "" && cr.Status.SpecDigest == digest {
+		runID = cr.Status.ControlPlaneRunID
 	}
 
 	cp := &operator.ControlPlaneClient{BaseURL: apiURL, Token: token}
@@ -74,20 +83,45 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		ClusterName: cr.Spec.ClusterName,
 		Scenarios:   cr.Spec.Scenarios,
 	})
-	if err := cp.EnsureRun(rr); err != nil {
+	rr.Labels = map[string]string{
+		"k8s.namespace": cr.Namespace,
+		"k8s.name":      cr.Name,
+		"specDigest":    digest,
+	}
+
+	ens, err := cp.EnsureRun(rr)
+	if err != nil {
 		logger.Error(err, "ensure run")
-		return r.fail(&cr, err.Error())
+		return r.fail(ctx, &cr, err.Error())
+	}
+	if ens.Conflict {
+		// Existing run with same id — verify it matches this generation's digests via labels/refs.
+		if ens.Run != nil {
+			if !specMatchesRun(cr.Spec, ens.Run) {
+				// Spec drift: create a new immutable run id with generation suffix is already set;
+				// if still conflict, fail loudly rather than overwrite.
+				return r.fail(ctx, &cr, fmt.Sprintf(
+					"control plane run %q exists with different refs (immutable); delete CR or change name", runID))
+			}
+		}
 	}
 
 	async := true
 	if cr.Spec.Async != nil {
 		async = *cr.Spec.Async
 	}
-	// Only advance non-terminal
-	if cr.Status.Phase == "" || !isTerminal(cr.Status.Phase) {
-		if err := cp.Advance(runID, async); err != nil {
+
+	// Advance if not terminal, or if this is a new generation that needs first advance.
+	needAdvance := cr.Status.Phase == "" || !isTerminal(cr.Status.Phase) ||
+		cr.Status.ObservedGeneration != cr.Generation || cr.Status.SpecDigest != digest
+	if needAdvance && (ens.Run == nil || !ens.Run.Status.Phase.Terminal()) {
+		adv, err := cp.Advance(runID, async)
+		if err != nil {
 			logger.Error(err, "advance")
-			return r.fail(&cr, err.Error())
+			return r.fail(ctx, &cr, err.Error())
+		}
+		if adv != nil && adv.JobID != "" {
+			cr.Status.JobID = adv.JobID
 		}
 	}
 
@@ -100,6 +134,8 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	cr.Status.Decision = latest.Status.Decision
 	cr.Status.Risk = latest.Status.Risk
 	cr.Status.Message = latest.Status.Message
+	cr.Status.ObservedGeneration = cr.Generation
+	cr.Status.SpecDigest = digest
 	setCond(&cr, "Ready", metav1.ConditionTrue, "Synced", "synced with control plane")
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		return ctrl.Result{}, err
@@ -110,10 +146,30 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
-func (r *RehearsalRunReconciler) fail(cr *rehearsalv1beta1.RehearsalRun, msg string) (ctrl.Result, error) {
+// SpecDigest returns a stable sha256 of the CR spec for drift detection.
+func SpecDigest(spec rehearsalv1beta1.RehearsalRunSpec) (string, error) {
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func specMatchesRun(spec rehearsalv1beta1.RehearsalRunSpec, rr *run.RehearsalRun) bool {
+	if rr == nil {
+		return false
+	}
+	return rr.Spec.BaselineRef == spec.BaselineRef &&
+		rr.Spec.ChangeRef == spec.ChangeRef &&
+		rr.Spec.ObservedRef == spec.ObservedRef &&
+		rr.Spec.ClusterName == spec.ClusterName
+}
+
+func (r *RehearsalRunReconciler) fail(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun, msg string) (ctrl.Result, error) {
 	cr.Status.Message = msg
 	setCond(cr, "Ready", metav1.ConditionFalse, "Error", msg)
-	_ = r.Status().Update(context.Background(), cr)
+	_ = r.Status().Update(ctx, cr)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 

@@ -26,6 +26,9 @@ jobs:
         run: |
           go build -o bin/rehearsal ./cmd/rehearsal
           go build -o bin/rehearsal-operator ./cmd/rehearsal-operator
+          # operator trust boundary: controlPlaneURL must not appear on Spec
+          ! grep -r "ControlPlaneURL" api/v1beta1/ --include='*.go' || (echo "ControlPlaneURL must not exist on CR types" && exit 1)
+
       - name: Demo (expect block)
         run: bash scripts/demo.sh
       - name: E2E pipeline (dump → graph → scoped change → block → verify)
@@ -45,7 +48,7 @@ jobs:
             --out out/verify.json
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.5.0'
+        run: ./bin/rehearsal version | grep -q '1.5.1'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null
@@ -65,7 +68,7 @@ jobs:
           curl -sf http://127.0.0.1:18080/readyz
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
           test "$code" = "401"
-          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.5.0
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.5.1
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/metrics | grep -q rehearsal_queue_depth
           # create run + job list + audit
           curl -sf -X POST -H "Authorization: Bearer $REHEARSAL_API_TOKEN" -H "Content-Type: application/json" \

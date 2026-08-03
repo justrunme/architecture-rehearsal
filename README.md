@@ -16,7 +16,7 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.5.0** — controller-runtime RehearsalRun operator + v1.4.1 hardening.  
+**Status: v1.5.1** — production-oriented control plane + packaged K8s operator (trust boundary fixed).  
 Evidence integrity + secure API + trust boundaries required for production.  
 **v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
@@ -49,7 +49,7 @@ Evidence integrity + secure API + trust boundaries required for production.
 | GitOps full admission gate | **Reference** workflow + adapters |
 | Calibration engine | **Supported** (org-scoped SQL) |
 | Operator JSON CR ↔ control plane | **Supported** (`operator --api`) |
-| Live controller-runtime operator | **Supported** (v1.5 `cmd/rehearsal-operator` + CRD) |
+| Live controller-runtime operator | **Supported** (v1.5.1 packaged: CRD, Helm, Deployment, RBAC, NetworkPolicy) |
 | Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
 | LLM in risk path | **Not supported** |
 
@@ -61,7 +61,7 @@ Evidence integrity + secure API + trust boundaries required for production.
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.5.0
+make build && ./bin/rehearsal version   # 1.5.1
 ```
 
 ### Offline iron path
@@ -125,19 +125,27 @@ curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/me
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
-  --set image.tag=1.5.0
+  --set image.tag=1.5.1 \
+  --set operator.enabled=true
 # chart fails closed if api.token is empty; PVC on by default (persistence.enabled)
+# operator REHEARSAL_API_URL is deployment-only — never set on RehearsalRun CR
 ```
 
-### Kubernetes operator (v1.5)
+### Kubernetes operator (v1.5.1)
 
 ```bash
 kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
-export REHEARSAL_API_URL=http://rehearsal.default.svc:8080
+# standalone manifests:
+# kubectl apply -f deploy/operator/deployment.yaml  # edit Secret + API URL first
+
+# or Helm with operator.enabled=true (shares api.token Secret)
+export REHEARSAL_API_URL=http://architecture-rehearsal:8080   # operator Deployment env only
 export REHEARSAL_API_TOKEN=...
 go run ./cmd/rehearsal-operator
-# or: go build -o bin/rehearsal-operator ./cmd/rehearsal-operator
 ```
+
+**Trust boundary:** `REHEARSAL_API_URL` / token only from operator Deployment/Secret.  
+`spec.controlPlaneURL` was removed — CRs cannot redirect the operator or steal the token.
 
 
 ---
