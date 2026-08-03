@@ -132,20 +132,24 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		}
 	}
 
-	// --- Component presence: FAIL if missing; present alone is not a free pass ---
+	// --- Component presence (primary survivors only) ---
+	// Require: all PVC components + the first Workload per finding (the subject).
+	// Cascade deps (webservice, svc, pdb, lost node, alert, slo, team) are not required
+	// in slim post-incident observed graphs.
+	seenComp := map[string]bool{}
 	for _, f := range pred.Findings {
-		for _, c := range f.Components {
-			if c == "" {
+		for _, c := range primarySurvivorComponents(f.Components) {
+			if seenComp[c] {
 				continue
 			}
-			if n := idx.ByID[c]; n == nil {
+			seenComp[c] = true
+			if idx.ByID[c] == nil {
 				checks = append(checks, Check{
 					Name:   "component_missing:" + c,
 					Passed: false,
-					Detail: "component from finding not present in observed graph",
+					Detail: "primary workload/PVC from finding not present in observed graph",
 				})
 			}
-			// presence without health signal is intentionally not scored
 		}
 	}
 
@@ -220,7 +224,9 @@ func independentScenarioCheck(scenarioID string, pred *analyze.Report, observed 
 	case "rwo-node-loss":
 		return []Check{checkRWOPending(idx, comps)}
 	case "pdb-disruption":
-		return []Check{checkPDBDisruption(idx)}
+		return []Check{checkPDBDisruption(idx, comps)}
+	case "volume-az":
+		return []Check{checkVolumeAZ(observed, idx, comps)}
 	case "prom-zero-match":
 		// Observability scenarios need metric meta; without it → unknown
 		if observed.Meta != nil {
@@ -246,6 +252,24 @@ func independentScenarioCheck(scenarioID string, pred *analyze.Report, observed 
 			Detail:  "no independent predicate for scenario " + scenarioID,
 		}}
 	}
+}
+
+// primarySurvivorComponents returns PVC ids + the first Workload id from a finding.
+func primarySurvivorComponents(comps []string) []string {
+	var out []string
+	firstWL := ""
+	for _, c := range comps {
+		if strings.HasPrefix(c, "pvc/") {
+			out = append(out, c)
+		}
+		if firstWL == "" && strings.HasPrefix(c, "workload/") {
+			firstWL = c
+		}
+	}
+	if firstWL != "" {
+		out = append(out, firstWL)
+	}
+	return out
 }
 
 func componentsForScenario(pred *analyze.Report, scenarioID string) []string {
@@ -373,14 +397,30 @@ func podLooksStateful(p *graph.Node) bool {
 	return false
 }
 
-func checkPDBDisruption(idx *graph.Index) Check {
-	// Weak independent signal: pending pods under PDB-protected workloads
+func checkPDBDisruption(idx *graph.Index, comps []string) Check {
+	// Independent signal: pending/unschedulable pods OR workload markers
+	// (golden fixtures often elevate Pending onto Workload, not Pod).
 	pending := countPendingPods(idx)
+	for _, w := range idx.ByKind[graph.KindWorkload] {
+		if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
+			pending++
+		}
+	}
+	// Prefer components from the pdb finding when present
+	if pending == 0 {
+		for _, id := range comps {
+			if w := idx.ByID[id]; w != nil {
+				if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
+					pending++
+				}
+			}
+		}
+	}
 	if pending > 0 {
 		return Check{
 			Name:   "scenario:pdb-disruption",
 			Passed: true,
-			Detail: fmt.Sprintf("pending pods=%d (possible disruption fallout)", pending),
+			Detail: fmt.Sprintf("pending/unschedulable markers=%d (disruption fallout)", pending),
 		}
 	}
 	return Check{
@@ -388,6 +428,99 @@ func checkPDBDisruption(idx *graph.Index) Check {
 		Passed:  false,
 		Unknown: true,
 		Detail:  "no independent disruption evidence in observed graph",
+	}
+}
+
+func checkVolumeAZ(observed *graph.Snapshot, idx *graph.Index, comps []string) Check {
+	// Evidence: RWO/zoned PVC still present, its zone has no remaining nodes,
+	// and/or boundNode is gone from the observed graph.
+	zonesWithNodes := map[string]bool{}
+	for _, n := range idx.ByKind[graph.KindNode] {
+		if z := n.AttrString("zone"); z != "" {
+			zonesWithNodes[z] = true
+		}
+	}
+	// Also accept nodes without zone attr by name presence only for boundNode checks.
+	matched := 0
+	for _, pvc := range idx.ByKind[graph.KindPVC] {
+		// Prefer components list when provided
+		if len(comps) > 0 {
+			ok := false
+			for _, c := range comps {
+				if c == pvc.ID {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				// still allow if no pvc ids in comps
+				hasPVCComp := false
+				for _, c := range comps {
+					if strings.HasPrefix(c, "pvc/") {
+						hasPVCComp = true
+						break
+					}
+				}
+				if hasPVCComp {
+					continue
+				}
+			}
+		}
+		z := pvc.AttrString("zone")
+		bound := pvc.AttrString("boundNode")
+		boundGone := false
+		if bound != "" {
+			if idx.ByID["node/"+bound] == nil {
+				// also try bare name match
+				found := false
+				for _, n := range idx.ByKind[graph.KindNode] {
+					if n.Name == bound {
+						found = true
+						break
+					}
+				}
+				boundGone = !found
+			}
+		}
+		zoneEmpty := z != "" && !zonesWithNodes[z]
+		if zoneEmpty || boundGone {
+			matched++
+		}
+	}
+	if matched > 0 {
+		return Check{
+			Name:   "scenario:volume-az",
+			Passed: true,
+			Detail: fmt.Sprintf("independent evidence: %d PVC(s) with empty zone and/or lost boundNode", matched),
+		}
+	}
+	// fallback: any zoned PVC + pending survivor workload
+	if len(idx.ByKind[graph.KindPVC]) > 0 {
+		pendingWL := 0
+		for _, w := range idx.ByKind[graph.KindWorkload] {
+			if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
+				pendingWL++
+			}
+		}
+		if pendingWL > 0 && len(zonesWithNodes) > 0 {
+			// weak: pending after node loss with PVC present
+			for _, pvc := range idx.ByKind[graph.KindPVC] {
+				if z := pvc.AttrString("zone"); z != "" && !zonesWithNodes[z] {
+					return Check{
+						Name:   "scenario:volume-az",
+						Passed: true,
+						Detail: "PVC zone not covered by remaining nodes + pending workload",
+					}
+				}
+			}
+		}
+	}
+	_ = observed
+	return Check{
+		Name:    "scenario:volume-az",
+		Passed:  false,
+		Unknown: true,
+		Detail:  "no PVC zone/boundNode evidence for volume-az in observed graph",
 	}
 }
 
