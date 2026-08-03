@@ -62,6 +62,10 @@ func main() {
 		code = cmdSchemas(os.Args[2:])
 	case "operator":
 		code = cmdOperator(os.Args[2:])
+	case "status":
+		code = cmdStatus(os.Args[2:])
+	case "backup":
+		code = cmdBackup(os.Args[2:])
 	case "version":
 		fmt.Println("rehearsal", analyze.Version)
 	case "help", "-h", "--help":
@@ -91,7 +95,9 @@ Usage:
   rehearsal calibrate [--demo]
   rehearsal schemas
   rehearsal serve    --workdir DIR [--addr :8080] [--db PATH|postgres://] [--blob DIR] [--async] [--workers N]
-  rehearsal operator [--watch DIR] [--once]
+  rehearsal operator [--watch DIR] [--api URL] [--token TOK] [--once]
+  rehearsal status   github|gitlab --sha SHA --state success|failure [--decision block]
+  rehearsal backup   --db PATH --out PATH
   rehearsal merge|store|audit|sign|verify-sign ...
   rehearsal version
 

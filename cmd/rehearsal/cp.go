@@ -21,6 +21,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/contract"
 	"github.com/justrunme/architecture-rehearsal/internal/evidence"
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
+	"github.com/justrunme/architecture-rehearsal/internal/integrations/status"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
 	"github.com/justrunme/architecture-rehearsal/internal/operator"
 	"github.com/justrunme/architecture-rehearsal/internal/persist"
@@ -172,7 +173,7 @@ func redactDSN(dsn string) string {
 }
 
 func authnFromEnvServe() (authn.Authenticator, error) {
-	return authn.FromEnv(authn.Config{RequireToken: true})
+	return authn.FromEnvAuthenticator(authn.Config{RequireToken: true})
 }
 
 func cmdRun(args []string) int {
@@ -484,10 +485,17 @@ func cmdSchemas(args []string) int {
 func cmdOperator(args []string) int {
 	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
 	dir := fs.String("watch", "out/runs-cr", "directory of RehearsalRun JSON")
+	workdir := fs.String("workdir", "", "engine workdir for local reconcile")
 	once := fs.Bool("once", true, "reconcile once and exit")
+	apiURL := fs.String("api", "", "control plane base URL (optional; syncs CR → HTTP API)")
+	token := fs.String("token", os.Getenv("REHEARSAL_API_TOKEN"), "API bearer token")
+	async := fs.Bool("async", true, "async advance when using --api")
 	_ = fs.Parse(args)
 	_ = os.MkdirAll(*dir, 0o755)
-	rec := &operator.Reconciler{WatchDir: *dir, Holder: "operator"}
+	rec := &operator.Reconciler{WatchDir: *dir, WorkDir: *workdir, Holder: "operator", AsyncAdvance: *async}
+	if *apiURL != "" {
+		rec.ControlPlane = &operator.ControlPlaneClient{BaseURL: *apiURL, Token: *token}
+	}
 	if *once {
 		n, err := rec.ReconcileOnce()
 		if err != nil {
@@ -505,5 +513,86 @@ func cmdOperator(args []string) int {
 		close(stop)
 	}()
 	rec.RunLoop(stop, 5*time.Second)
+	return 0
+}
+
+func cmdStatus(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: rehearsal status github|gitlab --sha SHA --state success|failure|pending --description TEXT")
+		return 2
+	}
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	sha := fs.String("sha", "", "commit sha")
+	state := fs.String("state", "success", "success|failure|pending|error")
+	desc := fs.String("description", "architecture-rehearsal", "status description")
+	url := fs.String("url", "", "target URL")
+	decision := fs.String("decision", "", "optional: map approve|warn|block")
+	exitCode := fs.Int("exit-code", -1, "optional analyze exit code for mapping")
+	_ = fs.Parse(args[1:])
+	if *sha == "" {
+		*sha = os.Getenv("GITHUB_SHA")
+	}
+	if *sha == "" {
+		*sha = os.Getenv("CI_COMMIT_SHA")
+	}
+	if *decision != "" || *exitCode >= 0 {
+		st, _ := status.MapDecision(*decision, *exitCode)
+		*state = st
+	}
+	st := status.Status{State: *state, Description: *desc, TargetURL: *url}
+	switch args[0] {
+	case "github":
+		if *sha == "" {
+			fmt.Fprintln(os.Stderr, "--sha required")
+			return 2
+		}
+		g, err := status.FromEnvGitHub()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 2
+		}
+		if err := g.PostCommitStatus(*sha, st); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 5
+		}
+		fmt.Fprintf(os.Stderr, "github status %s on %s\n", st.State, *sha)
+		return 0
+	case "gitlab":
+		if *sha == "" {
+			fmt.Fprintln(os.Stderr, "--sha required")
+			return 2
+		}
+		g, err := status.FromEnvGitLab()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 2
+		}
+		if err := g.PostCommitStatus(*sha, st); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 5
+		}
+		fmt.Fprintf(os.Stderr, "gitlab status %s on %s\n", st.State, *sha)
+		return 0
+	default:
+		return 2
+	}
+}
+
+func cmdBackup(args []string) int {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	db := fs.String("db", "data/rehearsal.db", "sqlite db path")
+	out := fs.String("out", "data/rehearsal-backup.db", "backup destination")
+	_ = fs.Parse(args)
+	s, err := persist.Open(*db, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open: %v\n", err)
+		return 5
+	}
+	defer s.Close()
+	if err := s.BackupSQLite(*db, *out); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 5
+	}
+	fmt.Fprintf(os.Stderr, "backed up %s -> %s schema=%d\n", *db, *out, s.SchemaVersion())
 	return 0
 }

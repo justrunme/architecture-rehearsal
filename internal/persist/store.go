@@ -105,13 +105,11 @@ func (s *Store) migrate() error {
 			}
 		}
 	}
-	// Record schema version
-	if s.dialect == "postgres" {
-		_, _ = s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(2, $1) ON CONFLICT (version) DO NOTHING`, s.now())
-	} else {
-		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)`, s.now())
+	// Record schema version 2 then apply ordered migrations (3+)
+	if err := s.recordMigration(2); err != nil {
+		return err
 	}
-	return nil
+	return s.applyMigrations()
 }
 
 func (s *Store) upgradeLegacySQLite() error {
