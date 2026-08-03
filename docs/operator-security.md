@@ -7,7 +7,7 @@ to an attacker-controlled host. The operator would send `REHEARSAL_API_TOKEN` th
 
 **Mitigation:**
 
-1. Field removed from API type and CRD (`additionalProperties: false` on `spec`).
+1. Field removed from API type and CRD (no Spec field for API URL; typed client ignores unknowns).
 2. Operator reads URL only from `REHEARSAL_API_URL` (Deployment env).
 3. Token only from Secret (`secretKeyRef`).
 4. NetworkPolicy restricts egress to control-plane Service + DNS (+ API for leader election).

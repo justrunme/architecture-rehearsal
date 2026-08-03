@@ -45,8 +45,9 @@ spec:
             spec:
               type: object
               required: [baselineRef, changeRef]
-              # Forbid unknown fields (no API URL override on CR).
-              additionalProperties: false
+              # Note: CRD structural schemas forbid additionalProperties+properties
+              # together. Unknown fields are ignored by the typed Go client; API
+              # URL is never a Spec field (trust boundary, v1.5.1+).
               properties:
                 baselineRef:
                   type: string
