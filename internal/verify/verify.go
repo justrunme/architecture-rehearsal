@@ -1,7 +1,10 @@
 // Package verify compares an analysis prediction with a post-deploy snapshot.
 //
-// v0.4.1: fail-closed checks, all predicted failures, Pending on Pods.
-// v0.5+: independent observation predicates; meta.observed_failures is annotation only.
+// v0.7.2 Verification Integrity:
+//   - change_applied vs rollout_converged (no free pass on replica mismatch)
+//   - causal scenario predicates (no global Pending fallbacks)
+//   - without baseline+change, outcome is capped at INCONCLUSIVE
+//   - metric_match_count must be zero for prom-zero-match
 package verify
 
 import (
@@ -9,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,9 +39,11 @@ type Result struct {
 	Outcome        string    `json:"outcome"`
 	Summary        string    `json:"summary"`
 	Checks         []Check   `json:"checks"`
-	Score          float64   `json:"score"` // 0..1 fraction of decisive checks that passed
-	// DeployedChangeDigest is the observed identity of applied patches (v0.5+).
+	Score          float64   `json:"score"`
+	// DeployedChangeDigest fingerprints the change envelope patches.
 	DeployedChangeDigest string `json:"deployedChangeDigest,omitempty"`
+	// Mode is "production" when baseline+change supplied, else "legacy".
+	Mode string `json:"mode,omitempty"`
 }
 
 // Check is one verification assertion.
@@ -50,17 +56,18 @@ type Check struct {
 	Soft bool `json:"soft,omitempty"`
 }
 
-// Options controls verification (v0.5+).
+// Options controls verification.
 type Options struct {
-	// Baseline and Change enable independent observation (delta + identity).
 	Baseline *graph.Snapshot
 	Change   *loader.ChangeEnvelope
-	// RequireAllPredictions: every predicted failure needs independent evidence (default true).
-	// When false (legacy), a single match is enough — not recommended.
+	// RequireAllPredictions defaults true when nil.
 	RequireAllPredictions *bool
+	// AllowLegacyVerified allows VERIFIED without baseline+change (default false).
+	// Production path caps legacy at INCONCLUSIVE.
+	AllowLegacyVerified bool
 }
 
-// Run compares prediction report to post-deploy observed snapshot (legacy entry).
+// Run is the legacy entry (no baseline/change → max INCONCLUSIVE unless AllowLegacyVerified).
 func Run(pred *analyze.Report, observed *graph.Snapshot) *Result {
 	return RunWithOptions(pred, observed, Options{})
 }
@@ -75,6 +82,13 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		ChangeID:       pred.ChangeID,
 		PredictionRisk: pred.Risk,
 	}
+	production := opts.Baseline != nil && opts.Change != nil
+	if production {
+		res.Mode = "production"
+	} else {
+		res.Mode = "legacy"
+	}
+
 	if observed == nil {
 		res.Outcome = OutcomeInconclusive
 		res.Summary = "No observed snapshot provided."
@@ -88,7 +102,16 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		requireAll = *opts.RequireAllPredictions
 	}
 
-	// --- Independent observation (v0.5): scenario-specific graph evidence ---
+	if !production {
+		checks = append(checks, Check{
+			Name:    "identity_context",
+			Passed:  false,
+			Unknown: true,
+			Detail:  "baseline and change not provided — identity/delta checks skipped; max outcome INCONCLUSIVE",
+		})
+	}
+
+	// Scenario-specific independent evidence (causal, component-scoped).
 	for _, scenarioID := range pred.PredictedFailures {
 		checks = append(checks, independentScenarioCheck(scenarioID, pred, observed, idx)...)
 	}
@@ -100,7 +123,7 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		})
 	}
 
-	// --- Operator annotation (soft only — never sole proof) ---
+	// Operator annotation — soft only.
 	observedFailures := parseObservedFailures(observed)
 	if len(pred.PredictedFailures) > 0 {
 		if len(observedFailures) == 0 {
@@ -114,28 +137,21 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		} else {
 			matched, missing := matchAll(pred.PredictedFailures, observedFailures)
 			detail := fmt.Sprintf("annotation matched %d/%d predicted failure ids", matched, len(pred.PredictedFailures))
-			if requireAll {
-				checks = append(checks, Check{
-					Name:   "operator_observed_failures_annotation",
-					Passed: matched == len(pred.PredictedFailures),
-					Soft:   true,
-					Detail: detail + softMissing(missing),
-				})
-			} else {
-				checks = append(checks, Check{
-					Name:   "operator_observed_failures_annotation",
-					Passed: matched > 0,
-					Soft:   true,
-					Detail: detail + " (legacy partial match)",
-				})
+			pass := matched == len(pred.PredictedFailures)
+			if !requireAll {
+				pass = matched > 0
+				detail += " (legacy partial match)"
 			}
+			checks = append(checks, Check{
+				Name:   "operator_observed_failures_annotation",
+				Passed: pass,
+				Soft:   true,
+				Detail: detail + softMissing(missing),
+			})
 		}
 	}
 
-	// --- Component presence (primary survivors only) ---
-	// Require: all PVC components + the first Workload per finding (the subject).
-	// Cascade deps (webservice, svc, pdb, lost node, alert, slo, team) are not required
-	// in slim post-incident observed graphs.
+	// Primary survivor components (first workload + PVCs per finding).
 	seenComp := map[string]bool{}
 	for _, f := range pred.Findings {
 		for _, c := range primarySurvivorComponents(f.Components) {
@@ -153,7 +169,7 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		}
 	}
 
-	// --- Deployed change identity + delta (v0.5) ---
+	// Deployed change identity + delta (production only).
 	if opts.Change != nil {
 		digest, idChecks := changeIdentityChecks(opts.Change, observed, idx)
 		res.DeployedChangeDigest = digest
@@ -163,7 +179,7 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		checks = append(checks, deltaChecks(opts.Baseline, opts.Change, observed)...)
 	}
 
-	// Score decisive (non-soft, non-unknown) checks
+	// Score decisive checks.
 	passed, total, unknowns, softOnly := 0, 0, 0, 0
 	hardFail := false
 	for _, c := range checks {
@@ -195,7 +211,6 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		res.Outcome = OutcomeDiverged
 		res.Summary = fmt.Sprintf("Partial match: %d/%d decisive checks passed.", passed, total)
 	case unknowns > 0 && passed == total:
-		// Only unknowns + no hard failures
 		if total == 0 {
 			res.Outcome = OutcomeInconclusive
 			res.Summary = "No decisive independent evidence; result inconclusive."
@@ -213,6 +228,12 @@ func RunWithOptions(pred *analyze.Report, observed *graph.Snapshot, opts Options
 		res.Outcome = OutcomeInconclusive
 		res.Summary = "Insufficient decisive checks for verification."
 	}
+
+	// v0.7.2: without baseline+change, never claim VERIFIED in production gate mode.
+	if res.Outcome == OutcomeVerified && !production && !opts.AllowLegacyVerified {
+		res.Outcome = OutcomeInconclusive
+		res.Summary = "Legacy verify without baseline+change cannot reach VERIFIED (identity context missing)."
+	}
 	return res
 }
 
@@ -226,24 +247,11 @@ func independentScenarioCheck(scenarioID string, pred *analyze.Report, observed 
 	case "pdb-disruption":
 		return []Check{checkPDBDisruption(idx, comps)}
 	case "volume-az":
-		return []Check{checkVolumeAZ(observed, idx, comps)}
+		return []Check{checkVolumeAZ(idx, comps)}
+	case "service-routing":
+		return []Check{checkServiceRouting(idx, comps)}
 	case "prom-zero-match":
-		// Observability scenarios need metric meta; without it → unknown
-		if observed.Meta != nil {
-			if _, ok := observed.Meta["metric_match_count"]; ok {
-				return []Check{{
-					Name:   "scenario:prom-zero-match",
-					Passed: true,
-					Detail: "observed meta.metric_match_count present",
-				}}
-			}
-		}
-		return []Check{{
-			Name:    "scenario:prom-zero-match",
-			Passed:  false,
-			Unknown: true,
-			Detail:  "no independent metric evidence in observed meta (need metric_match_count)",
-		}}
+		return []Check{checkPromZeroMatch(observed)}
 	default:
 		return []Check{{
 			Name:    "scenario:" + scenarioID,
@@ -254,7 +262,6 @@ func independentScenarioCheck(scenarioID string, pred *analyze.Report, observed 
 	}
 }
 
-// primarySurvivorComponents returns PVC ids + the first Workload id from a finding.
 func primarySurvivorComponents(comps []string) []string {
 	var out []string
 	firstWL := ""
@@ -283,34 +290,52 @@ func componentsForScenario(pred *analyze.Report, scenarioID string) []string {
 }
 
 func checkCNICapacity(observed *graph.Snapshot, idx *graph.Index, comps []string) Check {
-	pending := countPendingPodsScoped(idx, comps)
-	// Also look for unavailable replica pressure on workloads
-	pressure := 0
-	for _, w := range idx.ByKind[graph.KindWorkload] {
-		if w.AttrInt("unavailableReplicas") > 0 || w.AttrString("phase") == "Pending" {
-			pressure++
+	// Causal evidence only — not any Pending pod.
+	// 1) Explicit CNI capacity meta
+	if observed.Meta != nil {
+		if v, ok := asInt(observed.Meta["cni_ip_available"]); ok && v == 0 {
+			return Check{
+				Name:   "scenario:cni-ip-capacity",
+				Passed: true,
+				Detail: "meta.cni_ip_available=0 (explicit CNI provider)",
+			}
 		}
 	}
-	// Global pending is OK for CNI (cluster-wide IP exhaustion)
-	if pending == 0 {
-		pending = countPendingPods(idx)
+	// 2) Component-scoped pods with CNI/sandbox IP failure reasons
+	n := 0
+	for _, p := range idx.ByKind[graph.KindPod] {
+		if !podInComponentScope(p, comps) && len(comps) > 0 {
+			// allow pods under component namespaces when comps are workloads
+			if !podMatchesComponents(p, comps) {
+				continue
+			}
+		}
+		if hasCNIFailureSignal(p) {
+			n++
+		}
 	}
-	if pending > 0 || pressure > 0 {
+	// When comps empty, still require CNI-specific signal (never plain Pending).
+	if len(comps) == 0 {
+		for _, p := range idx.ByKind[graph.KindPod] {
+			if hasCNIFailureSignal(p) {
+				n++
+			}
+		}
+	}
+	if n > 0 {
 		return Check{
 			Name:   "scenario:cni-ip-capacity",
 			Passed: true,
-			Detail: fmt.Sprintf("independent evidence: pendingPods=%d workloadPressure=%d", pending, pressure),
+			Detail: fmt.Sprintf("component-scoped pods with CNI/sandbox IP failure signals=%d", n),
 		}
 	}
+	// 3) Workload unavailable under components with CNI meta hint
 	if observed.Meta != nil {
-		if v, ok := observed.Meta["pod_scheduling_capacity_estimate"]; ok {
-			if n, ok := asInt(v); ok && n == 0 && pending == 0 {
-				return Check{
-					Name:    "scenario:cni-ip-capacity",
-					Passed:  false,
-					Unknown: true,
-					Detail:  "capacity estimate 0 but no pending pods — may have recovered",
-				}
+		if raw, ok := observed.Meta["cni_failure_events"].([]any); ok && len(raw) > 0 {
+			return Check{
+				Name:   "scenario:cni-ip-capacity",
+				Passed: true,
+				Detail: fmt.Sprintf("meta.cni_failure_events count=%d", len(raw)),
 			}
 		}
 	}
@@ -318,170 +343,341 @@ func checkCNICapacity(observed *graph.Snapshot, idx *graph.Index, comps []string
 		Name:    "scenario:cni-ip-capacity",
 		Passed:  false,
 		Unknown: true,
-		Detail:  "no pending pods or workload pressure observed — independent evidence missing",
+		Detail:  "no causal CNI evidence (need cni_ip_available=0, FailedCreatePodSandBox/IP assign failure, or cni_failure_events)",
 	}
 }
 
-func checkRWOPending(idx *graph.Index, comps []string) Check {
-	// v0.4.1 fix: Pending lives on KindPod, not KindWorkload.
-	// Scope to finding components / PVC-bound stateful names to avoid CNI false positives.
-	pending := 0
-	for _, p := range idx.ByKind[graph.KindPod] {
-		if p.AttrString("phase") != "Pending" && !p.AttrBool("unschedulable") {
-			continue
-		}
-		if podMatchesComponents(p, comps) || podLooksStateful(p) {
-			pending++
-		}
-	}
-	// Workload-level markers only if they are predicted components
-	for _, id := range comps {
-		if w := idx.ByID[id]; w != nil {
-			if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
-				pending++
-			}
-		}
-	}
-	// PVC present + pending pod in same namespace as a PVC is stronger RWO signal
-	if pending == 0 {
-		for _, pvc := range idx.ByKind[graph.KindPVC] {
-			for _, p := range idx.ByKind[graph.KindPod] {
-				if p.Namespace == pvc.Namespace && (p.AttrString("phase") == "Pending" || p.AttrBool("unschedulable")) {
-					pending++
-				}
-			}
-		}
-	}
-	if pending > 0 {
-		return Check{
-			Name:   "scenario:rwo-node-loss",
-			Passed: true,
-			Detail: fmt.Sprintf("independent evidence: scoped pending/unschedulable pods=%d", pending),
-		}
-	}
-	return Check{
-		Name:    "scenario:rwo-node-loss",
-		Passed:  false,
-		Unknown: true,
-		Detail:  "no Pending/unschedulable Pods scoped to RWO components/PVCs",
-	}
-}
-
-func podMatchesComponents(p *graph.Node, comps []string) bool {
-	for _, c := range comps {
-		// component like workload/gitops/gitaly → match pod name prefix gitaly-
-		parts := strings.Split(c, "/")
-		if len(parts) >= 3 {
-			wname := parts[len(parts)-1]
-			ns := parts[len(parts)-2]
-			if p.Namespace == ns && (p.Name == wname || strings.HasPrefix(p.Name, wname+"-")) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func podLooksStateful(p *graph.Node) bool {
-	// StatefulSet pods often end with -0, -1, …
+func hasCNIFailureSignal(p *graph.Node) bool {
 	if p == nil {
 		return false
 	}
-	name := p.Name
-	if len(name) > 2 && name[len(name)-2] == '-' {
-		c := name[len(name)-1]
-		if c >= '0' && c <= '9' {
+	blob := strings.ToLower(strings.Join([]string{
+		p.AttrString("reason"),
+		p.AttrString("message"),
+		p.AttrString("waitingReason"),
+		p.AttrString("containerReason"),
+	}, " "))
+	needles := []string{
+		"failedcreatepodsandbox",
+		"failed to assign an ip",
+		"failed to assign ip",
+		"no free ips",
+		"ipamd",
+		"eni",
+		"cni",
+		"networkplugin",
+		"network plugin",
+		"sandbox",
+	}
+	for _, n := range needles {
+		if strings.Contains(blob, n) {
 			return true
 		}
 	}
 	return false
 }
 
-func checkPDBDisruption(idx *graph.Index, comps []string) Check {
-	// Independent signal: pending/unschedulable pods OR workload markers
-	// (golden fixtures often elevate Pending onto Workload, not Pod).
-	pending := countPendingPods(idx)
-	for _, w := range idx.ByKind[graph.KindWorkload] {
-		if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
-			pending++
-		}
-	}
-	// Prefer components from the pdb finding when present
-	if pending == 0 {
-		for _, id := range comps {
-			if w := idx.ByID[id]; w != nil {
-				if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
-					pending++
+func checkRWOPending(idx *graph.Index, comps []string) Check {
+	// Require causal link: PVC survivor + lost boundNode and/or attach failure
+	// on a pod matching the predicted workload — not namespace-wide Pending.
+	pvcs := pvcComponents(comps)
+	if len(pvcs) == 0 {
+		// infer PVCs linked by edges from workload components
+		for _, e := range idx.Snap.Edges {
+			if e.Rel != graph.RelBindsVolume {
+				continue
+			}
+			for _, c := range comps {
+				if e.From == c && strings.HasPrefix(e.To, "pvc/") {
+					pvcs = append(pvcs, e.To)
 				}
 			}
 		}
 	}
-	if pending > 0 {
+	// Also scan all PVCs if finding only listed workload
+	if len(pvcs) == 0 {
+		for _, c := range comps {
+			if strings.HasPrefix(c, "pvc/") {
+				pvcs = append(pvcs, c)
+			}
+		}
+	}
+
+	attachSignals := 0
+	for _, p := range idx.ByKind[graph.KindPod] {
+		if !podMatchesComponents(p, comps) && !podLooksStateful(p) {
+			continue
+		}
+		if hasVolumeAttachFailure(p) {
+			attachSignals++
+		}
+	}
+
+	boundGone := 0
+	for _, id := range pvcs {
+		pvc := idx.ByID[id]
+		if pvc == nil {
+			// try any PVC in graph matching components list later
+			continue
+		}
+		if rwoPVCBoundNodeMissing(idx, pvc) {
+			boundGone++
+		}
+	}
+	// If no explicit pvc ids, scan PVCs bound from workload edges or same ns as components
+	if boundGone == 0 && attachSignals == 0 {
+		for _, pvc := range idx.ByKind[graph.KindPVC] {
+			if !pvcInScope(pvc, comps) {
+				continue
+			}
+			if rwoPVCBoundNodeMissing(idx, pvc) {
+				// require pending/unsched on matching workload or attach signal
+				wlPending := false
+				for _, id := range comps {
+					if !strings.HasPrefix(id, "workload/") {
+						continue
+					}
+					if w := idx.ByID[id]; w != nil {
+						if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
+							wlPending = true
+						}
+					}
+				}
+				for _, p := range idx.ByKind[graph.KindPod] {
+					if podMatchesComponents(p, comps) && (p.AttrString("phase") == "Pending" || p.AttrBool("unschedulable") || hasVolumeAttachFailure(p)) {
+						wlPending = true
+					}
+				}
+				if wlPending || hasVolumeAttachFailureAny(idx, comps) {
+					boundGone++
+				}
+			}
+		}
+	}
+
+	if attachSignals > 0 && (boundGone > 0 || len(pvcs) > 0 || hasPVCInGraph(idx)) {
+		return Check{
+			Name:   "scenario:rwo-node-loss",
+			Passed: true,
+			Detail: fmt.Sprintf("volume attach failure signals=%d boundNodeGone=%d", attachSignals, boundGone),
+		}
+	}
+	if boundGone > 0 {
+		// PVC zone/node loss + component workload pending
+		return Check{
+			Name:   "scenario:rwo-node-loss",
+			Passed: true,
+			Detail: fmt.Sprintf("RWO PVC boundNode missing (%d) with component-scoped pending/attach evidence", boundGone),
+		}
+	}
+	return Check{
+		Name:    "scenario:rwo-node-loss",
+		Passed:  false,
+		Unknown: true,
+		Detail:  "no causal RWO evidence (need FailedAttachVolume/multi-attach or PVC boundNode missing + component pending)",
+	}
+}
+
+func hasVolumeAttachFailure(p *graph.Node) bool {
+	blob := strings.ToLower(strings.Join([]string{
+		p.AttrString("reason"),
+		p.AttrString("message"),
+		p.AttrString("waitingReason"),
+	}, " "))
+	for _, n := range []string{"failedattachvolume", "multi-attach", "multi attach", "volumeattach", "attachvolume", "waitforfirstconsumer"} {
+		if strings.Contains(blob, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVolumeAttachFailureAny(idx *graph.Index, comps []string) bool {
+	for _, p := range idx.ByKind[graph.KindPod] {
+		if podMatchesComponents(p, comps) && hasVolumeAttachFailure(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func rwoPVCBoundNodeMissing(idx *graph.Index, pvc *graph.Node) bool {
+	if pvc == nil {
+		return false
+	}
+	am := pvc.AttrString("accessMode")
+	if am != "" && am != "ReadWriteOnce" && am != "RWO" {
+		return false
+	}
+	bound := pvc.AttrString("boundNode")
+	if bound == "" {
+		return false
+	}
+	if idx.ByID["node/"+bound] != nil {
+		return false
+	}
+	for _, n := range idx.ByKind[graph.KindNode] {
+		if n.Name == bound {
+			return false
+		}
+	}
+	return true
+}
+
+func pvcComponents(comps []string) []string {
+	var out []string
+	for _, c := range comps {
+		if strings.HasPrefix(c, "pvc/") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func pvcInScope(pvc *graph.Node, comps []string) bool {
+	if len(comps) == 0 {
+		return true
+	}
+	for _, c := range comps {
+		if c == pvc.ID {
+			return true
+		}
+		if strings.HasPrefix(c, "workload/") {
+			parts := strings.Split(c, "/")
+			if len(parts) >= 3 && parts[1] == pvc.Namespace {
+				return true
+			}
+		}
+		if strings.HasPrefix(c, "pvc/") && c == pvc.ID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPVCInGraph(idx *graph.Index) bool {
+	return len(idx.ByKind[graph.KindPVC]) > 0
+}
+
+func checkPDBDisruption(idx *graph.Index, comps []string) Check {
+	// Require: a PDB component (or protected workload from finding) with
+	// unavailable replica pressure — not any cluster Pending.
+	hasPDB := false
+	for _, c := range comps {
+		if strings.HasPrefix(c, "pdb/") {
+			hasPDB = true
+			break
+		}
+	}
+	// Workload pressure on finding components
+	pressure := 0
+	for _, c := range comps {
+		if !strings.HasPrefix(c, "workload/") {
+			continue
+		}
+		w := idx.ByID[c]
+		if w == nil {
+			continue
+		}
+		if w.AttrInt("unavailableReplicas") > 0 {
+			pressure++
+		}
+		if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
+			pressure++
+		}
+		// pods owned by this workload with eviction-related reasons
+		for _, p := range idx.ByKind[graph.KindPod] {
+			if !podMatchesComponents(p, []string{c}) {
+				continue
+			}
+			if hasEvictionSignal(p) {
+				pressure++
+			}
+			if p.AttrString("phase") == "Pending" && hasPDB {
+				pressure++
+			}
+		}
+	}
+	if idx.Snap != nil && idx.Snap.Meta != nil {
+		if v, ok := idx.Snap.Meta["pdb_evictions_denied"]; ok {
+			if n, ok := asInt(v); ok && n > 0 {
+				return Check{
+					Name:   "scenario:pdb-disruption",
+					Passed: true,
+					Detail: fmt.Sprintf("meta.pdb_evictions_denied=%d", n),
+				}
+			}
+		}
+	}
+	if pressure > 0 && (hasPDB || len(comps) > 0) {
+		// If no pdb id in components, still require unavailableReplicas (not mere pending)
+		if !hasPDB {
+			strict := 0
+			for _, c := range comps {
+				if w := idx.ByID[c]; w != nil && w.AttrInt("unavailableReplicas") > 0 {
+					strict++
+				}
+			}
+			if strict == 0 {
+				return Check{
+					Name:    "scenario:pdb-disruption",
+					Passed:  false,
+					Unknown: true,
+					Detail:  "no PDB component and no unavailableReplicas — pending alone is not causal PDB evidence",
+				}
+			}
+		}
 		return Check{
 			Name:   "scenario:pdb-disruption",
 			Passed: true,
-			Detail: fmt.Sprintf("pending/unschedulable markers=%d (disruption fallout)", pending),
+			Detail: fmt.Sprintf("protected workload pressure=%d hasPDB=%v", pressure, hasPDB),
 		}
 	}
 	return Check{
 		Name:    "scenario:pdb-disruption",
 		Passed:  false,
 		Unknown: true,
-		Detail:  "no independent disruption evidence in observed graph",
+		Detail:  "no causal PDB evidence (need pdb component + unavailable/pending protected workload, eviction signal, or pdb_evictions_denied)",
 	}
 }
 
-func checkVolumeAZ(observed *graph.Snapshot, idx *graph.Index, comps []string) Check {
-	// Evidence: RWO/zoned PVC still present, its zone has no remaining nodes,
-	// and/or boundNode is gone from the observed graph.
+func hasEvictionSignal(p *graph.Node) bool {
+	blob := strings.ToLower(p.AttrString("reason") + " " + p.AttrString("message"))
+	return strings.Contains(blob, "evict") || strings.Contains(blob, "disruption") || strings.Contains(blob, "pdb")
+}
+
+func checkVolumeAZ(idx *graph.Index, comps []string) Check {
 	zonesWithNodes := map[string]bool{}
 	for _, n := range idx.ByKind[graph.KindNode] {
 		if z := n.AttrString("zone"); z != "" {
 			zonesWithNodes[z] = true
 		}
 	}
-	// Also accept nodes without zone attr by name presence only for boundNode checks.
 	matched := 0
 	for _, pvc := range idx.ByKind[graph.KindPVC] {
-		// Prefer components list when provided
-		if len(comps) > 0 {
+		if len(comps) > 0 && !pvcInScope(pvc, comps) {
+			// if comps include this pvc id only
 			ok := false
 			for _, c := range comps {
 				if c == pvc.ID {
 					ok = true
-					break
 				}
 			}
-			if !ok {
-				// still allow if no pvc ids in comps
-				hasPVCComp := false
-				for _, c := range comps {
-					if strings.HasPrefix(c, "pvc/") {
-						hasPVCComp = true
-						break
-					}
+			hasPVC := false
+			for _, c := range comps {
+				if strings.HasPrefix(c, "pvc/") {
+					hasPVC = true
 				}
-				if hasPVCComp {
-					continue
-				}
+			}
+			if hasPVC && !ok {
+				continue
+			}
+			if !ok && hasPVC {
+				continue
 			}
 		}
 		z := pvc.AttrString("zone")
-		bound := pvc.AttrString("boundNode")
-		boundGone := false
-		if bound != "" {
-			if idx.ByID["node/"+bound] == nil {
-				// also try bare name match
-				found := false
-				for _, n := range idx.ByKind[graph.KindNode] {
-					if n.Name == bound {
-						found = true
-						break
-					}
-				}
-				boundGone = !found
-			}
-		}
+		boundGone := rwoPVCBoundNodeMissing(idx, pvc) || (pvc.AttrString("boundNode") != "" && idx.ByID["node/"+pvc.AttrString("boundNode")] == nil && !nodeNamePresent(idx, pvc.AttrString("boundNode")))
 		zoneEmpty := z != "" && !zonesWithNodes[z]
 		if zoneEmpty || boundGone {
 			matched++
@@ -491,45 +687,141 @@ func checkVolumeAZ(observed *graph.Snapshot, idx *graph.Index, comps []string) C
 		return Check{
 			Name:   "scenario:volume-az",
 			Passed: true,
-			Detail: fmt.Sprintf("independent evidence: %d PVC(s) with empty zone and/or lost boundNode", matched),
+			Detail: fmt.Sprintf("PVC zone empty and/or boundNode lost (%d)", matched),
 		}
 	}
-	// fallback: any zoned PVC + pending survivor workload
-	if len(idx.ByKind[graph.KindPVC]) > 0 {
-		pendingWL := 0
-		for _, w := range idx.ByKind[graph.KindWorkload] {
-			if w.AttrString("phase") == "Pending" || w.AttrBool("unschedulable") {
-				pendingWL++
-			}
-		}
-		if pendingWL > 0 && len(zonesWithNodes) > 0 {
-			// weak: pending after node loss with PVC present
-			for _, pvc := range idx.ByKind[graph.KindPVC] {
-				if z := pvc.AttrString("zone"); z != "" && !zonesWithNodes[z] {
-					return Check{
-						Name:   "scenario:volume-az",
-						Passed: true,
-						Detail: "PVC zone not covered by remaining nodes + pending workload",
-					}
-				}
-			}
-		}
-	}
-	_ = observed
 	return Check{
 		Name:    "scenario:volume-az",
 		Passed:  false,
 		Unknown: true,
-		Detail:  "no PVC zone/boundNode evidence for volume-az in observed graph",
+		Detail:  "no PVC zone/boundNode evidence for volume-az",
+	}
+}
+
+func nodeNamePresent(idx *graph.Index, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, n := range idx.ByKind[graph.KindNode] {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func checkServiceRouting(idx *graph.Index, comps []string) Check {
+	// Service predicted broken: hasEndpointSlice and readyEndpoints==0
+	// or all ROUTES_TO backends missing.
+	checked := 0
+	for _, c := range comps {
+		if !strings.HasPrefix(c, "svc/") {
+			continue
+		}
+		svc := idx.ByID[c]
+		if svc == nil {
+			// service gone entirely
+			return Check{
+				Name:   "scenario:service-routing",
+				Passed: true,
+				Detail: "service component absent from observed graph: " + c,
+			}
+		}
+		checked++
+		if svc.AttrBool("hasEndpointSlice") || svc.Attributes["readyEndpoints"] != nil {
+			ready := svc.AttrInt("readyEndpoints")
+			if ready == 0 {
+				return Check{
+					Name:   "scenario:service-routing",
+					Passed: true,
+					Detail: fmt.Sprintf("%s hasEndpointSlice readyEndpoints=0", c),
+				}
+			}
+			return Check{
+				Name:   "scenario:service-routing",
+				Passed: false,
+				Detail: fmt.Sprintf("%s still has readyEndpoints=%d", c, ready),
+			}
+		}
+		// Fallback: ROUTES_TO backends all missing
+		backends := 0
+		alive := 0
+		for _, e := range idx.Out[c] {
+			if e.Rel == graph.RelRoutesTo {
+				backends++
+				if idx.ByID[e.To] != nil {
+					alive++
+				}
+			}
+		}
+		if backends > 0 && alive == 0 {
+			return Check{
+				Name:   "scenario:service-routing",
+				Passed: true,
+				Detail: fmt.Sprintf("%s all %d ROUTES_TO backends missing", c, backends),
+			}
+		}
+	}
+	// Scan services if comps only listed workloads
+	if checked == 0 {
+		for _, svc := range idx.ByKind[graph.KindService] {
+			if svc.AttrBool("hasEndpointSlice") && svc.AttrInt("readyEndpoints") == 0 {
+				return Check{
+					Name:   "scenario:service-routing",
+					Passed: true,
+					Detail: fmt.Sprintf("%s readyEndpoints=0", svc.ID),
+				}
+			}
+		}
+	}
+	return Check{
+		Name:    "scenario:service-routing",
+		Passed:  false,
+		Unknown: true,
+		Detail:  "no EndpointSlice/backend evidence for service-routing",
+	}
+}
+
+func checkPromZeroMatch(observed *graph.Snapshot) Check {
+	if observed.Meta == nil {
+		return Check{
+			Name:    "scenario:prom-zero-match",
+			Passed:  false,
+			Unknown: true,
+			Detail:  "no observed meta for metric_match_count",
+		}
+	}
+	v, ok := asInt(observed.Meta["metric_match_count"])
+	if !ok {
+		return Check{
+			Name:    "scenario:prom-zero-match",
+			Passed:  false,
+			Unknown: true,
+			Detail:  "meta.metric_match_count missing or non-numeric",
+		}
+	}
+	if v == 0 {
+		detail := "meta.metric_match_count=0"
+		if q, ok := observed.Meta["metric_query"].(string); ok && q != "" {
+			detail += " query=" + q
+		}
+		if r, ok := observed.Meta["rule_name"].(string); ok && r != "" {
+			detail += " rule=" + r
+		}
+		return Check{Name: "scenario:prom-zero-match", Passed: true, Detail: detail}
+	}
+	return Check{
+		Name:   "scenario:prom-zero-match",
+		Passed: false,
+		Detail: fmt.Sprintf("meta.metric_match_count=%d (want 0 for zero-match confirmation)", v),
 	}
 }
 
 func changeIdentityChecks(ch *loader.ChangeEnvelope, observed *graph.Snapshot, idx *graph.Index) (string, []Check) {
-	// Digest of intended patches (id + replica attrs)
 	type patchID struct {
-		ID       string         `json:"id"`
-		Attrs    map[string]any `json:"attrs,omitempty"`
-		Removed  bool           `json:"removed,omitempty"`
+		ID      string         `json:"id"`
+		Attrs   map[string]any `json:"attrs,omitempty"`
+		Removed bool           `json:"removed,omitempty"`
 	}
 	var parts []patchID
 	for _, p := range ch.PatchNodes {
@@ -543,9 +835,7 @@ func changeIdentityChecks(ch *loader.ChangeEnvelope, observed *graph.Snapshot, i
 	digest := hex.EncodeToString(sum[:8])
 
 	var checks []Check
-	// Verify patched workloads exist with expected replica counts when specified
-	matched := 0
-	wanted := 0
+	applied, wanted := 0, 0
 	for _, p := range ch.PatchNodes {
 		if p.ID == "" {
 			continue
@@ -554,44 +844,79 @@ func changeIdentityChecks(ch *loader.ChangeEnvelope, observed *graph.Snapshot, i
 		n := idx.ByID[p.ID]
 		if n == nil {
 			checks = append(checks, Check{
-				Name:   "deployed_identity:" + p.ID,
+				Name:   "change_applied:" + p.ID,
 				Passed: false,
 				Detail: "patched workload not found in observed graph",
 			})
 			continue
 		}
-		if rep, ok := p.Attributes["replicas"]; ok {
-			want := 0
-			switch t := rep.(type) {
-			case int:
-				want = t
-			case float64:
-				want = int(t)
-			}
-			got := n.WorkloadReplicas()
-			if got == want {
-				matched++
+		wantRep, hasRep := attrReplicas(p.Attributes)
+		gotSpec := n.WorkloadReplicas()
+		if hasRep {
+			if gotSpec == wantRep {
+				applied++
 				checks = append(checks, Check{
-					Name:   "deployed_identity:" + p.ID,
+					Name:   "change_applied:" + p.ID,
 					Passed: true,
-					Detail: fmt.Sprintf("observed replicas=%d matches change", got),
+					Detail: fmt.Sprintf("desired replicas=%d matches observed spec", wantRep),
 				})
+				// Separate convergence check when status ready/available present
+				ready, hasReady := optionalInt(n.Attributes, "readyReplicas")
+				avail, hasAvail := optionalInt(n.Attributes, "availableReplicas")
+				if hasReady || hasAvail {
+					converged := true
+					detail := ""
+					if hasReady {
+						converged = converged && ready >= wantRep
+						detail = fmt.Sprintf("readyReplicas=%d want=%d", ready, wantRep)
+					}
+					if hasAvail {
+						converged = converged && avail >= wantRep
+						if detail != "" {
+							detail += " "
+						}
+						detail += fmt.Sprintf("availableReplicas=%d want=%d", avail, wantRep)
+					}
+					if converged {
+						checks = append(checks, Check{
+							Name:   "rollout_converged:" + p.ID,
+							Passed: true,
+							Detail: detail,
+						})
+					} else {
+						checks = append(checks, Check{
+							Name:   "rollout_converged:" + p.ID,
+							Passed: false,
+							Detail: "change applied but rollout not converged: " + detail,
+						})
+					}
+				}
 			} else {
-				// Partial rollout still counts as "change was attempted"
 				checks = append(checks, Check{
-					Name:   "deployed_identity:" + p.ID,
-					Passed: true,
-					Detail: fmt.Sprintf("workload present; replicas observed=%d desired=%d (rollout may be incomplete)", got, want),
+					Name:   "change_applied:" + p.ID,
+					Passed: false,
+					Detail: fmt.Sprintf("desired replicas=%d but observed spec=%d (change not applied)", wantRep, gotSpec),
 				})
-				matched++
 			}
 		} else {
-			matched++
+			applied++
 			checks = append(checks, Check{
-				Name:   "deployed_identity:" + p.ID,
+				Name:   "change_applied:" + p.ID,
 				Passed: true,
-				Detail: "patched workload present in observed graph",
+				Detail: "patched workload present (no replica target in change)",
 			})
+		}
+	}
+	for _, id := range ch.RemovedNodes {
+		if idx.ByID[id] != nil {
+			// still present — for nodes this is checked in delta; for workloads fail applied
+			if strings.HasPrefix(id, "workload/") {
+				checks = append(checks, Check{
+					Name:   "change_applied_remove:" + id,
+					Passed: false,
+					Detail: "workload predicted removed still present",
+				})
+			}
 		}
 	}
 	if wanted == 0 && len(ch.RemovedNodes) == 0 {
@@ -604,21 +929,42 @@ func changeIdentityChecks(ch *loader.ChangeEnvelope, observed *graph.Snapshot, i
 	} else if wanted > 0 {
 		checks = append(checks, Check{
 			Name:   "deployed_change_digest",
-			Passed: true,
-			Detail: fmt.Sprintf("digest=%s identity_matched=%d/%d", digest, matched, wanted),
+			Passed: applied == wanted,
+			Detail: fmt.Sprintf("digest=%s change_applied=%d/%d", digest, applied, wanted),
 		})
 	}
 	return digest, checks
 }
 
+func attrReplicas(attrs map[string]any) (int, bool) {
+	if attrs == nil {
+		return 0, false
+	}
+	v, ok := attrs["replicas"]
+	if !ok {
+		return 0, false
+	}
+	n, ok := asInt(v)
+	return n, ok
+}
+
+func optionalInt(attrs map[string]any, key string) (int, bool) {
+	if attrs == nil {
+		return 0, false
+	}
+	v, ok := attrs[key]
+	if !ok {
+		return 0, false
+	}
+	return asInt(v)
+}
+
 func deltaChecks(base *graph.Snapshot, ch *loader.ChangeEnvelope, observed *graph.Snapshot) []Check {
 	baseIdx := graph.BuildIndex(base)
 	obsIdx := graph.BuildIndex(observed)
-	// Nodes removed in change should be absent (or at least not Ready) in observed
 	var checks []Check
 	for _, id := range ch.RemovedNodes {
 		if n := obsIdx.ByID[id]; n != nil {
-			// still present after predicted removal
 			if bn := baseIdx.ByID[id]; bn != nil && bn.Kind == graph.KindNode {
 				checks = append(checks, Check{
 					Name:   "delta_removed:" + id,
@@ -626,7 +972,7 @@ func deltaChecks(base *graph.Snapshot, ch *loader.ChangeEnvelope, observed *grap
 					Detail: "node predicted removed still present in observed",
 				})
 			}
-		} else {
+		} else if baseIdx.ByID[id] != nil {
 			checks = append(checks, Check{
 				Name:   "delta_removed:" + id,
 				Passed: true,
@@ -634,33 +980,37 @@ func deltaChecks(base *graph.Snapshot, ch *loader.ChangeEnvelope, observed *grap
 			})
 		}
 	}
-	// Replica increases for patched workloads should not decrease below baseline
 	for _, p := range ch.PatchNodes {
 		bn := baseIdx.ByID[p.ID]
 		on := obsIdx.ByID[p.ID]
-		if bn == nil || on == nil {
-			continue
-		}
-		if bn.Kind != graph.KindWorkload {
+		if bn == nil || on == nil || bn.Kind != graph.KindWorkload {
 			continue
 		}
 		baseR := bn.WorkloadReplicas()
 		obsR := on.WorkloadReplicas()
-		if want, ok := p.Attributes["replicas"]; ok {
-			w := 0
-			switch t := want.(type) {
-			case int:
-				w = t
-			case float64:
-				w = int(t)
-			}
-			if w > baseR && obsR < baseR {
-				checks = append(checks, Check{
-					Name:   "delta_replicas:" + p.ID,
-					Passed: false,
-					Detail: fmt.Sprintf("replicas decreased below baseline after scale-up intent (base=%d obs=%d want=%d)", baseR, obsR, w),
-				})
-			}
+		want, has := attrReplicas(p.Attributes)
+		if !has {
+			continue
+		}
+		// Scale-up intent: observed still at baseline ⇒ change not applied (contradiction)
+		if want > baseR && obsR == baseR {
+			checks = append(checks, Check{
+				Name:   "delta_replicas:" + p.ID,
+				Passed: false,
+				Detail: fmt.Sprintf("scale-up not applied: base=%d obs=%d want=%d", baseR, obsR, want),
+			})
+		} else if want > baseR && obsR < baseR {
+			checks = append(checks, Check{
+				Name:   "delta_replicas:" + p.ID,
+				Passed: false,
+				Detail: fmt.Sprintf("replicas decreased below baseline (base=%d obs=%d want=%d)", baseR, obsR, want),
+			})
+		} else if obsR == want {
+			checks = append(checks, Check{
+				Name:   "delta_replicas:" + p.ID,
+				Passed: true,
+				Detail: fmt.Sprintf("observed replicas advanced toward change (base=%d obs=%d want=%d)", baseR, obsR, want),
+			})
 		}
 	}
 	if len(checks) == 0 {
@@ -685,7 +1035,6 @@ func parseObservedFailures(observed *graph.Snapshot) map[string]bool {
 			}
 		}
 	}
-	// also allow []string after json round-trip quirks
 	if raw, ok := observed.Meta["observed_failures"].([]string); ok {
 		for _, s := range raw {
 			out[s] = true
@@ -712,30 +1061,36 @@ func softMissing(missing []string) string {
 	return "; missing=" + strings.Join(missing, ",")
 }
 
-func countPendingPods(idx *graph.Index) int {
-	n := 0
-	for _, p := range idx.ByKind[graph.KindPod] {
-		if p.AttrString("phase") == "Pending" || p.AttrBool("unschedulable") {
-			n++
+func podMatchesComponents(p *graph.Node, comps []string) bool {
+	for _, c := range comps {
+		parts := strings.Split(c, "/")
+		if len(parts) >= 3 && parts[0] == "workload" {
+			wname := parts[len(parts)-1]
+			ns := parts[len(parts)-2]
+			if p.Namespace == ns && (p.Name == wname || strings.HasPrefix(p.Name, wname+"-")) {
+				return true
+			}
 		}
 	}
-	return n
+	return false
 }
 
-func countPendingPodsScoped(idx *graph.Index, comps []string) int {
-	if len(comps) == 0 {
-		return 0
+func podInComponentScope(p *graph.Node, comps []string) bool {
+	return podMatchesComponents(p, comps)
+}
+
+func podLooksStateful(p *graph.Node) bool {
+	if p == nil {
+		return false
 	}
-	n := 0
-	for _, p := range idx.ByKind[graph.KindPod] {
-		if p.AttrString("phase") != "Pending" && !p.AttrBool("unschedulable") {
-			continue
-		}
-		if podMatchesComponents(p, comps) {
-			n++
+	name := p.Name
+	if len(name) > 2 && name[len(name)-2] == '-' {
+		c := name[len(name)-1]
+		if c >= '0' && c <= '9' {
+			return true
 		}
 	}
-	return n
+	return false
 }
 
 func asInt(v any) (int, bool) {
@@ -746,6 +1101,9 @@ func asInt(v any) (int, bool) {
 		return int(t), true
 	case float64:
 		return int(t), true
+	case string:
+		n, err := strconv.Atoi(t)
+		return n, err == nil
 	default:
 		return 0, false
 	}

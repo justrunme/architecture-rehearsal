@@ -15,7 +15,7 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v0.7.0** — deterministic engineering prototype with fail-closed offline gate, independent verify, live kubectl collect, and local platform primitives (run store / signed evidence / multi-cluster merge).  
+**Status: v0.7.2** — deterministic engineering prototype with fail-closed offline gate, **causal** independent verify, live kubectl collect, and local platform primitives (run store / signed evidence / multi-cluster merge).  
 **Not** a multi-tenant SaaS. **Not** a published GHCR multi-arch product yet.
 
 ---
@@ -32,14 +32,14 @@ YAML / plan → architecture graph → deterministic scenarios → approve|warn|
 | Fail-closed YAML (strict default, `--allow-partial`) | **Supported** (v0.4.1+) |
 | Manifest change compiler with **namespace scope** | **Supported** (removals off by default) |
 | E2E path: List dump → graph → scoped change → analyze → verify | **Supported** |
-| Independent verify (Pending pods, change identity, delta) | **Supported** (v0.5+) |
+| Independent verify (causal evidence, change identity, delta) | **Supported** (v0.7.2 integrity) |
 | Live read-only collect (`kubectl`) | **Supported** (v0.6; requires kubectl) |
 | ownerReferences ownership chain | **Supported** (v0.6) |
 | Capacity: scheduling estimate vs explicit CNI meta | **Supported** (estimate default; real CNI needs `cni_ip_available`) |
-| Run store + audit trail (filesystem) | **Supported** (v0.7 local) |
-| HMAC-signed evidence | **Supported** (v0.7; not Sigstore) |
+| Run store + audit trail (filesystem) | **Supported** (v0.7 local prototype) |
+| HMAC-signed evidence | **Supported** (v0.7; not Sigstore/non-repudiation) |
 | Multi-cluster merge CLI | **Supported** (v0.7) |
-| Config RBAC model | **Supported** (v0.7 local policy) |
+| Local policy model (`REHEARSAL_POLICY`) | **Supported** (v0.7.2 CLI-enforced; not network IAM) |
 | Terraform plan → change | **Reference / experimental** |
 | Distroless Dockerfile | **Reference** (not published by CI yet) |
 | GH/GL integration examples | **Reference** |
@@ -60,7 +60,7 @@ make e2e     # full dump → graph → scoped change → verify path
 
 ```bash
 make build
-./bin/rehearsal version   # 0.7.0
+./bin/rehearsal version   # 0.7.2
 ```
 
 ### Offline iron path
@@ -80,6 +80,7 @@ make build
   --phase observed \
   --meta examples/e2e-pipeline/observed-meta.json \
   --out observed.json
+# production verify requires baseline + change (else max INCONCLUSIVE)
 ./bin/rehearsal verify \
   --report out/latest-report.json \
   --observed observed.json \
@@ -125,7 +126,7 @@ Each scenario declares prerequisites. Missing data → **unknown**, not silent a
 **Is:** offline (+ optional live kubectl) change-gate core you can run in CI, with independent verify and local run persistence.  
 **Is not yet:** signed immutable multi-party evidence store (Sigstore), published multi-arch image, multi-tenant control plane.
 
-Version line: **0.7.x** after honest 0.1–0.4 rebuild (inflated v1/v2 tags were retracted).
+Version line: **0.7.2** after honest 0.1–0.4 rebuild (inflated v1/v2 tags were retracted).
 
 ---
 

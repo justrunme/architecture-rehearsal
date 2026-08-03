@@ -46,6 +46,8 @@ func main() {
 		code = cmdAudit(os.Args[2:])
 	case "sign":
 		code = cmdSign(os.Args[2:])
+	case "verify-sign":
+		code = cmdVerifySign(os.Args[2:])
 	case "version":
 		fmt.Println("rehearsal", analyze.Version)
 	case "help", "-h", "--help":
@@ -63,13 +65,14 @@ func usage() {
 
 Usage:
   rehearsal analyze  --baseline FILE --change FILE [--store DIR] [flags]
-  rehearsal verify   --report FILE --observed FILE [--baseline FILE] [--change FILE]
+  rehearsal verify   --report FILE --observed FILE --baseline FILE --change FILE
   rehearsal snapshot k8s --dir MANIFESTS| --live [--kubeconfig PATH] [flags] --out FILE
   rehearsal change   manifests|terraform ...
   rehearsal merge    --name NAME --out FILE SNAP1.json [SNAP2.json ...]
   rehearsal store    list|save --root DIR ...
   rehearsal audit    --root DIR [--limit N]
   rehearsal sign     --report FILE --out FILE   # needs REHEARSAL_HMAC_SECRET
+  rehearsal verify-sign --envelope FILE         # needs REHEARSAL_HMAC_SECRET
   rehearsal version
 
 Exit codes:
@@ -77,15 +80,38 @@ Exit codes:
   1  warn / diverged
   2  usage or validation error
   3  block
-  4  unknown (insufficient evidence)
+  4  unknown (insufficient evidence) / verify inconclusive
   5  internal error
 
 Graph and rules decide. Missing data never becomes false approve.
 YAML is fail-closed by default; pass --allow-partial only deliberately.
+verify without --baseline/--change is legacy mode (max INCONCLUSIVE).
 `)
 }
 
+// policy loads optional REHEARSAL_POLICY YAML (local policy model — not network authn).
+func policy() *rbac.Policy {
+	path := os.Getenv("REHEARSAL_POLICY")
+	p, err := rbac.LoadPolicy(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "policy: %v (continuing with default)\n", err)
+		return rbac.DefaultPolicy()
+	}
+	return p
+}
+
+func requireAction(action rbac.Action) int {
+	if err := policy().Require(rbac.ActorFromEnv(), action); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 2
+	}
+	return 0
+}
+
 func cmdAnalyze(args []string) int {
+	if code := requireAction(rbac.ActionAnalyze); code != 0 {
+		return code
+	}
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	baseline := fs.String("baseline", "", "baseline snapshot JSON")
 	changePath := fs.String("change", "", "change envelope JSON")
@@ -184,11 +210,14 @@ func cmdAnalyze(args []string) int {
 }
 
 func cmdVerify(args []string) int {
+	if code := requireAction(rbac.ActionVerify); code != 0 {
+		return code
+	}
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	reportPath := fs.String("report", "", "prior analyze report.json")
 	observed := fs.String("observed", "", "post-deploy snapshot JSON")
-	baselinePath := fs.String("baseline", "", "optional baseline for independent delta checks")
-	changePath := fs.String("change", "", "optional change envelope for deployed identity")
+	baselinePath := fs.String("baseline", "", "baseline for production identity/delta (required for VERIFIED)")
+	changePath := fs.String("change", "", "change envelope for production identity (required for VERIFIED)")
 	out := fs.String("out", "", "write verification JSON")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -197,6 +226,9 @@ func cmdVerify(args []string) int {
 	if *reportPath == "" || *observed == "" {
 		fmt.Fprintln(os.Stderr, "error: --report and --observed required")
 		return 2
+	}
+	if *baselinePath == "" || *changePath == "" {
+		fmt.Fprintln(os.Stderr, "warn: without --baseline and --change, mode=legacy and max outcome is INCONCLUSIVE")
 	}
 	raw, err := os.ReadFile(*reportPath)
 	if err != nil {
@@ -251,6 +283,9 @@ func cmdVerify(args []string) int {
 }
 
 func cmdSnapshot(args []string) int {
+	if code := requireAction(rbac.ActionSnapshot); code != 0 {
+		return code
+	}
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: rehearsal snapshot k8s --dir DIR|--live --out FILE")
 		return 2
@@ -323,6 +358,9 @@ func cmdSnapshot(args []string) int {
 }
 
 func cmdMerge(args []string) int {
+	if code := requireAction(rbac.ActionMerge); code != 0 {
+		return code
+	}
 	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
 	name := fs.String("name", "fleet", "merged multi-cluster name")
 	out := fs.String("out", "merged.json", "output snapshot")
@@ -357,6 +395,9 @@ func cmdMerge(args []string) int {
 }
 
 func cmdStore(args []string) int {
+	if code := requireAction(rbac.ActionStore); code != 0 {
+		return code
+	}
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: rehearsal store list|save --root DIR")
 		return 2
@@ -412,6 +453,9 @@ func cmdStore(args []string) int {
 }
 
 func cmdAudit(args []string) int {
+	if code := requireAction(rbac.ActionAuditRead); code != 0 {
+		return code
+	}
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	root := fs.String("root", "out/runs", "store root")
 	limit := fs.Int("limit", 50, "max events")
@@ -431,6 +475,9 @@ func cmdAudit(args []string) int {
 }
 
 func cmdSign(args []string) int {
+	if code := requireAction(rbac.ActionSign); code != 0 {
+		return code
+	}
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	reportPath := fs.String("report", "", "analyze report.json")
 	out := fs.String("out", "signed-evidence.json", "output envelope")
@@ -462,6 +509,45 @@ func cmdSign(args []string) int {
 	}
 	ok, _ := evidence.VerifyHMAC(env, sec)
 	fmt.Fprintf(os.Stderr, "wrote %s verified=%v\n", *out, ok)
+	return 0
+}
+
+func cmdVerifySign(args []string) int {
+	if code := requireAction(rbac.ActionSign); code != 0 {
+		return code
+	}
+	fs := flag.NewFlagSet("verify-sign", flag.ContinueOnError)
+	path := fs.String("envelope", "", "signed evidence JSON")
+	_ = fs.Parse(args)
+	if *path == "" {
+		fmt.Fprintln(os.Stderr, "--envelope required")
+		return 2
+	}
+	raw, err := os.ReadFile(*path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 2
+	}
+	var env evidence.SignedEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		fmt.Fprintf(os.Stderr, "parse: %v\n", err)
+		return 2
+	}
+	sec := evidence.SecretFromEnv()
+	if len(sec) == 0 {
+		fmt.Fprintln(os.Stderr, "REHEARSAL_HMAC_SECRET required")
+		return 2
+	}
+	ok, err := evidence.VerifyHMAC(&env, sec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 5
+	}
+	if !ok {
+		fmt.Fprintln(os.Stderr, "signature INVALID")
+		return 1
+	}
+	fmt.Println("signature OK")
 	return 0
 }
 
