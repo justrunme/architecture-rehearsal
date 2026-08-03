@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -226,13 +227,37 @@ func specMatchesRun(spec rehearsalv1beta1.RehearsalRunSpec, rr *run.RehearsalRun
 	if rr == nil {
 		return false
 	}
-	if rr.Spec.BaselineRef != spec.BaselineRef ||
-		rr.Spec.ChangeRef != spec.ChangeRef ||
-		rr.Spec.ObservedRef != spec.ObservedRef ||
+	if !refMatches(spec.BaselineRef, rr.Spec.BaselineRef) ||
+		!refMatches(spec.ChangeRef, rr.Spec.ChangeRef) ||
+		!refMatches(spec.ObservedRef, rr.Spec.ObservedRef) ||
 		rr.Spec.ClusterName != spec.ClusterName {
 		return false
 	}
 	return equalStringSlices(rr.Spec.Scenarios, spec.Scenarios)
+}
+
+// refMatches compares a CR ref to the control-plane stored ref.
+// createRun sandboxes relative paths to absolute workdir paths (e.g. baseline.json → /data/baseline.json).
+func refMatches(crRef, stored string) bool {
+	if crRef == stored {
+		return true
+	}
+	if crRef == "" || stored == "" {
+		return crRef == stored
+	}
+	cr := filepath.Clean(crRef)
+	st := filepath.Clean(stored)
+	if cr == st {
+		return true
+	}
+	// Stored is workdir-absolute form of a relative CR ref.
+	if !filepath.IsAbs(cr) {
+		sep := string(filepath.Separator)
+		if strings.HasSuffix(st, sep+cr) {
+			return true
+		}
+	}
+	return false
 }
 
 func equalStringSlices(a, b []string) bool {
