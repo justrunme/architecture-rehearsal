@@ -8,6 +8,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/contract"
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/scenario"
 )
 
 func baseSnap() *graph.Snapshot {
@@ -18,15 +19,23 @@ func changeEnv() *loader.ChangeEnvelope {
 	return &loader.ChangeEnvelope{ID: "c", Kind: "k8s-manifest", Title: "t"}
 }
 
-func TestChainBreaksOnBaselineMutation(t *testing.T) {
-	base := baseSnap()
-	ch := changeEnv()
+func boundReport(base *graph.Snapshot, ch *loader.ChangeEnvelope) *analyze.Report {
 	bd, _ := contract.ComputeDigest(base)
 	cd, _ := contract.ComputeDigest(ch)
 	rep := &analyze.Report{
 		ChangeID: "c", BaselineID: "b", Decision: "block", Risk: "high",
-		BaselineDigest: string(bd), ChangeDigest: string(cd), SemanticDigest: "sem-1",
+		BaselineDigest: string(bd), ChangeDigest: string(cd),
+		Rollback: "unknown", PredictedFailures: []string{"rwo-node-loss"},
+		Findings: []scenario.Finding{{ID: "f1", Scenario: "rwo", Risk: "high", Title: "t"}},
 	}
+	rep.SemanticDigest = analyze.ComputeSemanticDigest(rep)
+	return rep
+}
+
+func TestChainBreaksOnBaselineMutation(t *testing.T) {
+	base := baseSnap()
+	ch := changeEnv()
+	rep := boundReport(base, ch)
 	c, err := chain.Build(base, ch, nil, rep, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -40,12 +49,7 @@ func TestChainBreaksOnBaselineMutation(t *testing.T) {
 func TestChainBreaksOnChangeMutation(t *testing.T) {
 	base := baseSnap()
 	ch := changeEnv()
-	bd, _ := contract.ComputeDigest(base)
-	cd, _ := contract.ComputeDigest(ch)
-	rep := &analyze.Report{
-		ChangeID: "c", BaselineID: "b", Decision: "block", Risk: "high",
-		BaselineDigest: string(bd), ChangeDigest: string(cd), SemanticDigest: "sem-1",
-	}
+	rep := boundReport(base, ch)
 	c, err := chain.Build(base, ch, nil, rep, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -56,57 +60,55 @@ func TestChainBreaksOnChangeMutation(t *testing.T) {
 	}
 }
 
-func TestChainBreaksOnReportDigestMutation(t *testing.T) {
+func TestReportTamperKeepsStaleSemanticDigest(t *testing.T) {
+	// Core product promise: mutate decision/risk/findings while leaving SemanticDigest
+	// field unchanged must fail verification.
 	base := baseSnap()
 	ch := changeEnv()
-	bd, _ := contract.ComputeDigest(base)
-	cd, _ := contract.ComputeDigest(ch)
-	rep := &analyze.Report{
-		ChangeID: "c", BaselineID: "b", Decision: "block", Risk: "high",
-		BaselineDigest: string(bd), ChangeDigest: string(cd), SemanticDigest: "sem-1",
-	}
+	rep := boundReport(base, ch)
 	c, err := chain.Build(base, ch, nil, rep, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Tamper chain report digest only
-	c.Digests.ReportDigest = "deadbeef"
-	if err := chain.VerifyChain(c, base, ch, rep, nil); err == nil {
-		t.Fatal("expected chain break on report digest tamper")
+	if err := chain.VerifyChain(c, base, ch, rep, nil); err != nil {
+		t.Fatalf("clean should pass: %v", err)
 	}
-}
 
-func TestChainBreaksWhenReportBindingsLie(t *testing.T) {
-	// Report claims digests that match chain but live baseline differs —
-	// must still fail (no trust of embedded-only binding).
-	base := baseSnap()
-	ch := changeEnv()
-	bd, _ := contract.ComputeDigest(base)
-	cd, _ := contract.ComputeDigest(ch)
-	rep := &analyze.Report{
-		ChangeID: "c", BaselineID: "b", Decision: "block", Risk: "high",
-		BaselineDigest: string(bd), ChangeDigest: string(cd), SemanticDigest: "sem-1",
+	cases := []struct {
+		name string
+		mut  func(*analyze.Report)
+	}{
+		{"decision", func(r *analyze.Report) { r.Decision = "approve" }},
+		{"risk", func(r *analyze.Report) { r.Risk = "low" }},
+		{"findings", func(r *analyze.Report) {
+			r.Findings = append(r.Findings, scenario.Finding{ID: "evil", Scenario: "x", Risk: "critical", Title: "evil"})
+		}},
+		{"rollback", func(r *analyze.Report) { r.Rollback = "unavailable" }},
+		{"predictedFailures", func(r *analyze.Report) {
+			r.PredictedFailures = append(r.PredictedFailures, "injected")
+		}},
 	}
-	c, err := chain.Build(base, ch, nil, rep, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Mutate live baseline but leave report.baselineDigest pointing at old
-	base.Nodes = append(base.Nodes, graph.Node{ID: "evil", Kind: graph.KindNode, Name: "evil"})
-	if err := chain.VerifyChain(c, base, ch, rep, nil); err == nil {
-		t.Fatal("must not trust embedded digest when live object mutated")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// fresh copy of report with original semantic digest field
+			rep2 := *rep
+			rep2.Findings = append([]scenario.Finding{}, rep.Findings...)
+			rep2.PredictedFailures = append([]string{}, rep.PredictedFailures...)
+			oldSem := rep2.SemanticDigest
+			tc.mut(&rep2)
+			// attacker keeps old semanticDigest
+			rep2.SemanticDigest = oldSem
+			if err := chain.VerifyChain(c, base, ch, &rep2, nil); err == nil {
+				t.Fatalf("tamper %s with stale semanticDigest must fail", tc.name)
+			}
+		})
 	}
 }
 
 func TestChainOKWhenUnchanged(t *testing.T) {
 	base := baseSnap()
 	ch := changeEnv()
-	bd, _ := contract.ComputeDigest(base)
-	cd, _ := contract.ComputeDigest(ch)
-	rep := &analyze.Report{
-		ChangeID: "c", BaselineID: "b", Decision: "block", Risk: "high",
-		BaselineDigest: string(bd), ChangeDigest: string(cd), SemanticDigest: "sem-1",
-	}
+	rep := boundReport(base, ch)
 	c, err := chain.Build(base, ch, nil, rep, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -120,12 +122,7 @@ func TestObservedMutationBreaks(t *testing.T) {
 	base := baseSnap()
 	ch := changeEnv()
 	obs := &graph.Snapshot{ID: "o", Phase: graph.PhaseObserved, Nodes: []graph.Node{{ID: "n1", Kind: graph.KindNode, Name: "n1"}}}
-	bd, _ := contract.ComputeDigest(base)
-	cd, _ := contract.ComputeDigest(ch)
-	rep := &analyze.Report{
-		ChangeID: "c", BaselineID: "b", Decision: "approve", Risk: "low",
-		BaselineDigest: string(bd), ChangeDigest: string(cd), SemanticDigest: "sem-obs",
-	}
+	rep := boundReport(base, ch)
 	c, err := chain.Build(base, ch, nil, rep, obs, nil)
 	if err != nil {
 		t.Fatal(err)

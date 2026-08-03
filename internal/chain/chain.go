@@ -39,6 +39,7 @@ type ReportBinding struct {
 }
 
 // Build constructs digests for the full chain from live objects.
+// Report digest is always from ComputeSemanticDigest (recomputed), never trusted from field alone.
 func Build(
 	base *graph.Snapshot,
 	ch *loader.ChangeEnvelope,
@@ -66,15 +67,12 @@ func Build(
 			return nil, err
 		}
 	}
-	// Always compute live report digest; prefer semantic when available after recompute path.
 	if rep != nil {
-		// Prefer stored semantic digest only if it matches a live recompute of semantic payload.
-		// Build uses SemanticDigest field if set (produced by analyze), else full JSON digest.
-		if rep.SemanticDigest != "" {
-			c.Digests.ReportDigest = contract.Digest(rep.SemanticDigest)
-		} else if c.Digests.ReportDigest, err = contract.ComputeDigest(rep); err != nil {
-			return nil, err
-		}
+		// Always recompute semantic digest from report body.
+		live := analyze.ComputeSemanticDigest(rep)
+		c.Digests.ReportDigest = contract.Digest(live)
+		// If report claims a different semanticDigest, still bind chain to truth.
+		// Build does not fail here; VerifyChain does.
 	}
 	if obs != nil {
 		if c.Digests.ObservedDigest, err = contract.ComputeDigest(obs); err != nil {
@@ -114,14 +112,14 @@ func AssertReportMatches(base *graph.Snapshot, ch *loader.ChangeEnvelope, expect
 }
 
 // VerifyChain always recomputes digests from live objects and compares to the chain.
-// Embedded report digests are cross-checked against live recomputation — never trusted alone.
+// Report semantic digest is recomputed — tampering decision/risk/findings while keeping
+// an old SemanticDigest field always fails.
 func VerifyChain(c *EvidenceChain, base *graph.Snapshot, ch *loader.ChangeEnvelope, rep *analyze.Report, obs *graph.Snapshot) error {
 	if c == nil {
 		return fmt.Errorf("nil chain")
 	}
 	var errs []string
 
-	// Live digests from current objects (canonical JSON sorts keys — map order is stable).
 	liveBase, err := contract.ComputeDigest(base)
 	if err != nil {
 		return err
@@ -137,7 +135,6 @@ func VerifyChain(c *EvidenceChain, base *graph.Snapshot, ch *loader.ChangeEnvelo
 		errs = append(errs, fmt.Sprintf("changeDigest broken: live=%s chain=%s", liveChange.Short(), c.Digests.ChangeDigest.Short()))
 	}
 
-	// Report: recompute semantic or full digest; also require report bindings match live.
 	if rep != nil {
 		if rep.BaselineDigest != "" && rep.BaselineDigest != string(liveBase) {
 			errs = append(errs, "report.baselineDigest != live baseline")
@@ -145,20 +142,17 @@ func VerifyChain(c *EvidenceChain, base *graph.Snapshot, ch *loader.ChangeEnvelo
 		if rep.ChangeDigest != "" && rep.ChangeDigest != string(liveChange) {
 			errs = append(errs, "report.changeDigest != live change")
 		}
-		// AssertBindings against live recomputed digests (not self-referential).
 		if rep.BaselineDigest != "" || rep.ChangeDigest != "" {
 			if err := analyze.AssertBindings(rep, string(liveBase), string(liveChange)); err != nil {
 				errs = append(errs, "report binding: "+err.Error())
 			}
 		}
-		var liveReport contract.Digest
-		if rep.SemanticDigest != "" {
-			liveReport = contract.Digest(rep.SemanticDigest)
-		} else {
-			liveReport, err = contract.ComputeDigest(rep)
-			if err != nil {
-				return err
-			}
+		// Recompute semantic digest from body — never trust rep.SemanticDigest alone.
+		recomputed := analyze.ComputeSemanticDigest(rep)
+		liveReport := contract.Digest(recomputed)
+		if rep.SemanticDigest != "" && rep.SemanticDigest != recomputed {
+			errs = append(errs, fmt.Sprintf("report.semanticDigest stale/tampered: field=%s recomputed=%s",
+				shortDigest(rep.SemanticDigest), shortDigest(recomputed)))
 		}
 		if c.Digests.ReportDigest != "" && !liveReport.Equal(c.Digests.ReportDigest) {
 			errs = append(errs, fmt.Sprintf("reportDigest broken: live=%s chain=%s", liveReport.Short(), c.Digests.ReportDigest.Short()))
@@ -183,4 +177,11 @@ func VerifyChain(c *EvidenceChain, base *graph.Snapshot, ch *loader.ChangeEnvelo
 	c.Valid = true
 	c.Errors = nil
 	return nil
+}
+
+func shortDigest(s string) string {
+	if len(s) < 12 {
+		return s
+	}
+	return s[:12]
 }

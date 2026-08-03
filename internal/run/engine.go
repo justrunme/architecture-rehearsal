@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,6 +27,11 @@ type Engine struct {
 
 // Execute runs the full offline lifecycle for a RehearsalRun with file refs.
 func (e *Engine) Execute(r *RehearsalRun) error {
+	return e.ExecuteContext(context.Background(), r)
+}
+
+// ExecuteContext runs the lifecycle and aborts on ctx cancel between steps.
+func (e *Engine) ExecuteContext(ctx context.Context, r *RehearsalRun) error {
 	if e.Holder == "" {
 		e.Holder = "local-runner"
 	}
@@ -47,6 +53,10 @@ func (e *Engine) Execute(r *RehearsalRun) error {
 	}
 
 	for _, s := range steps {
+		if err := ctx.Err(); err != nil {
+			_ = r.Transition(PhaseCancelled, "cancelled: "+err.Error())
+			return err
+		}
 		if r.Status.Phase.Terminal() {
 			return nil
 		}
@@ -76,6 +86,10 @@ func (e *Engine) Execute(r *RehearsalRun) error {
 		{PhaseVerifying, e.stepVerify, "verify + persist chain"},
 	}
 	for _, s := range post {
+		if err := ctx.Err(); err != nil {
+			_ = r.Transition(PhaseCancelled, "cancelled: "+err.Error())
+			return err
+		}
 		if r.Status.Phase.Terminal() {
 			return nil
 		}

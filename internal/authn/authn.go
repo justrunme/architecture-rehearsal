@@ -193,7 +193,10 @@ func FromEnvAuthenticator(cfg Config) (Authenticator, error) {
 	}
 	jwks := strings.TrimSpace(os.Getenv("REHEARSAL_OIDC_JWKS_URL"))
 	aud := strings.TrimSpace(os.Getenv("REHEARSAL_OIDC_AUDIENCE"))
-	oidc, err := NewOIDCVerifier(OIDCConfig{Issuer: issuer, JWKSURL: jwks, Audience: aud})
+	oidc, err := NewOIDCVerifier(OIDCConfig{
+		Issuer: issuer, JWKSURL: jwks, Audience: aud,
+		ClaimOrg: strings.TrimSpace(os.Getenv("REHEARSAL_OIDC_ORG_CLAIM")),
+	})
 	if err != nil {
 		return nil, err
 	}

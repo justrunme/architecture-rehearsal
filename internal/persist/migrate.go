@@ -6,18 +6,17 @@ import (
 )
 
 // CurrentSchema is the highest applied migration version.
-const CurrentSchema = 3
+const CurrentSchema = 4
 
 // Migration is a versioned SQL change (idempotent where possible).
 type Migration struct {
-	Version int
-	Name    string
-	SQLite  string
+	Version  int
+	Name     string
+	SQLite   string
 	Postgres string
 }
 
 // migrations is ordered ascending. Version 2 is the trust-boundary base (schemaV2).
-// Version 3 adds operational indexes and retention helpers.
 var migrations = []Migration{
 	{
 		Version: 3,
@@ -31,6 +30,16 @@ CREATE INDEX IF NOT EXISTS idx_runs_org_updated ON runs(org, updated_at);
 CREATE INDEX IF NOT EXISTS idx_audit_org_time ON audit(org, time);
 CREATE INDEX IF NOT EXISTS idx_jobs_org_status ON jobs(org, status);
 CREATE INDEX IF NOT EXISTS idx_runs_org_updated ON runs(org, updated_at);
+`,
+	},
+	{
+		Version: 4,
+		Name:    "run_version_optimistic",
+		SQLite: `
+ALTER TABLE runs ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+`,
+		Postgres: `
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
 `,
 	},
 }
@@ -67,7 +76,11 @@ func (s *Store) applyMigrations() error {
 			if stmt == "" {
 				continue
 			}
-			if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "already exists") {
+			if _, err := s.db.Exec(stmt); err != nil {
+				msg := strings.ToLower(err.Error())
+				if strings.Contains(msg, "already exists") || strings.Contains(msg, "duplicate column") {
+					continue
+				}
 				return fmt.Errorf("migration %d %s: %w", m.Version, m.Name, err)
 			}
 		}

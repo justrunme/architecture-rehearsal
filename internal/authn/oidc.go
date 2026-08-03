@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // ChainAuthenticator tries authenticators in order.
@@ -37,26 +39,26 @@ func (c *ChainAuthenticator) Authenticate(r *http.Request) (Principal, error) {
 	return Principal{}, fmt.Errorf("no authenticator configured")
 }
 
-// OIDCConfig for JWKS-based JWT verification.
+// OIDCConfig for JWKS-based JWT verification (strict).
 type OIDCConfig struct {
-	Issuer   string
-	Audience string
+	Issuer   string // required
+	Audience string // required for production
 	JWKSURL  string
-	// ClaimOrg is the JWT claim for organization (default: "org" or "https://rehearsal.io/org").
 	ClaimOrg string
-	// RoleClaim maps to roles (default "roles" or realm_access).
-	HTTPClient *http.Client
+	// RequireAudience if true, Audience must be set and match.
+	RequireAudience bool
+	HTTPClient      *http.Client
 }
 
-// OIDCVerifier validates RS256 JWTs against a JWKS endpoint.
+// OIDCVerifier validates RS256 JWTs against JWKS with strict claim requirements.
 type OIDCVerifier struct {
-	cfg    OIDCConfig
-	mu     sync.RWMutex
-	keys   map[string]*rsa.PublicKey // kid → key
+	cfg     OIDCConfig
+	mu      sync.RWMutex
+	keys    map[string]*rsa.PublicKey
 	fetched time.Time
 }
 
-// NewOIDCVerifier creates a verifier. Does not fetch until first use.
+// NewOIDCVerifier creates a verifier. Issuer is required; audience required unless REHEARSAL_OIDC_ALLOW_NO_AUD=1.
 func NewOIDCVerifier(cfg OIDCConfig) (*OIDCVerifier, error) {
 	if cfg.Issuer == "" {
 		return nil, fmt.Errorf("OIDC issuer required")
@@ -70,90 +72,104 @@ func NewOIDCVerifier(cfg OIDCConfig) (*OIDCVerifier, error) {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	if cfg.Audience == "" && os.Getenv("REHEARSAL_OIDC_ALLOW_NO_AUD") != "1" {
+		cfg.RequireAudience = true
+		// fail closed: production must set audience
+		return nil, fmt.Errorf("REHEARSAL_OIDC_AUDIENCE required (or REHEARSAL_OIDC_ALLOW_NO_AUD=1 for tests only)")
+	}
+	if cfg.Audience != "" {
+		cfg.RequireAudience = true
+	}
 	return &OIDCVerifier{cfg: cfg, keys: map[string]*rsa.PublicKey{}}, nil
 }
 
-// Authenticate validates Bearer JWT via JWKS.
+// Authenticate validates Bearer JWT via JWKS + golang-jwt (RS256, iss, aud, exp, sub).
 func (o *OIDCVerifier) Authenticate(r *http.Request) (Principal, error) {
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, "Bearer ") {
 		return Principal{}, fmt.Errorf("missing bearer")
 	}
-	tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-	parts := strings.Split(tok, ".")
+	tokStr := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	parts := strings.Split(tokStr, ".")
 	if len(parts) != 3 {
 		return Principal{}, fmt.Errorf("invalid jwt")
 	}
-	hdrJSON, err := b64JSON(parts[0])
-	if err != nil {
-		return Principal{}, fmt.Errorf("jwt header: %w", err)
-	}
-	var hdr struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
-		Typ string `json:"typ"`
-	}
-	if err := json.Unmarshal(hdrJSON, &hdr); err != nil {
-		return Principal{}, err
-	}
-	if hdr.Alg != "RS256" {
-		return Principal{}, fmt.Errorf("unsupported alg %s (need RS256)", hdr.Alg)
-	}
+
 	if err := o.ensureKeys(r.Context()); err != nil {
 		return Principal{}, err
 	}
-	o.mu.RLock()
-	pub := o.keys[hdr.Kid]
-	o.mu.RUnlock()
-	if pub == nil {
-		// refresh once
-		_ = o.refreshKeys(r.Context())
+
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+		jwt.WithIssuer(o.cfg.Issuer),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	)
+	if o.cfg.RequireAudience && o.cfg.Audience != "" {
+		parser = jwt.NewParser(
+			jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+			jwt.WithIssuer(o.cfg.Issuer),
+			jwt.WithAudience(o.cfg.Audience),
+			jwt.WithExpirationRequired(),
+			jwt.WithIssuedAt(),
+		)
+	}
+
+	claims := jwt.MapClaims{}
+	token, err := parser.ParseWithClaims(tokStr, claims, func(t *jwt.Token) (any, error) {
+		kid, _ := t.Header["kid"].(string)
 		o.mu.RLock()
-		pub = o.keys[hdr.Kid]
-		o.mu.RUnlock()
-	}
-	if pub == nil {
-		return Principal{}, fmt.Errorf("unknown kid %q", hdr.Kid)
-	}
-	// Verify signature using crypto/rsa PSS? RS256 is PKCS1v15
-	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return Principal{}, err
-	}
-	signingInput := parts[0] + "." + parts[1]
-	if err := verifyRS256(pub, []byte(signingInput), sig); err != nil {
-		return Principal{}, fmt.Errorf("jwt signature: %w", err)
-	}
-	claimsJSON, err := b64JSON(parts[1])
-	if err != nil {
-		return Principal{}, err
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return Principal{}, err
-	}
-	if iss, _ := claims["iss"].(string); iss != "" && iss != o.cfg.Issuer {
-		return Principal{}, fmt.Errorf("issuer mismatch")
-	}
-	if o.cfg.Audience != "" {
-		if !audOK(claims["aud"], o.cfg.Audience) {
-			return Principal{}, fmt.Errorf("audience mismatch")
+		pub := o.keys[kid]
+		if pub == nil && kid == "" {
+			// single-key JWKS
+			for _, k := range o.keys {
+				pub = k
+				break
+			}
 		}
+		o.mu.RUnlock()
+		if pub == nil {
+			_ = o.refreshKeys(r.Context())
+			o.mu.RLock()
+			pub = o.keys[kid]
+			o.mu.RUnlock()
+		}
+		if pub == nil {
+			return nil, fmt.Errorf("unknown kid %q", kid)
+		}
+		return pub, nil
+	})
+	if err != nil {
+		return Principal{}, fmt.Errorf("jwt: %w", err)
 	}
-	if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp) {
-		return Principal{}, fmt.Errorf("token expired")
+	if !token.Valid {
+		return Principal{}, fmt.Errorf("jwt invalid")
 	}
+
+	// Required claims
 	sub, _ := claims["sub"].(string)
+	if strings.TrimSpace(sub) == "" {
+		return Principal{}, fmt.Errorf("jwt missing sub")
+	}
+	if _, ok := claims["exp"]; !ok {
+		return Principal{}, fmt.Errorf("jwt missing exp")
+	}
+	if iss, _ := claims["iss"].(string); iss == "" {
+		return Principal{}, fmt.Errorf("jwt missing iss")
+	}
+	// nbf handled by WithIssuedAt / default leeway if present in library via registered claims;
+	// manually reject future nbf
+	if nbf, ok := claims["nbf"].(float64); ok && time.Now().Unix() < int64(nbf)-60 {
+		return Principal{}, fmt.Errorf("jwt not valid yet (nbf)")
+	}
+
 	email, _ := claims["email"].(string)
 	org, _ := claims[o.cfg.ClaimOrg].(string)
 	if org == "" {
 		org, _ = claims["https://rehearsal.io/org"].(string)
 	}
 	if org == "" {
-		org = strings.TrimSpace(os.Getenv("REHEARSAL_API_ORG"))
-	}
-	if org == "" {
-		org = "default"
+		return Principal{}, fmt.Errorf("jwt missing org claim (%s)", o.cfg.ClaimOrg)
 	}
 	roles := extractRoles(claims)
 	if len(roles) == 0 {
@@ -184,20 +200,6 @@ func extractRoles(claims map[string]any) []string {
 		}
 	}
 	return nil
-}
-
-func audOK(aud any, want string) bool {
-	switch v := aud.(type) {
-	case string:
-		return v == want
-	case []any:
-		for _, x := range v {
-			if s, ok := x.(string); ok && s == want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (o *OIDCVerifier) ensureKeys(ctx context.Context) error {
@@ -259,8 +261,6 @@ type jwk struct {
 	Kid string `json:"kid"`
 	N   string `json:"n"`
 	E   string `json:"e"`
-	Alg string `json:"alg"`
-	Use string `json:"use"`
 }
 
 func jwkToRSA(k jwk) (*rsa.PublicKey, error) {
@@ -277,13 +277,4 @@ func jwkToRSA(k jwk) (*rsa.PublicKey, error) {
 		e = e<<8 + int(b)
 	}
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nb), E: e}, nil
-}
-
-func b64JSON(s string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(s)
-}
-
-func verifyRS256(pub *rsa.PublicKey, signingInput, sig []byte) error {
-	h := sha256Sum(signingInput)
-	return rsa.VerifyPKCS1v15(pub, cryptoHashSHA256(), h, sig)
 }

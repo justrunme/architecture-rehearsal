@@ -16,8 +16,8 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 [![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Status: v1.4.0** — provable change-safety control plane (durable, multi-tenant, ops API, CI hooks).  
-Evidence integrity (v1.1) + secure API (v1.0.1+) + trust boundaries (v1.2.1) required for production.  
+**Status: v1.5.0** — controller-runtime RehearsalRun operator + v1.4.1 hardening.  
+Evidence integrity + secure API + trust boundaries required for production.  
 **v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
 
 ---
@@ -41,7 +41,7 @@ Evidence integrity (v1.1) + secure API (v1.0.1+) + trust boundaries (v1.2.1) req
 | GitOps policy gate | **Supported** (policy engine + GH reference) |
 | Control plane HTTP API | **Supported** (token + optional OIDC/JWKS) |
 | Durable SQL store | **Supported** (SQLite + Postgres; versioned migrations) |
-| Content-addressed blobs | **Supported** (FS + S3-compatible interface) |
+| Content-addressed blobs | **Supported** (local FS); **Reference** MinIO path-style (`REHEARSAL_S3_*`, not full AWS SigV4) |
 | Async jobs + fencing + cancel/retry API | **Supported** |
 | Job / Audit APIs | **Supported** (v1.3+) |
 | Hierarchical RBAC + bearer auth | **Supported** (org-scoped) |
@@ -49,7 +49,7 @@ Evidence integrity (v1.1) + secure API (v1.0.1+) + trust boundaries (v1.2.1) req
 | GitOps full admission gate | **Reference** workflow + adapters |
 | Calibration engine | **Supported** (org-scoped SQL) |
 | Operator JSON CR ↔ control plane | **Supported** (`operator --api`) |
-| Live controller-runtime operator | **Not yet** (JSON reconciler + API client) |
+| Live controller-runtime operator | **Supported** (v1.5 `cmd/rehearsal-operator` + CRD) |
 | Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
 | LLM in risk path | **Not supported** |
 
@@ -61,7 +61,7 @@ Evidence integrity (v1.1) + secure API (v1.0.1+) + trust boundaries (v1.2.1) req
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.4.0
+make build && ./bin/rehearsal version   # 1.5.0
 ```
 
 ### Offline iron path
@@ -125,9 +125,20 @@ curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/me
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
-  --set image.tag=1.2.1
+  --set image.tag=1.5.0
 # chart fails closed if api.token is empty; PVC on by default (persistence.enabled)
 ```
+
+### Kubernetes operator (v1.5)
+
+```bash
+kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
+export REHEARSAL_API_URL=http://rehearsal.default.svc:8080
+export REHEARSAL_API_TOKEN=...
+go run ./cmd/rehearsal-operator
+# or: go build -o bin/rehearsal-operator ./cmd/rehearsal-operator
+```
+
 
 ---
 

@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.5.0 — 2026-08-03
+
+**Kubernetes Operator** — controller-runtime RehearsalRun CR → control plane.
+
+### Operator
+- CRD `rehearsalruns.rehearsal.io/v1beta1` (`config/crd/`)
+- Binary `cmd/rehearsal-operator` (controller-runtime manager)
+- Reconciles CR → HTTP control plane create + advance + status sync
+- Env: `REHEARSAL_API_URL`, `REHEARSAL_API_TOKEN`
+
+```bash
+kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
+go run ./cmd/rehearsal-operator
+```
+
+## 1.4.1 — 2026-08-03
+
+**Hardening** — evidence recompute, cancel safety, strict OIDC, PG legacy, release workflow.
+
+### Evidence (P0)
+- `ComputeSemanticDigest` exported; VerifyChain **always recomputes** report body
+- Tamper tests: decision/risk/findings/rollback/predictedFailures with stale semanticDigest fail
+
+### Durability
+- PostgreSQL legacy migration: global `id` PK → `(org,id)` + org-scoped idempotency
+- CI: `pg_legacy_smoke` after legacy seed
+- Schema v4: optimistic `runs.version`
+- Atomic enqueue: INSERT then SELECT on unique conflict (no TOCTOU)
+
+### Cancellation
+- Engine `ExecuteContext` cancels between steps
+- Worker watches job status; stops on cancel; **fence check before UpdateRun**
+
+### OIDC
+- `golang-jwt/jwt/v5` RS256 + JWKS
+- Requires issuer, audience, exp, sub, org claim
+- Unit tests for missing claims
+
+### S3 / docs
+- `REHEARSAL_S3_*` wires MinIO path-style blob (reference; not full AWS SigV4)
+- Capability matrix honest; Helm image.tag drift fixed
+
+### Release
+- `.github/workflows/release.yml` publishes binaries + SHA256SUMS + SBOM on tag
+
 ## 1.4.0 — 2026-08-03
 
 **Platform hooks** — operator ↔ control plane, GitHub/GitLab status adapters.

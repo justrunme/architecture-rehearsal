@@ -99,6 +99,19 @@ func cmdServe(args []string) int {
 			return 5
 		}
 		defer store.Close()
+		// Optional MinIO/S3 path-style backend (reference; not full AWS SigV4).
+		// Prefer REHEARSAL_S3_ENDPOINT for multi-replica evidence blobs.
+		if ep := os.Getenv("REHEARSAL_S3_ENDPOINT"); ep != "" {
+			sb, err := persist.NewS3Blob(ep, os.Getenv("REHEARSAL_S3_BUCKET"),
+				os.Getenv("REHEARSAL_S3_ACCESS_KEY"), os.Getenv("REHEARSAL_S3_SECRET_KEY"))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "s3 blob: %v\n", err)
+				return 5
+			}
+			store.Blob = sb
+			fmt.Fprintf(os.Stderr, "blob: s3-compatible endpoint=%s bucket=%s (MinIO path-style; not full AWS SigV4)\n",
+				ep, os.Getenv("REHEARSAL_S3_BUCKET"))
+		}
 		backend = &api.SQLBackend{S: store}
 		fmt.Fprintf(os.Stderr, "backend: sql dsn=%s blob=%s\n", redactDSN(*dbDSN), *blobDir)
 	}
