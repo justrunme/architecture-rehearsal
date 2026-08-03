@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
 	"github.com/justrunme/architecture-rehearsal/internal/change"
 	"github.com/justrunme/architecture-rehearsal/internal/collect"
 	"github.com/justrunme/architecture-rehearsal/internal/evidence"
+	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
 	"github.com/justrunme/architecture-rehearsal/internal/report"
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
@@ -202,7 +204,7 @@ func cmdSnapshot(args []string) int {
 			fmt.Fprintln(os.Stderr, "--dir required")
 			return 2
 		}
-		snap, err := collect.K8sFromManifests(nil, *dir, *cluster)
+		snap, err := collect.K8sFromManifests(nil, *dir, collect.K8sOptions{ClusterName: *cluster})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "collect: %v\n", err)
 			return 5
@@ -235,9 +237,13 @@ func cmdChange(args []string) int {
 		out := fs.String("out", "change.json", "output change path")
 		id := fs.String("id", "change-manifests", "change id")
 		title := fs.String("title", "Kubernetes manifest change", "title")
+		ns := fs.String("namespace", "", "limit scope to namespace (repeat not supported; comma-separated)")
+		prefix := fs.String("name-prefix", "", "limit scope to workload name prefix")
+		allowRemove := fs.Bool("allow-remove", false, "allow removals within scope only (default false)")
 		fs.SetOutput(os.Stderr)
 		_ = fs.Parse(args[1:])
 		if *base == "" || *dir == "" {
+			fmt.Fprintln(os.Stderr, "--baseline and --dir required; use --namespace and --allow-remove for safe removals")
 			return 2
 		}
 		b, err := loader.LoadSnapshot(*base)
@@ -245,7 +251,16 @@ func cmdChange(args []string) int {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 2
 		}
-		ch, err := change.FromManifestsDiff(b, *dir, *id, *title)
+		scope := change.ManifestScope{NamePrefix: *prefix, AllowRemove: *allowRemove}
+		if *ns != "" {
+			for _, p := range strings.Split(*ns, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					scope.Namespaces = append(scope.Namespaces, p)
+				}
+			}
+		}
+		ch, err := change.FromManifestsDiff(b, *dir, *id, *title, scope)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 5
@@ -254,11 +269,12 @@ func cmdChange(args []string) int {
 		if err := os.WriteFile(*out, raw, 0o644); err != nil {
 			return 5
 		}
-		fmt.Fprintf(os.Stderr, "wrote change %s\n", *out)
+		fmt.Fprintf(os.Stderr, "wrote change %s (removals=%v scope_ns=%v)\n", *out, *allowRemove, scope.Namespaces)
 		return 0
 	case "terraform":
 		fs := flag.NewFlagSet("change-terraform", flag.ContinueOnError)
 		plan := fs.String("plan", "", "terraform show -json file")
+		base := fs.String("baseline", "", "optional baseline for valid seeds")
 		out := fs.String("out", "change.json", "output")
 		id := fs.String("id", "change-tf", "id")
 		title := fs.String("title", "Terraform plan", "title")
@@ -267,7 +283,16 @@ func cmdChange(args []string) int {
 		if *plan == "" {
 			return 2
 		}
-		ch, err := change.FromTerraformPlan(*plan, *id, *title)
+		var b *graph.Snapshot
+		if *base != "" {
+			var err error
+			b, err = loader.LoadSnapshot(*base)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				return 2
+			}
+		}
+		ch, err := change.FromTerraformPlan(*plan, *id, *title, b)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 5

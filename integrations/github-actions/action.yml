@@ -11,15 +11,23 @@ inputs:
     description: Evidence output directory
     required: false
     default: out
+# Reference composite action — builds from source (image publish not yet in CI).
 runs:
-  using: docker
-  image: docker://ghcr.io/justrunme/architecture-rehearsal:1.0.0
-  args:
-    - analyze
-    - --baseline
-    - ${{ inputs.baseline }}
-    - --change
-    - ${{ inputs.change }}
-    - --out
-    - ${{ inputs.out }}
-    - --quiet
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.x"
+    - shell: bash
+      run: |
+        set -euo pipefail
+        go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v0.3.0 || {
+          git clone --depth 1 --branch v0.3.0 https://github.com/justrunme/architecture-rehearsal.git /tmp/ar
+          (cd /tmp/ar && go build -o "$GITHUB_WORKSPACE/rehearsal" ./cmd/rehearsal)
+          export PATH="$GITHUB_WORKSPACE:$PATH"
+        }
+        rehearsal analyze \
+          --baseline "${{ inputs.baseline }}" \
+          --change "${{ inputs.change }}" \
+          --out "${{ inputs.out }}" \
+          --quiet

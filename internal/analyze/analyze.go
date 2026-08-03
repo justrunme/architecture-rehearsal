@@ -15,7 +15,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 )
 
-const Version = "1.0.0"
+const Version = "0.3.0"
 
 // Run builds proposed graph, validates, runs scenarios, returns Report.
 func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
@@ -38,7 +38,7 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 		BaseIdx:  baseIdx,
 		PropIdx:  propIdx,
 	}
-	findings := scenario.RunAll(ctx, scenario.DefaultRunners())
+	findings, unknownReqs := scenario.RunAll(ctx, scenario.DefaultRunners())
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Scenario != findings[j].Scenario {
 			return findings[i].Scenario < findings[j].Scenario
@@ -47,7 +47,26 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 	})
 
 	cov := computeCoverage(base, ch, findings)
-	insufficient := len(cov.RequiredMissing) > 0
+	for _, r := range unknownReqs {
+		cov.RequiredMissing = append(cov.RequiredMissing, r.ID)
+		cov.Gaps = append(cov.Gaps, r.Message)
+	}
+	cov.RequiredMissing = uniqueStrings(cov.RequiredMissing)
+	for _, f := range findings {
+		if f.Risk == RiskUnknown {
+			cov.RequiredMissing = append(cov.RequiredMissing, "scenario:"+f.Scenario)
+		}
+	}
+	cov.RequiredMissing = uniqueStrings(cov.RequiredMissing)
+
+	hasConfidentFinding := false
+	for _, f := range findings {
+		if f.Risk != RiskUnknown && f.Risk != RiskNone && f.Confidence != "low" {
+			hasConfidentFinding = true
+		}
+	}
+	// Insufficient only forces unknown when we lack a confident matched finding.
+	insufficient := len(cov.RequiredMissing) > 0 && !hasConfidentFinding
 
 	rep := &Report{
 		APIVersion:        graph.APIVersionV1Alpha1,

@@ -5,22 +5,33 @@ import (
 	"strings"
 )
 
-// PromZeroMatch detects rules that match zero series for a specific metric schema.
 type PromZeroMatch struct{}
 
 func (PromZeroMatch) Name() string { return "prom-zero-match" }
 
-func (PromZeroMatch) Run(ctx Context) []Finding {
+func (PromZeroMatch) Applicable(ctx Context) bool {
 	ch := ctx.Change
 	if ch == nil {
-		return nil
+		return false
 	}
-	if ch.EffectiveKind() != "prometheus-rule" && factString(ch.Facts, "scenario", "") != "prom-zero-match" {
-		return nil
+	return changeKind(ch) == "prometheus-rule" || factString(ch.Facts, "scenario", "") == "prom-zero-match"
+}
+
+func (PromZeroMatch) MissingRequirements(ctx Context) []Requirement {
+	if ctx.Baseline == nil || ctx.Baseline.Meta == nil || ctx.Baseline.Meta["metric_labels"] == nil {
+		return []Requirement{{ID: "metric_labels", Message: "meta.metric_labels required for Prometheus coverage check"}}
 	}
+	return nil
+}
+
+func (r PromZeroMatch) Evaluate(ctx Context) Result {
+	ch := ctx.Change
 	expr := factString(ch.Facts, "expr", factString(ch.Facts, "rule_expr", ""))
 	if expr == "" {
-		return nil
+		return Result{Outcome: OutcomeUnknown, Missing: []Requirement{{ID: "expr", Message: "rule expr missing"}}, Findings: []Finding{{
+			ID: "unknown:prom-expr", Scenario: r.Name(), Risk: "unknown", Title: "Prometheus rule expr missing",
+			Summary: "Cannot evaluate series coverage without expr/label_matchers", Rollback: RollbackUnknown, Confidence: "low",
+		}}}
 	}
 	metric := factString(ch.Facts, "metric", guessMetric(expr))
 	required := map[string]string{}
@@ -31,67 +42,40 @@ func (PromZeroMatch) Run(ctx Context) []Finding {
 			}
 		}
 	}
-
-	// metric_labels can be:
-	// 1) metric-specific: { "kube_pod_status_ready": { "namespace": ["a"] } }
-	// 2) legacy flat: { "namespace": ["a"] }
 	labelsForMetric, knownMetric, legacy := metricLabels(ctx, metric)
-
 	var missing []string
-	zeroMatch := false
-
-	if metric != "" && !legacy {
-		if !knownMetric {
-			missing = append(missing, fmt.Sprintf("metric %q not present in snapshot metric_labels", metric))
-			zeroMatch = true
-		}
+	zero := false
+	if metric != "" && !legacy && !knownMetric {
+		missing = append(missing, fmt.Sprintf("metric %q not in metric_labels", metric))
+		zero = true
 	}
 	for label, want := range required {
 		vals := labelsForMetric[label]
 		if len(vals) == 0 {
 			missing = append(missing, fmt.Sprintf("label %q never observed on metric %q", label, metric))
-			zeroMatch = true
+			zero = true
 			continue
 		}
 		if want != "" && !contains(vals, want) {
-			missing = append(missing, fmt.Sprintf("label %s=%q not in observed values %v for metric %q", label, want, vals, metric))
-			zeroMatch = true
+			missing = append(missing, fmt.Sprintf("%s=%q not in %v for %q", label, want, vals, metric))
+			zero = true
 		}
 	}
-	if !zeroMatch {
-		return nil
+	if !zero {
+		return Result{Outcome: OutcomeNotMatched}
 	}
-	return []Finding{{
-		ID:       "prom-zero-match",
-		Scenario: "prom-zero-match",
-		Risk:     "high",
-		Title:    "Alert rule matches zero observed series",
-		Summary: fmt.Sprintf(
-			"Rule is syntactically valid but selectors do not match observed label schema for metric %q. Expected alert coverage after deployment: 0%%. expr=%s",
-			metric, truncate(expr, 120),
-		),
-		Components: ch.Seeds,
-		Cascade: []string{
-			"rule deploys successfully",
-			"Prometheus accepts rule",
-			"selector matches zero series",
-			"alert never fires",
-			"incident signal gap",
-		},
-		Controls: []string{
-			"validate rule against metric-specific label values before merge",
-			"align selector labels with actual metric schema",
-			"require series-coverage check in CI",
-		},
-		SLOImpact:  "monitoring coverage gap — false sense of safety",
-		Evidence:   missing,
-		Rollback:   RollbackAvailable,
-		Confidence: "high",
-	}}
+	return Result{Outcome: OutcomeMatched, Findings: []Finding{{
+		ID: r.Name(), Scenario: r.Name(), Risk: "high",
+		Title: "Alert rule matches zero observed series",
+		Summary: fmt.Sprintf("Selectors do not match observed schema for metric %q; expected coverage 0%%. expr=%s", metric, truncate(expr, 100)),
+		Components: ch.Seeds, Cascade: []string{"rule deploys", "matches zero series", "alert never fires"},
+		Controls: []string{"validate metric-specific labels before merge", "series-coverage CI check"},
+		SLOImpact: "monitoring gap", Evidence: missing, Rollback: RollbackAvailable, Confidence: "high",
+	}}}
 }
 
-func metricLabels(ctx Context, metric string) (labels map[string][]string, known bool, legacy bool) {
-	labels = map[string][]string{}
+func metricLabels(ctx Context, metric string) (map[string][]string, bool, bool) {
+	labels := map[string][]string{}
 	if ctx.Baseline == nil || ctx.Baseline.Meta == nil {
 		return labels, false, false
 	}
@@ -99,25 +83,23 @@ func metricLabels(ctx Context, metric string) (labels map[string][]string, known
 	if !ok {
 		return labels, false, false
 	}
-	// Detect metric-specific vs flat: if first value is map → metric-specific.
+	metricSpecific := false
 	for _, v := range raw {
 		if _, isMap := v.(map[string]any); isMap {
-			// metric-specific
-			if metric == "" {
-				return labels, false, false
-			}
-			mv, ok := raw[metric].(map[string]any)
-			if !ok {
-				return labels, false, false
-			}
-			for lk, lv := range mv {
-				labels[lk] = toStringSlice(lv)
-			}
-			return labels, true, false
+			metricSpecific = true
+			break
 		}
-		break
 	}
-	// legacy flat
+	if metricSpecific {
+		mv, ok := raw[metric].(map[string]any)
+		if !ok {
+			return labels, false, false
+		}
+		for lk, lv := range mv {
+			labels[lk] = toStringSlice(lv)
+		}
+		return labels, true, false
+	}
 	for k, v := range raw {
 		labels[k] = toStringSlice(v)
 	}
@@ -140,7 +122,6 @@ func toStringSlice(v any) []string {
 		return nil
 	}
 }
-
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {
@@ -149,7 +130,6 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
-
 func guessMetric(expr string) string {
 	expr = strings.TrimSpace(expr)
 	i := strings.Index(expr, "{")
@@ -158,7 +138,6 @@ func guessMetric(expr string) string {
 	}
 	return ""
 }
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

@@ -9,7 +9,25 @@ const (
 	RollbackAvailable   = "available"
 	RollbackUnavailable = "unavailable"
 	RollbackUnknown     = "unknown"
+
+	// Outcome for a scenario evaluation (not the gate decision).
+	OutcomeMatched    = "matched"
+	OutcomeNotMatched = "not_matched"
+	OutcomeUnknown    = "unknown"
 )
+
+// Requirement is a graph/fact prerequisite for a scenario.
+type Requirement struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+// Result is a structured scenario evaluation.
+type Result struct {
+	Outcome  string    // matched | not_matched | unknown
+	Findings []Finding
+	Missing  []Requirement
+}
 
 // Finding is one predicted issue.
 type Finding struct {
@@ -23,7 +41,7 @@ type Finding struct {
 	Controls   []string `json:"recommended_controls,omitempty"`
 	SLOImpact  string   `json:"slo_impact,omitempty"`
 	Evidence   []string `json:"evidence,omitempty"`
-	Rollback   string   `json:"rollback"` // available|unavailable|unknown
+	Rollback   string   `json:"rollback"`
 	Confidence string   `json:"confidence"`
 }
 
@@ -36,13 +54,18 @@ type Context struct {
 	PropIdx  *graph.Index
 }
 
-// Runner is a named deterministic detector.
+// Runner evaluates one deterministic pattern.
 type Runner interface {
 	Name() string
-	Run(ctx Context) []Finding
+	// Applicable reports whether this change kind can trigger the scenario.
+	Applicable(ctx Context) bool
+	// MissingRequirements lists required coverage when applicable.
+	MissingRequirements(ctx Context) []Requirement
+	// Evaluate returns matched findings, not_matched, or unknown.
+	Evaluate(ctx Context) Result
 }
 
-// DefaultRunners returns production scenario set (v1.0).
+// DefaultRunners returns the v0.3 scenario set.
 func DefaultRunners() []Runner {
 	return []Runner{
 		RWONodeLoss{},
@@ -54,11 +77,43 @@ func DefaultRunners() []Runner {
 	}
 }
 
-// RunAll executes all runners.
-func RunAll(ctx Context, runners []Runner) []Finding {
-	var out []Finding
+// RunAll executes all runners and flattens findings; also returns unknown requirements.
+func RunAll(ctx Context, runners []Runner) (findings []Finding, unknownReqs []Requirement) {
 	for _, r := range runners {
-		out = append(out, r.Run(ctx)...)
+		if !r.Applicable(ctx) {
+			continue
+		}
+		if miss := r.MissingRequirements(ctx); len(miss) > 0 {
+			unknownReqs = append(unknownReqs, miss...)
+			// emit unknown finding so decision can go unknown with evidence
+			findings = append(findings, Finding{
+				ID:         "unknown:" + r.Name(),
+				Scenario:   r.Name(),
+				Risk:       "unknown",
+				Title:      "Insufficient data for scenario " + r.Name(),
+				Summary:    "Scenario is applicable but required graph/facts are missing; cannot safely approve.",
+				Evidence:   reqMessages(miss),
+				Rollback:   RollbackUnknown,
+				Confidence: "low",
+			})
+			continue
+		}
+		res := r.Evaluate(ctx)
+		switch res.Outcome {
+		case OutcomeMatched:
+			findings = append(findings, res.Findings...)
+		case OutcomeUnknown:
+			unknownReqs = append(unknownReqs, res.Missing...)
+			findings = append(findings, res.Findings...)
+		}
+	}
+	return findings, unknownReqs
+}
+
+func reqMessages(rr []Requirement) []string {
+	var out []string
+	for _, r := range rr {
+		out = append(out, r.ID+": "+r.Message)
 	}
 	return out
 }
@@ -66,11 +121,9 @@ func RunAll(ctx Context, runners []Runner) []Finding {
 func factString(m map[string]any, key, def string) string {
 	return loader.FactString(m, key, def)
 }
-
 func factBool(m map[string]any, key string, def bool) bool {
 	return loader.FactBool(m, key, def)
 }
-
 func factInt(m map[string]any, key string, def int) int {
 	return loader.FactInt(m, key, def)
 }
@@ -96,4 +149,15 @@ func display(idx *graph.Index, id string) string {
 		return n.Name
 	}
 	return id
+}
+
+func hasKind(idx *graph.Index, k graph.Kind) bool {
+	return idx != nil && len(idx.ByKind[k]) > 0
+}
+
+func changeKind(ch *loader.ChangeEnvelope) string {
+	if ch == nil {
+		return ""
+	}
+	return ch.EffectiveKind()
 }

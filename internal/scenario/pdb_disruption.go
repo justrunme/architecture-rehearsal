@@ -6,22 +6,46 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 )
 
-// PDBDisruption detects drain/node loss that violates PodDisruptionBudget.
 type PDBDisruption struct{}
 
 func (PDBDisruption) Name() string { return "pdb-disruption" }
 
-func (PDBDisruption) Run(ctx Context) []Finding {
+func (PDBDisruption) Applicable(ctx Context) bool {
 	ch := ctx.Change
-	if ch == nil || ctx.BaseIdx == nil {
+	if ch == nil {
+		return false
+	}
+	k := changeKind(ch)
+	return k == "node-failure" || k == "node-drain" || factString(ch.Facts, "scenario", "") == "pdb-disruption"
+}
+
+func (PDBDisruption) MissingRequirements(ctx Context) []Requirement {
+	var miss []Requirement
+	if !hasKind(ctx.BaseIdx, graph.KindPDB) {
+		// Not applicable as unknown — if no PDBs, scenario simply not matched
 		return nil
 	}
-	kind := ch.EffectiveKind()
-	if kind != "node-failure" && kind != "node-drain" && factString(ch.Facts, "scenario", "") != "pdb-disruption" {
-		return nil
+	// need PROTECTED_BY edges
+	has := false
+	if ctx.Baseline != nil {
+		for _, e := range ctx.Baseline.Edges {
+			if e.Rel == graph.RelProtectedBy {
+				has = true
+				break
+			}
+		}
 	}
-	// For each PDB, check if minAvailable cannot be satisfied after removing pods on lost node.
-	var findings []Finding
+	if !has {
+		miss = append(miss, Requirement{ID: "pdb-edges", Message: "PDB nodes exist but no PROTECTED_BY edges to workloads"})
+	}
+	return miss
+}
+
+func (r PDBDisruption) Evaluate(ctx Context) Result {
+	if !hasKind(ctx.BaseIdx, graph.KindPDB) {
+		return Result{Outcome: OutcomeNotMatched}
+	}
+	ch := ctx.Change
 	lost := map[string]bool{}
 	for _, id := range ch.RemovedNodes {
 		lost[id] = true
@@ -30,24 +54,15 @@ func (PDBDisruption) Run(ctx Context) []Finding {
 		lost[ln] = true
 	}
 	if len(lost) == 0 {
-		return nil
+		return Result{Outcome: OutcomeNotMatched}
 	}
+	var findings []Finding
 	for _, pdb := range ctx.BaseIdx.ByKind[graph.KindPDB] {
 		minA := pdb.AttrInt("minAvailable")
 		if minA <= 0 {
 			continue
 		}
-		// Workloads protected by this PDB
 		var workloads []string
-		for _, e := range ctx.BaseIdx.In[pdb.ID] {
-			if e.Rel == graph.RelProtectedBy {
-				workloads = append(workloads, e.From)
-			}
-		}
-		for _, e := range ctx.BaseIdx.Out {
-			_ = e
-		}
-		// also PROTECTED_BY from workload -> pdb
 		for wid, edges := range ctx.BaseIdx.Out {
 			for _, e := range edges {
 				if e.To == pdb.ID && e.Rel == graph.RelProtectedBy {
@@ -55,59 +70,39 @@ func (PDBDisruption) Run(ctx Context) []Finding {
 				}
 			}
 		}
-		workloads = unique(workloads)
-		for _, wid := range workloads {
+		for _, wid := range unique(workloads) {
 			w := ctx.BaseIdx.ByID[wid]
 			if w == nil {
 				continue
 			}
 			rep := w.WorkloadReplicas()
-			// count pods on lost nodes (simplified: if workload RUNS_ON lost node)
 			onLost := false
 			for _, e := range ctx.BaseIdx.Out[wid] {
 				if e.Rel == graph.RelRunsOn && lost[e.To] {
 					onLost = true
 				}
 			}
-			if !onLost {
-				// Stateful single-replica often implied on bound node via PVC path
-				if rep == 1 && (kind == "node-failure" || kind == "node-drain") {
-					onLost = factString(ch.Facts, "scenario", "") != "" || len(lost) > 0
-				}
-			}
+			// only if explicitly scheduled on lost node
 			if !onLost {
 				continue
 			}
 			remaining := rep - 1
 			if remaining < minA {
 				findings = append(findings, Finding{
-					ID:       "pdb-disruption:" + pdb.ID + ":" + wid,
-					Scenario: "pdb-disruption",
-					Risk:     "high",
-					Title:    "PodDisruptionBudget would block or violate disruption",
-					Summary: fmt.Sprintf(
-						"PDB %s requires minAvailable=%d but workload %s would have %d pods after node loss (replicas=%d).",
-						pdb.Name, minA, display(ctx.BaseIdx, wid), remaining, rep,
-					),
+					ID: "pdb-disruption:" + pdb.ID + ":" + wid, Scenario: r.Name(), Risk: "high",
+					Title: "PodDisruptionBudget would block or violate disruption",
+					Summary: fmt.Sprintf("PDB %s minAvailable=%d; workload %s would have %d after node loss", pdb.Name, minA, display(ctx.BaseIdx, wid), remaining),
 					Components: []string{pdb.ID, wid},
-					Cascade: []string{
-						"node drain / loss",
-						fmt.Sprintf("workload %s loses a pod", display(ctx.BaseIdx, wid)),
-						fmt.Sprintf("remaining %d < minAvailable %d", remaining, minA),
-						"eviction denied or availability SLO breach",
-					},
-					Controls: []string{
-						"increase replicas before drain",
-						"adjust PDB minAvailable for maintenance windows",
-						"use voluntary disruption budget carefully with stateful sets",
-					},
-					SLOImpact:  "availability during maintenance",
-					Evidence:   []string{fmt.Sprintf("minAvailable=%d", minA), fmt.Sprintf("replicas=%d", rep)},
-					Rollback:   RollbackUnknown,
-					Confidence: "medium",
+					Cascade: []string{"node loss", fmt.Sprintf("remaining %d < minAvailable %d", remaining, minA), "eviction denied or SLO breach"},
+					Controls: []string{"increase replicas before drain", "adjust PDB for maintenance"},
+					SLOImpact: "availability", Evidence: []string{fmt.Sprintf("minAvailable=%d", minA)},
+					Rollback: RollbackUnknown, Confidence: "medium",
 				})
 			}
 		}
 	}
-	return findings
+	if len(findings) == 0 {
+		return Result{Outcome: OutcomeNotMatched}
+	}
+	return Result{Outcome: OutcomeMatched, Findings: findings}
 }
