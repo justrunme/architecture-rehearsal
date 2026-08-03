@@ -6,5 +6,5 @@ resources:
   - clusterrole.yaml
   - clusterrolebinding.yaml
   - deployment.yaml
-  - networkpolicy.yaml
-# Apply secret.example.yaml manually or create via kubectl create secret
+# networkpolicy.yaml is optional — apply only after configuring API CIDRs
+# Apply secret.example.yaml manually or: kubectl create secret generic rehearsal-operator-token --from-literal=token=...

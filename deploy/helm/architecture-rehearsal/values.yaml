@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/justrunme/architecture-rehearsal
-  tag: "1.5.1"
+  tag: "1.5.2"
   pullPolicy: IfNotPresent
 
 service:
@@ -49,21 +49,26 @@ postgresql:
   host: ""
   database: rehearsal
 
-# controller-runtime operator (v1.5.1). API URL is deployment-only (no CR override).
+# controller-runtime operator (v1.5.2). API URL is deployment-only (no CR override).
+# CRD is installed from chart crds/ on helm install.
 operator:
   enabled: false
   replicas: 2
   leaderElection: true
   image:
     repository: ghcr.io/justrunme/architecture-rehearsal-operator
-    tag: "1.5.1"
+    tag: "1.5.2"
     pullPolicy: IfNotPresent
   # controlPlaneURL is the in-cluster URL set on the operator Deployment only.
   # Never expose this as a CR field.
   controlPlaneURL: "" # empty → http://{{fullname}}:{{service.port}}
   existingSecret: "" # empty → use chart api secret
+  # Disabled by default: without kube API CIDRs, NetworkPolicy blocks CR watch/status.
+  # Enable only after setting kubeAPIServerCIDRs (or rely on CNI allowing API).
   networkPolicy:
-    enabled: true
+    enabled: false
+    # Optional: list of CIDRs for Kubernetes API (e.g. ["10.0.0.1/32"]).
+    kubeAPIServerCIDRs: []
   resources:
     requests:
       cpu: 20m
