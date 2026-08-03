@@ -45,7 +45,7 @@ CREATE UNIQUE INDEX idx_runs_idem ON runs(idempotency_key);
 	// seed two orgs would conflict on id under legacy — seed one
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = db.Exec(`INSERT INTO runs(id, idempotency_key, org, project, environment, payload, phase, updated_at, created_at)
-VALUES('shared','ik-a','org-a','','','{"id":"shared","labels":{"org":"org-a"},"status":{"phase":"Pending"}}','Pending',?,?)`, now, now)
+VALUES('shared','ik-a','org-a','','','{"id":"shared","labels":{"org":"org-a"},"status":{"phase":"Pending"}}','Pending',$1,$2)`, now, now)
 	if err != nil {
 		panic(err)
 	}
