@@ -1,5 +1,8 @@
-// Package rbac provides a minimal policy model for platform ops (v0.7).
-// This is configuration-level RBAC, not a network service authenticator.
+// Package rbac provides a local policy model for CLI ops (v0.7+).
+//
+// Loaded from REHEARSAL_POLICY (YAML) or DefaultPolicy().
+// Actor from REHEARSAL_ACTOR (default "local").
+// This is NOT network authentication, multi-tenant IAM, or a control-plane RBAC API.
 package rbac
 
 import (

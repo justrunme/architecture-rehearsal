@@ -1,4 +1,8 @@
 {
   "observed_failures": ["cni-ip-capacity"],
+  "cni_ip_available": 0,
+  "cni_failure_events": [
+    "FailedCreatePodSandBox: failed to assign an IP address"
+  ],
   "incident_notes": "FailedCreatePodSandbox / pending pods after payments helm scale; pod IP pool exhausted"
 }

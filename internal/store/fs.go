@@ -64,9 +64,11 @@ func NewFS(root string) (*FS, error) {
 }
 
 // SaveRun writes a run record and appends an audit event.
+// Run IDs use nanosecond timestamps to avoid same-second collisions.
+// Write is temp+rename (best-effort atomic on same filesystem).
 func (s *FS) SaveRun(rec RunRecord, actor string) (string, error) {
 	if rec.ID == "" {
-		rec.ID = fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405Z"))
+		rec.ID = fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102T150405.000000000Z"))
 	}
 	if rec.APIVersion == "" {
 		rec.APIVersion = graph.APIVersionV1Alpha1
@@ -85,16 +87,23 @@ func (s *FS) SaveRun(rec RunRecord, actor string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return "", err
 	}
-	_ = s.AppendAudit(AuditEvent{
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if err := s.AppendAudit(AuditEvent{
 		Time:   time.Now().UTC(),
 		Actor:  rec.Actor,
 		Action: "run.save",
 		RunID:  rec.ID,
 		Detail: fmt.Sprintf("decision=%s risk=%s", rec.Decision, rec.Risk),
-	})
+	}); err != nil {
+		return path, fmt.Errorf("run saved but audit append failed: %w", err)
+	}
 	return path, nil
 }
 

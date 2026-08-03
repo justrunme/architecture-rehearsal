@@ -400,17 +400,42 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 				phase = p
 				attrs["phase"] = p
 			}
+			if r, ok := st["reason"].(string); ok && r != "" {
+				attrs["reason"] = r
+			}
+			if m, ok := st["message"].(string); ok && m != "" {
+				attrs["message"] = m
+			}
 			if nn, ok := st["nominatedNodeName"].(string); ok && nodeName == "" {
 				nodeName = nn
 			}
+			// container waiting reasons (ImagePullBackOff, CreateContainerConfigError, …)
+			if css, ok := st["containerStatuses"].([]any); ok {
+				for _, cs := range css {
+					csm, _ := cs.(map[string]any)
+					if csm == nil {
+						continue
+					}
+					if state, ok := csm["state"].(map[string]any); ok {
+						if waiting, ok := state["waiting"].(map[string]any); ok {
+							if r, ok := waiting["reason"].(string); ok && r != "" {
+								attrs["waitingReason"] = r
+							}
+							if m, ok := waiting["message"].(string); ok && m != "" {
+								attrs["message"] = fmt.Sprint(attrs["message"]) + " " + m
+							}
+						}
+					}
+				}
+			}
+		}
+		if nodeName != "" {
+			attrs["nodeName"] = nodeName
 		}
 		addNode(snap, graph.Node{
 			ID: id, Kind: graph.KindPod, Name: name, Namespace: ns, Attributes: attrs,
 			Source: "kubernetes", SourceRef: "v1/Pod/" + ns + "/" + name,
 		})
-		if nodeName != "" {
-			attrs["nodeName"] = nodeName
-		}
 		_ = phase
 	case "EndpointSlice":
 		// Annotate matching Service with ready endpoint count (actual routing).
