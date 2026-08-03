@@ -16,6 +16,7 @@ import (
 )
 
 // ControlPlaneClient talks to rehearsal serve HTTP API.
+// BaseURL must come only from operator deployment config — never from user CR fields.
 type ControlPlaneClient struct {
 	BaseURL string
 	Token   string
@@ -48,8 +49,16 @@ func (c *ControlPlaneClient) do(method, path string, body any) (*http.Response, 
 	return c.client().Do(req)
 }
 
-// EnsureRun creates or returns existing run on the control plane.
-func (c *ControlPlaneClient) EnsureRun(rr *run.RehearsalRun) error {
+// EnsureResult is the outcome of EnsureRun.
+type EnsureResult struct {
+	Created  bool
+	Conflict bool // 409: run id already exists with different identity
+	Run      *run.RehearsalRun
+}
+
+// EnsureRun creates a run. On 409, fetches existing and returns Conflict=true
+// so the caller can detect spec drift (does NOT treat 409 as silent success).
+func (c *ControlPlaneClient) EnsureRun(rr *run.RehearsalRun) (*EnsureResult, error) {
 	body := map[string]any{
 		"id":             rr.ID,
 		"idempotencyKey": rr.IdempotencyKey,
@@ -65,28 +74,64 @@ func (c *ControlPlaneClient) EnsureRun(rr *run.RehearsalRun) error {
 	}
 	resp, err := c.do(http.MethodPost, "/v1/runs", body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 && resp.StatusCode != 201 && resp.StatusCode != 409 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("create run %d: %s", resp.StatusCode, b)
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	switch resp.StatusCode {
+	case 201:
+		var created run.RehearsalRun
+		_ = json.Unmarshal(raw, &created)
+		return &EnsureResult{Created: true, Run: &created}, nil
+	case 200:
+		// idempotent create (same idempotency key)
+		var existing run.RehearsalRun
+		_ = json.Unmarshal(raw, &existing)
+		return &EnsureResult{Created: false, Run: &existing}, nil
+	case 409:
+		// Conflict: id exists — fetch and let caller compare digests
+		existing, gerr := c.GetRun(rr.ID)
+		if gerr != nil {
+			return &EnsureResult{Conflict: true}, fmt.Errorf("create run conflict (409) and get failed: %w", gerr)
+		}
+		return &EnsureResult{Conflict: true, Run: existing}, nil
+	default:
+		return nil, fmt.Errorf("create run %d: %s", resp.StatusCode, raw)
 	}
-	return nil
 }
 
-// Advance enqueues or sync-advances a run (async=true → 202).
-func (c *ControlPlaneClient) Advance(runID string, async bool) error {
+// AdvanceResult holds advance API response.
+type AdvanceResult struct {
+	StatusCode int
+	JobID      string
+	Run        *run.RehearsalRun
+	Raw        map[string]any
+}
+
+// Advance enqueues or sync-advances a run. Returns jobId when async (202).
+func (c *ControlPlaneClient) Advance(runID string, async bool) (*AdvanceResult, error) {
 	resp, err := c.do(http.MethodPost, "/v1/runs/"+runID+"/advance", map[string]any{"async": async})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	out := &AdvanceResult{StatusCode: resp.StatusCode}
+	_ = json.Unmarshal(raw, &out.Raw)
 	if resp.StatusCode != 200 && resp.StatusCode != 202 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("advance %d: %s", resp.StatusCode, b)
+		return out, fmt.Errorf("advance %d: %s", resp.StatusCode, raw)
 	}
-	return nil
+	if resp.StatusCode == 202 {
+		if j, ok := out.Raw["jobId"].(string); ok {
+			out.JobID = j
+		}
+	} else {
+		var rr run.RehearsalRun
+		if json.Unmarshal(raw, &rr) == nil && rr.ID != "" {
+			out.Run = &rr
+		}
+	}
+	return out, nil
 }
 
 // GetRun fetches run status.
@@ -144,10 +189,10 @@ func (r *Reconciler) ReconcileOnce() (int, error) {
 			continue
 		}
 		if r.ControlPlane != nil {
-			if err := r.ControlPlane.EnsureRun(&rr); err != nil {
+			if _, err := r.ControlPlane.EnsureRun(&rr); err != nil {
 				continue
 			}
-			_ = r.ControlPlane.Advance(rr.ID, r.AsyncAdvance)
+			_, _ = r.ControlPlane.Advance(rr.ID, r.AsyncAdvance)
 			if latest, err := r.ControlPlane.GetRun(rr.ID); err == nil && latest != nil {
 				rr = *latest
 			}

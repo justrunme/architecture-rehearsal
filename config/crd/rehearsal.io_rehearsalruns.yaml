@@ -25,12 +25,16 @@ spec:
         - name: Decision
           type: string
           jsonPath: .status.decision
+        - name: Gen
+          type: integer
+          jsonPath: .status.observedGeneration
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
       schema:
         openAPIV3Schema:
           type: object
+          description: RehearsalRun drives a control-plane run. controlPlaneURL is intentionally NOT on the CR (v1.5.1 trust boundary).
           properties:
             apiVersion:
               type: string
@@ -41,6 +45,8 @@ spec:
             spec:
               type: object
               required: [baselineRef, changeRef]
+              # Forbid controlPlaneURL and any other user-supplied override fields (v1.5.1).
+              additionalProperties: false
               properties:
                 baselineRef:
                   type: string
@@ -56,11 +62,14 @@ spec:
                     type: string
                 async:
                   type: boolean
-                controlPlaneURL:
-                  type: string
             status:
               type: object
               properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                specDigest:
+                  type: string
                 phase:
                   type: string
                 decision:
