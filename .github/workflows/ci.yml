@@ -92,16 +92,16 @@ jobs:
               --set operator.enabled=true \
               --set operator.leaderElection=true >/tmp/helm-out.yaml
             grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
-            ! grep -q controlPlaneURL /tmp/helm-out.yaml || true
-            # CRD must not advertise controlPlaneURL
-            ! grep -q controlPlaneURL config/crd/rehearsal.io_rehearsalruns.yaml
+            # CRD schema must not define a controlPlaneURL property
+            ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
+            ! grep -r 'ControlPlaneURL' api/v1beta1/ --include='*.go'
           else
             curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
             helm template e2e deploy/helm/architecture-rehearsal \
               --set api.token=ci-token \
               --set operator.enabled=true >/tmp/helm-out.yaml
             grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
-            ! grep -q controlPlaneURL config/crd/rehearsal.io_rehearsalruns.yaml
+            ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
           fi
 
   postgres:
