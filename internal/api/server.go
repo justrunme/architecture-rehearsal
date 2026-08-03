@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -81,7 +82,7 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]string{
-		"version":    "1.0.1",
+		"version":    "1.1.0",
 		"apiVersion": contract.APIVersionV1,
 		"product":    "architecture-rehearsal",
 	})
@@ -233,7 +234,7 @@ func (s *Server) advanceRun(w http.ResponseWriter, r *http.Request, actor authn.
 	} else if s.WorkDirRoot != "" {
 		wd = s.WorkDirRoot
 	}
-	eng := &run.Engine{WorkDir: wd, Holder: actor.ID}
+	eng := &run.Engine{WorkDir: wd, Holder: actor.ID, Calibrate: s.Calibrate}
 	if err := eng.Execute(rr); err != nil {
 		s.Store.Put(rr)
 		writeJSON(w, 200, map[string]any{"run": rr, "error": err.Error()})
@@ -254,12 +255,32 @@ func (s *Server) getEvidence(w http.ResponseWriter, r *http.Request, actor authn
 		http.Error(w, "not found", 404)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
-		"runId":   rr.ID,
-		"org":     rr.Labels["org"],
-		"digests": rr.Digests,
-		"phase":   rr.Status.Phase,
-	})
+	out := map[string]any{
+		"runId":            rr.ID,
+		"org":              rr.Labels["org"],
+		"digests":          rr.Digests,
+		"phase":            rr.Status.Phase,
+		"verifyOutcome":    rr.Status.VerifyOutcome,
+		"chainPath":        rr.Status.ChainPath,
+		"predictedFailures": rr.Status.PredictedFailures,
+	}
+	// Inline chain if persisted
+	if rr.Status.ChainPath != "" {
+		if raw, err := os.ReadFile(rr.Status.ChainPath); err == nil {
+			var chain any
+			if json.Unmarshal(raw, &chain) == nil {
+				out["chain"] = chain
+			}
+		}
+		dssePath := filepath.Join(filepath.Dir(rr.Status.ChainPath), "evidence-dsse.json")
+		if raw, err := os.ReadFile(dssePath); err == nil {
+			var env any
+			if json.Unmarshal(raw, &env) == nil {
+				out["dsse"] = env
+			}
+		}
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) createCluster(w http.ResponseWriter, r *http.Request, actor authn.Principal) {

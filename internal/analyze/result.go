@@ -53,6 +53,11 @@ type Report struct {
 	ChangeKind  string `json:"changeKind"`
 	BaselineID  string `json:"baselineId"`
 
+	// Content-addressed binding (v1.1) — report is tied to exact baseline/change bytes.
+	BaselineDigest string `json:"baselineDigest,omitempty"`
+	ChangeDigest   string `json:"changeDigest,omitempty"`
+	ProposedDigest string `json:"proposedDigest,omitempty"`
+
 	Risk     string `json:"risk"`
 	Decision string `json:"decision"`
 	Summary  string `json:"summary"`

@@ -30,7 +30,8 @@ type LiveOptions struct {
 }
 
 // DefaultLiveResources matches the offline dump recommendation.
-const DefaultLiveResources = "node,ns,deploy,sts,ds,rs,po,svc,pvc,pv,pdb,hpa,sa,ing,endpointslices"
+// Events included for causal verify (FailedCreatePodSandBox, FailedAttachVolume, …).
+const DefaultLiveResources = "node,ns,deploy,sts,ds,rs,po,svc,pvc,pv,pdb,hpa,sa,ing,endpointslices,events"
 
 // K8sFromLive runs kubectl get -A -o yaml (read-only) into a temp dir and reuses the offline collector.
 func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error) {

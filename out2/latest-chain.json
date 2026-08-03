@@ -1,0 +1,19 @@
+{
+  "apiVersion": "rehearsal.io/v1beta1",
+  "changeId": "change-helm-scale-payments",
+  "decision": "block",
+  "digests": {
+    "baselineDigest": "6d5a5ebb5e9930ddd6e6651d16f676b37061aff815ed5b07ec77750cbf3a5bbd",
+    "changeDigest": "a21b0d7870d346c8f3e4684f9e63e5c270019f938d5d83764863268467cfdacd",
+    "proposedDigest": "c116d6b5192ae5c4b8c15abdd9898aed2a8b1ee0b60e14034c15278d670e5568",
+    "reportDigest": "3133fbf8a1ee1725f52e9b26c222f008defcca62bc7b8e9e6e8e8b4f5f5ba93c"
+  },
+  "kind": "EvidenceChain",
+  "reportBinding": {
+    "baselineDigest": "6d5a5ebb5e9930ddd6e6651d16f676b37061aff815ed5b07ec77750cbf3a5bbd",
+    "changeDigest": "a21b0d7870d346c8f3e4684f9e63e5c270019f938d5d83764863268467cfdacd",
+    "reportDigest": "3133fbf8a1ee1725f52e9b26c222f008defcca62bc7b8e9e6e8e8b4f5f5ba93c"
+  },
+  "risk": "high",
+  "valid": true
+}

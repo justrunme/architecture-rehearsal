@@ -1,0 +1,23 @@
+{
+  "apiVersion": "rehearsal.io/v1alpha1",
+  "kind": "ArchitectureSnapshot",
+  "id": "acme-prod-baseline-cni",
+  "name": "acme-prod CNI capacity snapshot",
+  "source": "k8s-snapshot+aws-cni",
+  "phase": "baseline",
+  "createdAt": "2026-08-01T12:00:00Z",
+  "meta": {
+    "pod_ip_capacity_available": 22,
+    "cni": "aws-vpc-cni",
+    "prefix_delegation": false
+  },
+  "nodes": [
+    { "id": "cluster/acme-prod", "kind": "Cluster", "name": "acme-prod" },
+    { "id": "ns/payments", "kind": "Namespace", "name": "payments" },
+    { "id": "workload/payments/api", "kind": "Workload", "name": "payments-api", "namespace": "payments", "attributes": { "type": "Deployment", "replicas": 6, "maxSurge": "25%" } },
+    { "id": "workload/payments/worker", "kind": "Workload", "name": "payments-worker", "namespace": "payments", "attributes": { "type": "Deployment", "replicas": 4, "maxSurge": "1" } }
+  ],
+  "edges": [
+    { "from": "workload/payments/worker", "to": "workload/payments/api", "rel": "DEPENDS_ON" }
+  ]
+}

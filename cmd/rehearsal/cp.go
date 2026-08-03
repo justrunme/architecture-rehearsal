@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"path/filepath"
+
 	"github.com/justrunme/architecture-rehearsal/internal/analyze"
 	"github.com/justrunme/architecture-rehearsal/internal/api"
 	"github.com/justrunme/architecture-rehearsal/internal/authn"
@@ -102,10 +104,11 @@ func cmdRun(args []string) int {
 		BaselineRef:    *base,
 		ChangeRef:      *ch,
 		ObservedRef:    *obs,
+		OutDir:         filepath.Join("out", *id),
 		TimeoutSeconds: 600,
 		Gate:           run.GateSpec{BlockOn: []string{"critical", "high", "block"}},
 	})
-	eng := &run.Engine{Holder: rbac.ActorFromEnv()}
+	eng := &run.Engine{Holder: rbac.ActorFromEnv(), Calibrate: calibrate.NewStore()}
 	_ = eng.Execute(rr)
 	raw, _ := json.MarshalIndent(rr, "", "  ")
 	if err := os.WriteFile(*out, raw, 0o644); err != nil {
@@ -126,7 +129,7 @@ func cmdRun(args []string) int {
 
 func cmdEvidence(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: rehearsal evidence chain|verify-chain|sign-dsse ...")
+		fmt.Fprintln(os.Stderr, "usage: rehearsal evidence chain|verify-chain|sign-dsse|verify-dsse ...")
 		return 2
 	}
 	switch args[0] {
@@ -200,19 +203,48 @@ func cmdEvidence(args []string) int {
 			return code
 		}
 		fs := flag.NewFlagSet("sign-dsse", flag.ContinueOnError)
-		payload := fs.String("payload", "", "JSON file to sign")
+		chainPath := fs.String("chain", "", "evidence-chain.json (preferred)")
+		payload := fs.String("payload", "", "legacy: raw JSON file")
 		out := fs.String("out", "out/evidence-dsse.json", "")
 		_ = fs.Parse(args[1:])
-		raw, err := os.ReadFile(*payload)
-		if err != nil {
-			return 2
-		}
 		sec := evidence.SecretFromEnv()
 		if len(sec) == 0 {
 			fmt.Fprintln(os.Stderr, "REHEARSAL_HMAC_SECRET required")
 			return 2
 		}
-		env, err := evidence.SignDSSEHMAC("application/vnd.rehearsal.report+json", raw, sec, "hmac", contract.ArtifactDigests{})
+		var env *evidence.DSSEEnvelope
+		var err error
+		if *chainPath != "" {
+			raw, err := os.ReadFile(*chainPath)
+			if err != nil {
+				return 2
+			}
+			var chDoc struct {
+				ChangeID string                   `json:"changeId"`
+				Decision string                   `json:"decision"`
+				Risk     string                   `json:"risk"`
+				Digests  contract.ArtifactDigests `json:"digests"`
+			}
+			if err := json.Unmarshal(raw, &chDoc); err != nil {
+				return 2
+			}
+			stmt := evidence.EvidenceStatement{
+				ChangeID: chDoc.ChangeID, Decision: chDoc.Decision, Risk: chDoc.Risk,
+				ChainDigests: chDoc.Digests, KeyID: "hmac-env",
+			}
+			env, err = evidence.SignEvidenceStatement(stmt, sec)
+		} else if *payload != "" {
+			raw, err := os.ReadFile(*payload)
+			if err != nil {
+				return 2
+			}
+			// Wrap raw payload as extra inside statement so digests can still be empty but body signed
+			stmt := evidence.EvidenceStatement{Extra: raw, KeyID: "hmac-env"}
+			env, err = evidence.SignEvidenceStatement(stmt, sec)
+		} else {
+			fmt.Fprintln(os.Stderr, "--chain or --payload required")
+			return 2
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 5
@@ -223,6 +255,39 @@ func cmdEvidence(args []string) int {
 		}
 		ok, _ := evidence.VerifyDSSE(env, sec, nil)
 		fmt.Fprintf(os.Stderr, "wrote %s verified=%v\n", *out, ok)
+		return 0
+	case "verify-dsse":
+		fs := flag.NewFlagSet("verify-dsse", flag.ContinueOnError)
+		path := fs.String("envelope", "", "evidence-dsse.json")
+		_ = fs.Parse(args[1:])
+		if *path == "" {
+			return 2
+		}
+		raw, err := os.ReadFile(*path)
+		if err != nil {
+			return 2
+		}
+		var env evidence.DSSEEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return 2
+		}
+		sec := evidence.SecretFromEnv()
+		ok, err := evidence.VerifyDSSE(&env, sec, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 5
+		}
+		if !ok {
+			fmt.Fprintln(os.Stderr, "signature INVALID")
+			return 1
+		}
+		stmt, err := evidence.ParseStatement(&env)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "payload parse: %v\n", err)
+			return 1
+		}
+		fmt.Printf("signature OK keyId=%s changeId=%s baseline=%s change=%s\n",
+			stmt.KeyID, stmt.ChangeID, stmt.ChainDigests.BaselineDigest.Short(), stmt.ChainDigests.ChangeDigest.Short())
 		return 0
 	default:
 		return 2

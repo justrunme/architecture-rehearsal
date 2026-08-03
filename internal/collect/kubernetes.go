@@ -350,10 +350,87 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			}
 		}
 		attrs["replicas"] = replicas
+		// Live status for rollout_converged / unavailable pressure (v1.1)
+		if st, ok := obj["status"].(map[string]any); ok {
+			if v, ok := st["readyReplicas"]; ok {
+				attrs["readyReplicas"] = asInt(v)
+			}
+			if v, ok := st["availableReplicas"]; ok {
+				attrs["availableReplicas"] = asInt(v)
+			}
+			if v, ok := st["unavailableReplicas"]; ok {
+				attrs["unavailableReplicas"] = asInt(v)
+			}
+			if v, ok := st["updatedReplicas"]; ok {
+				attrs["updatedReplicas"] = asInt(v)
+			}
+			if v, ok := st["observedGeneration"]; ok {
+				attrs["observedGeneration"] = asInt(v)
+			}
+		}
 		addNode(snap, graph.Node{
 			ID: id, Kind: graph.KindWorkload, Name: name, Namespace: ns, Attributes: attrs,
 			Source: "kubernetes", SourceRef: kind + "/" + ns + "/" + name,
 		})
+	case "Event":
+		// Causal evidence often lives in Events (FailedCreatePodSandBox, FailedAttachVolume).
+		// Promote into meta event streams + annotate involved Pod when present.
+		reason, _ := obj["reason"].(string)
+		msg, _ := obj["message"].(string)
+		var involvedNS, involvedName, involvedKind string
+		if inv, ok := obj["involvedObject"].(map[string]any); ok {
+			involvedKind, _ = inv["kind"].(string)
+			involvedName, _ = inv["name"].(string)
+			involvedNS, _ = inv["namespace"].(string)
+			if involvedNS == "" {
+				involvedNS = ns
+			}
+		}
+		entry := map[string]any{
+			"reason": reason, "message": msg,
+			"kind": involvedKind, "name": involvedName, "namespace": involvedNS,
+		}
+		evs, _ := snap.Meta["k8s_events"].([]any)
+		snap.Meta["k8s_events"] = append(evs, entry)
+		// Promote CNI/RWO signals onto matching pods for verify predicates
+		if strings.EqualFold(involvedKind, "Pod") && involvedName != "" {
+			pid := fmt.Sprintf("pod/%s/%s", normalizeNS(map[string]any{"namespace": involvedNS}), involvedName)
+			for i := range snap.Nodes {
+				if snap.Nodes[i].ID != pid {
+					continue
+				}
+				if snap.Nodes[i].Attributes == nil {
+					snap.Nodes[i].Attributes = map[string]any{}
+				}
+				// Prefer event reason if pod status reason empty
+				if snap.Nodes[i].AttrString("reason") == "" && reason != "" {
+					snap.Nodes[i].Attributes["reason"] = reason
+				}
+				if msg != "" {
+					prev := snap.Nodes[i].AttrString("message")
+					if prev == "" {
+						snap.Nodes[i].Attributes["message"] = msg
+					} else {
+						snap.Nodes[i].Attributes["message"] = prev + " | " + msg
+					}
+				}
+				// Also stash event reasons list
+				var er []any
+				if raw, ok := snap.Nodes[i].Attributes["eventReasons"].([]any); ok {
+					er = raw
+				}
+				if reason != "" {
+					snap.Nodes[i].Attributes["eventReasons"] = append(er, reason)
+				}
+			}
+		}
+		// Aggregate CNI failure events for meta.cni_failure_events
+		blob := strings.ToLower(reason + " " + msg)
+		if strings.Contains(blob, "failedcreatepodsandbox") || strings.Contains(blob, "failed to assign") ||
+			strings.Contains(blob, "networkplugin") || strings.Contains(blob, "ipamd") {
+			raw, _ := snap.Meta["cni_failure_events"].([]any)
+			snap.Meta["cni_failure_events"] = append(raw, reason+": "+msg)
+		}
 	case "ReplicaSet":
 		// Record RS→Deployment mapping for ownerReferences resolution (not a graph Workload).
 		if owners := ownerRefs(meta); len(owners) > 0 {

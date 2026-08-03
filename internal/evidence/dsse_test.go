@@ -23,6 +23,9 @@ func TestDSSEHMAC(t *testing.T) {
 	}
 }
 
+// contract import used by statement test in same package file set
+var _ = contract.EmptyDigest
+
 func TestEd25519(t *testing.T) {
 	pub, priv, err := evidence.GenerateEd25519Keypair()
 	if err != nil {
