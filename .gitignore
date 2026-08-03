@@ -27,3 +27,9 @@ coverage.html
 .venv/
 __pycache__/
 *.pyc
+
+# local evidence / build
+out/
+out2/
+dist/
+internal/run/out/
