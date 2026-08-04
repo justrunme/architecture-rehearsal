@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.5.3 — 2026-08-04
+
+**Production hardening** — multi-arch OCI, Helm-in-Kind E2E, terminal evidence, version cleanup.
+
+### Release / OCI
+- GHCR images built with `docker/build-push-action` for **linux/amd64,linux/arm64**
+- Provenance/SBOM attestations disabled for clean multi-platform manifests
+
+### Kind E2E
+- Real **`helm upgrade --install`** (CRD + control plane + operator + RBAC + Secret)
+- Asserts terminal phase `Completed`, `Ready=True`, `decision=block`, non-empty `evidenceDigest`
+- Golden fixtures via chart `extraVolumes` / `extraVolumeMounts`
+- Still covers gen1→gen2, restart without duplicate job, 2 replicas + leader election
+
+### Packaging / docs
+- Chart/app version **1.5.3**; operator log stamp matches
+- README run ID documents UID: `{namespace}-{name}-{uid8}-g{generation}`
+- Standalone NetworkPolicy: removed `0.0.0.0/0`; example uses cluster service CIDR only
+
 ## 1.5.2 — 2026-08-03
 
 **Operator installation path** — Helm CRDs, GHCR push, real Kind E2E, install fixes.

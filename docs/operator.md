@@ -1,4 +1,4 @@
-# Kubernetes Operator (v1.5.2)
+# Kubernetes Operator (v1.5.3)
 
 The `rehearsal-operator` reconciles `RehearsalRun` CRs against the Architecture Rehearsal **control plane HTTP API**.
 
@@ -38,9 +38,9 @@ kubectl apply -k config/operator/
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$REHEARSAL_API_TOKEN" \
-  --set image.tag=1.5.2 \
+  --set image.tag=1.5.3 \
   --set operator.enabled=true \
-  --set operator.image.tag=1.5.2
+  --set operator.image.tag=1.5.3
 # CRD is installed from chart crds/ automatically
 kubectl get crd rehearsalruns.rehearsal.io
 ```

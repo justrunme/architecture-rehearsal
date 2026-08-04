@@ -113,6 +113,11 @@ func (e *Engine) ExecuteContext(ctx context.Context, r *RehearsalRun) error {
 }
 
 func (e *Engine) path(ref string) string {
+	// Empty must stay empty: Join(workDir, "") == workDir, which is a directory
+	// and breaks policy.Load / optional refs.
+	if ref == "" {
+		return ""
+	}
 	if filepath.IsAbs(ref) {
 		return ref
 	}

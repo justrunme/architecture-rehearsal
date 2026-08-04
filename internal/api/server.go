@@ -133,7 +133,7 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"version":       "1.5.2",
+		"version":       "1.5.3",
 		"apiVersion":    contract.APIVersionV1,
 		"product":       "architecture-rehearsal",
 		"schemaVersion": s.Backend.SchemaVersion(),
