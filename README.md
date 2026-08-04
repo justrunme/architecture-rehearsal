@@ -2,59 +2,133 @@
 
 **Know what breaks before you deploy — and prove whether you were right.**
 
-Self-hosted **deterministic pre-deployment failure simulation** and **post-deployment verification control plane**:
+Self-hosted **deterministic pre-deployment failure simulation** and **post-deployment verification control plane**.
+
+[![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
+**Status: v1.5.3 (flagship complete)** — multi-arch GHCR, Helm chart with CRDs, Kind operator E2E with terminal evidence.
+
+> Graph and rules decide. AI only explains (optional — never in the risk path).  
+> Missing data never becomes a false approve.  
+> Every production gate decision links to a content-addressed evidence chain.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Collect["1 · Collect"]
+    K8s[(Cluster dump)]
+    Base[baseline.json]
+    K8s --> Base
+  end
+
+  subgraph Model["2 · Model"]
+    Graph[Causal architecture graph]
+    Base --> Graph
+  end
+
+  subgraph Propose["3 · Propose"]
+    Change[change.json]
+  end
+
+  subgraph Rehearse["4 · Rehearse"]
+    Scenarios[Scenarios + impact]
+    Graph --> Scenarios
+    Change --> Scenarios
+  end
+
+  subgraph Gate["5 · Gate"]
+    Policy[Policy engine]
+    Dec{approve / warn / block / unknown}
+    Scenarios --> Policy --> Dec
+  end
+
+  subgraph Observe["6 · Observe"]
+    Obs[observed.json]
+  end
+
+  subgraph Verify["7 · Verify"]
+    V[Causal verify]
+    Obs --> V
+    Scenarios --> V
+  end
+
+  subgraph Calibrate["8 · Calibrate"]
+    C[Scenario accuracy]
+    V --> C
+  end
+
+  Dec -->|deploy allowed| Observe
+  V --> Evidence[(Evidence chain + digests)]
+```
+
+**Pipeline (short form):**
 
 ```text
 Collect → Model → Propose → Rehearse → Gate → Observe → Verify → Calibrate
 ```
 
-> **Graph and rules decide. AI only explains** (optional — not in risk path).  
-> **Missing data never becomes a false approve.**  
-> **Every production gate decision links to a content-addressed evidence chain.**
-
-[![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-
-**Status: v1.5.3 (flagship complete)** — deterministic change-safety control plane + installable K8s operator.  
-
-> Architecture Rehearsal is a deterministic Kubernetes change-safety control plane that predicts deployment failures, enforces policy gates, verifies production outcomes, and produces cryptographically bound evidence.
-
-Evidence integrity + secure API + trust boundaries required for production.  
-**v1.0.0 network API was unsafe** — use ≥1.0.1 for any networked `serve`.
-
 ---
 
-## Product positioning
+## Architecture
 
-> Architecture Rehearsal is a deterministic pre-deployment failure simulation and post-deployment verification control plane. It builds a causal architecture graph, predicts change impact, blocks unsafe deployments, verifies observed outcomes, and continuously measures the accuracy of its own scenarios.
+```mermaid
+flowchart TB
+  subgraph Clients
+    CLI[rehearsal CLI]
+    CI[CI / GitOps]
+    CR[RehearsalRun CR]
+  end
 
----
+  subgraph Cluster
+    OP[rehearsal-operator<br/>controller-runtime]
+    CP[control plane serve<br/>HTTP API + workers]
+    SQL[(SQLite / Postgres)]
+    Blob[(Content-addressed blobs)]
+    CR --> OP
+    OP -->|"REHEARSAL_API_URL + token<br/>(Deployment only)"| CP
+    CLI --> CP
+    CI --> CP
+    CP --> SQL
+    CP --> Blob
+  end
 
-## Capability matrix (honest)
+  subgraph Outputs
+    Report[Impact report]
+    Chain[Evidence chain / DSSE]
+    Status[CR status · jobId · evidenceDigest]
+    OP --> Status
+    CP --> Report
+    CP --> Chain
+  end
+```
 
-| Area | Status |
-| ---- | ------ |
-| Offline K8s graph collect + edges | **Supported** |
-| Fail-closed YAML | **Supported** |
-| Causal verify (no global Pending free-pass) | **Supported** (v0.7.2+) |
-| Evidence digests + chain | **Supported** (v0.8+) |
-| DSSE-style sign (HMAC / Ed25519) | **Supported** (not full Sigstore) |
-| RehearsalRun lifecycle + operator loop | **Supported** (offline JSON CRDs) |
-| GitOps policy gate | **Supported** (policy engine + GH reference) |
-| Control plane HTTP API | **Supported** (token + optional OIDC/JWKS) |
-| Durable SQL store | **Supported** (SQLite + Postgres; versioned migrations) |
-| Content-addressed blobs | **Supported** (local FS); **Reference** MinIO path-style (`REHEARSAL_S3_*`, not full AWS SigV4) |
-| Async jobs + fencing + cancel/retry API | **Supported** |
-| Job / Audit APIs | **Supported** (v1.3+) |
-| Hierarchical RBAC + bearer auth | **Supported** (org-scoped) |
-| GitHub/GitLab commit status | **Supported** (`rehearsal status`) |
-| GitOps full admission gate | **Reference** workflow + adapters |
-| Calibration engine | **Supported** (org-scoped SQL) |
-| Operator JSON CR ↔ control plane | **Supported** (`operator --api`) |
-| Live controller-runtime operator | **Supported** (v1.5.3: multi-arch GHCR, Helm-in-Kind E2E, terminal evidence; URL/token deployment-only) |
-| Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
-| LLM in risk path | **Not supported** |
+### Operator trust boundary
+
+```mermaid
+flowchart LR
+  User[User with create CR] -->|spec: baseline / change only| CR[RehearsalRun]
+  CR --> OP[Operator]
+  Deploy[Operator Deployment] -->|REHEARSAL_API_URL| OP
+  Secret[Secret] -->|REHEARSAL_API_TOKEN| OP
+  OP -->|Bearer token| API[Control plane]
+
+  style User fill:#fee,stroke:#c33
+  style Deploy fill:#efe,stroke:#3a3
+  style Secret fill:#efe,stroke:#3a3
+```
+
+| Source | API URL | Token |
+| ------ | ------- | ----- |
+| Operator Deployment / Secret | **Yes** | **Yes** |
+| `RehearsalRun` CR | **Never** (field removed in v1.5.1) | **Never** |
+
+Run identity: `{namespace}-{name}-{uid8}-g{generation}` — Spec changes create a new run; delete/recreate does not collide with old generations.
 
 ---
 
@@ -81,11 +155,10 @@ make build && ./bin/rehearsal version   # 1.5.3
 ./bin/rehearsal verify --report out/latest-report.json --observed observed.json \
   --baseline baseline.json --change change.json
 
-# evidence chain (also written automatically by analyze as out/*/evidence-chain.json)
+# evidence chain (also written by analyze as out/*/evidence-chain.json)
 ./bin/rehearsal evidence chain --baseline baseline.json --change change.json \
   --report out/latest-report.json --observed observed.json --out out/chain.json
 
-# sign & verify DSSE (requires REHEARSAL_HMAC_SECRET)
 export REHEARSAL_HMAC_SECRET="$(openssl rand -hex 32)"
 ./bin/rehearsal evidence sign-dsse --chain out/latest-chain.json --out out/evidence-dsse.json
 ./bin/rehearsal evidence verify-dsse --envelope out/evidence-dsse.json
@@ -99,60 +172,64 @@ export REHEARSAL_HMAC_SECRET="$(openssl rand -hex 32)"
   --out out/run.json
 ```
 
-### Control plane API (v1.2.1)
+### Control plane API
 
 ```bash
-# REQUIRED: strong token + workspace root (serve refuses without either)
 export REHEARSAL_API_TOKEN="$(openssl rand -hex 32)"
 export REHEARSAL_API_ORG=my-org
 
-# Durable default: SQLite + local blobs under workdir (mandatory --workdir)
 ./bin/rehearsal serve --addr :8080 --workdir "$PWD" \
   --db "$PWD/data/rehearsal.db" --blob "$PWD/data/blobs" --async --workers 2
 
-# Postgres (REHEARSAL_DATABASE_URL always wins over --db):
-# export REHEARSAL_DATABASE_URL='postgres://user:pass@localhost/rehearsal'
-# ./bin/rehearsal serve --workdir "$PWD" --async
-
 curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/version
 curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:8080/v1/metrics
-
-# non-durable local only (still needs --workdir):
-# ./bin/rehearsal serve --memory --insecure-dev --addr :8080 --workdir "$PWD"
 ```
 
-**GitOps status:** `integrations/github-actions/gate.yml` is a **Reference** skeleton (not a full PR gate yet).
+Postgres: set `REHEARSAL_DATABASE_URL` (always wins over `--db`).  
+Non-durable local only: `serve --memory --insecure-dev` (still needs `--workdir`).
 
-### Helm
+### Helm + operator
 
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
   --set image.tag=1.5.3 \
-  --set operator.enabled=true
-# CRD installs from chart crds/; operator NetworkPolicy off by default
-# operator REHEARSAL_API_URL is deployment-only — never set on RehearsalRun CR
+  --set operator.enabled=true \
+  --set operator.image.tag=1.5.3
+# CRD from chart crds/; NetworkPolicy off by default
+kubectl get crd rehearsalruns.rehearsal.io
 ```
 
-### Kubernetes operator (v1.5.3)
+Images (multi-arch `linux/amd64` + `linux/arm64`):
 
-Full docs: [docs/operator.md](docs/operator.md) · security: [docs/operator-security.md](docs/operator-security.md) · example: [examples/operator/rehearsalrun.yaml](examples/operator/rehearsalrun.yaml)
+- `ghcr.io/justrunme/architecture-rehearsal:1.5.3`
+- `ghcr.io/justrunme/architecture-rehearsal-operator:1.5.3`
 
-```bash
-kubectl apply -f config/crd/rehearsal.io_rehearsalruns.yaml
-kubectl create secret generic rehearsal-operator-token --from-literal=token="$REHEARSAL_API_TOKEN"
-kubectl apply -k config/operator/
+Manifests: `kubectl apply -k config/operator/` · docs: [docs/operator.md](docs/operator.md) · security: [docs/operator-security.md](docs/operator-security.md).
 
-# Helm opt-in (default operator.enabled=false):
-# helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
-#   --set api.token=... --set operator.enabled=true --set image.tag=1.5.3
-```
+---
 
-**Trust boundary:** `REHEARSAL_API_URL` / token only from operator Deployment/Secret.  
-`spec.controlPlaneURL` was removed — CRs cannot redirect the operator or steal the token.
+## Capability matrix
 
-**Generation:** run id is `{namespace}-{name}-{uid8}-g{generation}` — Spec changes create a new control-plane run; delete/recreate does not collide.
-
+| Area | Status |
+| ---- | ------ |
+| Offline K8s graph collect + edges | **Supported** |
+| Fail-closed YAML | **Supported** |
+| Causal verify (no global Pending free-pass) | **Supported** |
+| Evidence digests + chain | **Supported** |
+| DSSE-style sign (HMAC / Ed25519) | **Supported** (not full Sigstore) |
+| RehearsalRun lifecycle + async jobs | **Supported** |
+| Policy gate (approve/warn/block/unknown) | **Supported** |
+| Control plane HTTP API | **Supported** (token + optional OIDC/JWKS) |
+| Durable SQL store | **Supported** (SQLite + Postgres) |
+| Content-addressed blobs | **Supported** (local FS); S3 path-style reference |
+| Job / Audit APIs | **Supported** |
+| Hierarchical RBAC + bearer auth | **Supported** (org-scoped) |
+| GitHub/GitLab commit status | **Supported** (`rehearsal status`) |
+| Calibration engine | **Supported** (org-scoped SQL) |
+| Live controller-runtime operator | **Supported** (Helm CRDs, multi-arch GHCR, Kind E2E) |
+| Multi-tenant SaaS | **Not supported** (self-hosted multi-org yes) |
+| LLM in risk path | **Not supported** |
 
 ---
 
@@ -169,13 +246,21 @@ kubectl apply -k config/operator/
 
 ---
 
-## Docs
+## Documentation
 
-- [API](docs/api.md)
-- [SLO](docs/slo.md)
-- [Threat model](docs/threat-model.md)
-- [Operations](docs/runbooks/operations.md)
-- [CHANGELOG](CHANGELOG.md)
+| Doc | Description |
+| --- | ----------- |
+| [docs/README.md](docs/README.md) | Documentation index |
+| [docs/operator.md](docs/operator.md) | Kubernetes operator install & status |
+| [docs/operator-security.md](docs/operator-security.md) | Trust boundary & least privilege |
+| [docs/api.md](docs/api.md) | Control plane HTTP API |
+| [docs/threat-model.md](docs/threat-model.md) | Threat model |
+| [docs/security.md](docs/security.md) | Security notes |
+| [docs/slo.md](docs/slo.md) | Service level objectives |
+| [docs/runbooks/operations.md](docs/runbooks/operations.md) | Ops runbooks |
+| [docs/upgrade.md](docs/upgrade.md) | Upgrade notes |
+| [docs/adr/0001-decision-model.md](docs/adr/0001-decision-model.md) | Decision model ADR |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ---
 

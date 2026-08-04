@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Architecture Rehearsal v1.0.
+Accepted for Architecture Rehearsal v1.0+ (still current in v1.5.3).
 
 ## Context
 
@@ -12,14 +12,24 @@ A change gate that only returns approve/block will **false-approve** when the gr
 
 Four outcomes:
 
-| Decision | Meaning |
-| -------- | ------- |
-| `approve` | No matched high-risk patterns; required coverage present |
-| `warn` | Medium risk findings |
-| `block` | High/critical findings with evidence |
-| `unknown` | Required data missing — **not safe to approve** |
+```mermaid
+flowchart TD
+  In[Impact + coverage] --> Q{Required facts present?}
+  Q -->|no| U[unknown · exit 4]
+  Q -->|yes| R{Risk / findings}
+  R -->|high / critical| B[block · exit 3]
+  R -->|medium| W[warn · exit 1]
+  R -->|none| A[approve · exit 0]
+```
 
-Exit codes: 0 / 1 / 3 / 4 respectively (2 = validation, 5 = internal).
+| Decision | Meaning | Exit |
+| -------- | ------- | ---: |
+| `approve` | No matched high-risk patterns; required coverage present | 0 |
+| `warn` | Medium risk findings | 1 |
+| `block` | High/critical findings with evidence | 3 |
+| `unknown` | Required data missing — **not safe to approve** | 4 |
+
+Also: exit `2` = validation/authz, `5` = internal error.
 
 ## Rule
 
@@ -27,4 +37,5 @@ Exit codes: 0 / 1 / 3 / 4 respectively (2 = validation, 5 = internal).
 
 ## Consequences
 
-CI must treat exit 4 as a failing gate (or explicit allow_failure policy). Operators fix collectors/RBAC rather than ignoring unknown.
+CI must treat exit 4 as a failing gate (or explicit `allow_failure` policy).  
+Operators fix collectors/RBAC rather than ignoring `unknown`.
