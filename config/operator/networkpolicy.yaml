@@ -1,6 +1,12 @@
-# OPTIONAL — not applied by kustomization by default (breaks API watch without API CIDR).
+# OPTIONAL — not applied by kustomization by default.
 # Enable only after setting kube API server CIDRs for your cluster.
-# kubectl apply -f networkpolicy.yaml  # after editing ipBlock
+# Without an API CIDR rule the operator cannot watch CRs / update status / elect leader.
+#
+# Discover apiserver endpoints:
+#   kubectl get endpoints kubernetes -n default -o yaml
+#   kubectl get svc kubernetes -n default -o jsonpath='{.spec.clusterIP}'
+#
+# kubectl apply -f networkpolicy.yaml  # after editing ipBlock below
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -13,6 +19,7 @@ spec:
       app.kubernetes.io/name: rehearsal-operator
   policyTypes: [Egress]
   egress:
+    # Control plane HTTP API
     - to:
         - podSelector:
             matchLabels:
@@ -20,15 +27,17 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
-    # REPLACE with your apiserver address(es), e.g. from `kubectl get endpoints kubernetes`
+    # Kubernetes API — set your cluster CIDR(s). Never use 0.0.0.0/0.
+    # Example for Kind default service IP (verify on your cluster first):
     - to:
         - ipBlock:
-            cidr: 0.0.0.0/0 # DANGEROUS placeholder — replace with real API CIDR
+            cidr: 10.96.0.1/32
       ports:
         - protocol: TCP
           port: 443
         - protocol: TCP
           port: 6443
+    # CoreDNS
     - to:
         - namespaceSelector:
             matchLabels:

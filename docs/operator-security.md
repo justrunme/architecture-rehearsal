@@ -1,4 +1,4 @@
-# Operator security model (v1.5.1)
+# Operator security model (v1.5.1+)
 
 ## Threat: token exfiltration via CR
 
