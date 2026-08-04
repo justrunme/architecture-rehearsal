@@ -52,6 +52,7 @@ kubectl create configmap rehearsal-fixtures \
 
 echo "==> helm upgrade --install $RELEASE (chart CRD + control plane + operator)"
 # Workdir defaults to /var/lib/rehearsal; mount golden fixtures under it.
+# Apply without --wait so we can dump pods if readiness fails.
 helm upgrade --install "$RELEASE" deploy/helm/architecture-rehearsal \
   --namespace "$NS" \
   --set api.token="$TOKEN" \
@@ -70,19 +71,19 @@ helm upgrade --install "$RELEASE" deploy/helm/architecture-rehearsal \
   --set operator.image.tag=e2e \
   --set operator.image.pullPolicy=Never \
   --set-json 'extraVolumes=[{"name":"fixtures","configMap":{"name":"rehearsal-fixtures"}}]' \
-  --set-json 'extraVolumeMounts=[
-    {"name":"fixtures","mountPath":"/var/lib/rehearsal/baseline.json","subPath":"baseline.json"},
-    {"name":"fixtures","mountPath":"/var/lib/rehearsal/change.json","subPath":"change.json"},
-    {"name":"fixtures","mountPath":"/var/lib/rehearsal/change2.json","subPath":"change2.json"}
-  ]' \
-  --wait --timeout 5m
+  --set-json 'extraVolumeMounts=[{"name":"fixtures","mountPath":"/var/lib/rehearsal/baseline.json","subPath":"baseline.json"},{"name":"fixtures","mountPath":"/var/lib/rehearsal/change.json","subPath":"change.json"},{"name":"fixtures","mountPath":"/var/lib/rehearsal/change2.json","subPath":"change2.json"}]'
 
 echo "==> verify Helm installed CRD + resources"
 kubectl get crd rehearsalruns.rehearsal.io
-kubectl get deploy -l app.kubernetes.io/name=architecture-rehearsal
-kubectl get deploy -l app.kubernetes.io/name=rehearsal-operator
-kubectl wait --for=condition=available deploy -l app.kubernetes.io/name=architecture-rehearsal --timeout=180s
-kubectl wait --for=condition=available deploy -l app.kubernetes.io/name=rehearsal-operator --timeout=180s
+kubectl get deploy,pods,svc -o wide
+if ! kubectl wait --for=condition=available deploy -l app.kubernetes.io/name=architecture-rehearsal --timeout=180s; then
+  dump
+  exit 1
+fi
+if ! kubectl wait --for=condition=available deploy -l app.kubernetes.io/name=rehearsal-operator --timeout=180s; then
+  dump
+  exit 1
+fi
 
 echo "==> create RehearsalRun gen1 (golden rwo-node-loss → expect decision=block)"
 kubectl apply -f - <<'EOF'

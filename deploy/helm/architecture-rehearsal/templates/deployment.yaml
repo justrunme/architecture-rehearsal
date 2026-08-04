@@ -20,7 +20,10 @@ spec:
       serviceAccountName: {{ include "architecture-rehearsal.serviceAccountName" . }}
       securityContext:
         runAsNonRoot: true
-        fsGroup: 1000
+        # distroless/static:nonroot
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
