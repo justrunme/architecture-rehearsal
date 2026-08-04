@@ -25,7 +25,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: manager
-          image: ghcr.io/justrunme/architecture-rehearsal-operator:1.5.2
+          image: ghcr.io/justrunme/architecture-rehearsal-operator:1.5.3
           imagePullPolicy: IfNotPresent
           args:
             - --leader-elect=true
