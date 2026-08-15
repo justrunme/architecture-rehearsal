@@ -11,20 +11,17 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      minio:
-        image: minio/minio
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        ports:
-          - 9000:9000
-        command: server /data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
+      - name: Start MinIO service
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e "MINIO_ROOT_USER=minioadmin" \
+            -e "MINIO_ROOT_PASSWORD=minioadmin" \
+            minio/minio server /data
       - name: Vet
         run: go vet ./...
       - name: Test

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -115,7 +114,6 @@ func (s *Server) wrap(h http.HandlerFunc) http.HandlerFunc {
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.reqErrors.Add(1)
-				log.Printf("panic recovered method=%s path=%s panic=%v", r.Method, r.URL.Path, rec)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()
