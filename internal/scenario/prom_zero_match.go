@@ -66,10 +66,10 @@ func (r PromZeroMatch) Evaluate(ctx Context) Result {
 	}
 	return Result{Outcome: OutcomeMatched, Findings: []Finding{{
 		ID: r.Name(), Scenario: r.Name(), Risk: "high",
-		Title: "Alert rule matches zero observed series",
-		Summary: fmt.Sprintf("Selectors do not match observed schema for metric %q; expected coverage 0%%. expr=%s", metric, truncate(expr, 100)),
+		Title:      "Alert rule matches zero observed series",
+		Summary:    fmt.Sprintf("Selectors do not match observed schema for metric %q; expected coverage 0%%. expr=%s", metric, truncate(expr, 100)),
 		Components: ch.Seeds, Cascade: []string{"rule deploys", "matches zero series", "alert never fires"},
-		Controls: []string{"validate metric-specific labels before merge", "series-coverage CI check"},
+		Controls:  []string{"validate metric-specific labels before merge", "series-coverage CI check"},
 		SLOImpact: "monitoring gap", Evidence: missing, Rollback: RollbackAvailable, Confidence: "high",
 	}}}
 }

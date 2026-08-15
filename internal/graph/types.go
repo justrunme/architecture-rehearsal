@@ -37,12 +37,12 @@ type Snapshot struct {
 
 // ClusterInfo describes collection context.
 type ClusterInfo struct {
-	Name            string    `json:"name,omitempty"`
-	UID             string    `json:"uid,omitempty"`
-	ServerVersion   string    `json:"serverVersion,omitempty"`
-	CollectedFrom   time.Time `json:"collectedFrom,omitempty"`
-	CollectedUntil  time.Time `json:"collectedUntil,omitempty"`
-	CollectorVersion string   `json:"collectorVersion,omitempty"`
+	Name             string    `json:"name,omitempty"`
+	UID              string    `json:"uid,omitempty"`
+	ServerVersion    string    `json:"serverVersion,omitempty"`
+	CollectedFrom    time.Time `json:"collectedFrom,omitempty"`
+	CollectedUntil   time.Time `json:"collectedUntil,omitempty"`
+	CollectorVersion string    `json:"collectorVersion,omitempty"`
 }
 
 // Phase situates the snapshot in the change lifecycle.
@@ -90,18 +90,18 @@ var KnownKinds = map[Kind]bool{
 type Relation string
 
 const (
-	RelDependsOn     Relation = "DEPENDS_ON"
-	RelRunsOn        Relation = "RUNS_ON"
-	RelProtectedBy   Relation = "PROTECTED_BY"
-	RelObservedBy    Relation = "OBSERVED_BY"
-	RelOwnedBy       Relation = "OWNED_BY"
-	RelDeployedWith  Relation = "DEPLOYED_WITH"
-	RelBindsVolume   Relation = "BINDS_VOLUME"
-	RelSchedulesOn   Relation = "SCHEDULES_ON"
-	RelRoutesTo      Relation = "ROUTES_TO"
-	RelScales        Relation = "SCALES"
-	RelUsesIdentity  Relation = "USES_IDENTITY"
-	RelOwns          Relation = "OWNS"
+	RelDependsOn    Relation = "DEPENDS_ON"
+	RelRunsOn       Relation = "RUNS_ON"
+	RelProtectedBy  Relation = "PROTECTED_BY"
+	RelObservedBy   Relation = "OBSERVED_BY"
+	RelOwnedBy      Relation = "OWNED_BY"
+	RelDeployedWith Relation = "DEPLOYED_WITH"
+	RelBindsVolume  Relation = "BINDS_VOLUME"
+	RelSchedulesOn  Relation = "SCHEDULES_ON"
+	RelRoutesTo     Relation = "ROUTES_TO"
+	RelScales       Relation = "SCALES"
+	RelUsesIdentity Relation = "USES_IDENTITY"
+	RelOwns         Relation = "OWNS"
 )
 
 // KnownRelations for validation.

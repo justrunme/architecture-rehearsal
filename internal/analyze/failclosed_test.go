@@ -61,8 +61,8 @@ func TestBaselineCoverageGapUnknown(t *testing.T) {
 				Attributes: map[string]any{"replicas": 1}},
 		},
 		Meta: map[string]any{
-			"coverage_gap":       "yaml_parse_errors_present",
-			"yaml_parse_errors":  1,
+			"coverage_gap":              "yaml_parse_errors_present",
+			"yaml_parse_errors":         1,
 			"pod_ip_capacity_available": 50,
 		},
 	}

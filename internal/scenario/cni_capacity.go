@@ -121,7 +121,7 @@ func (r CNICapacity) Evaluate(ctx Context) Result {
 			fmt.Sprintf("requested_ips=%d available=%d deficit=%d", requested, available, deficit),
 			"IP exhaustion → FailedCreatePodSandbox → readiness timeout → Helm pending-install",
 		},
-		Controls: []string{"increase max-pods / prefix delegation", "add nodes", "reduce maxSurge"},
+		Controls:  []string{"increase max-pods / prefix delegation", "add nodes", "reduce maxSurge"},
 		SLOImpact: "rollout latency", Evidence: []string{
 			fmt.Sprintf("baseline_replicas=%d", baseRep), fmt.Sprintf("proposed_replicas=%d", propRep),
 			fmt.Sprintf("surge=%d", surge), fmt.Sprintf("available=%d", available),

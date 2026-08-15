@@ -33,10 +33,10 @@ const (
 
 // Coverage summarizes domain completeness (not an AI score).
 type Coverage struct {
-	Overall        float64            `json:"overall"`
-	Domains        map[string]float64 `json:"domains,omitempty"`
-	RequiredMissing []string          `json:"requiredMissing,omitempty"`
-	Gaps           []string           `json:"gaps,omitempty"`
+	Overall         float64            `json:"overall"`
+	Domains         map[string]float64 `json:"domains,omitempty"`
+	RequiredMissing []string           `json:"requiredMissing,omitempty"`
+	Gaps            []string           `json:"gaps,omitempty"`
 }
 
 // Report is the full analyze output.

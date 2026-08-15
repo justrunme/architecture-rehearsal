@@ -47,13 +47,13 @@ func CloneSnapshot(s *Snapshot) *Snapshot {
 		return nil
 	}
 	out := &Snapshot{
-		ID:        s.ID,
-		Name:      s.Name,
-		Source:    s.Source,
-		Phase:     s.Phase,
-		CreatedAt: s.CreatedAt,
-		Labels:    map[string]string{},
-		Meta:      CloneMap(s.Meta),
+		ID:         s.ID,
+		Name:       s.Name,
+		Source:     s.Source,
+		Phase:      s.Phase,
+		CreatedAt:  s.CreatedAt,
+		Labels:     map[string]string{},
+		Meta:       CloneMap(s.Meta),
 		APIVersion: s.APIVersion,
 		Kind:       s.Kind,
 	}

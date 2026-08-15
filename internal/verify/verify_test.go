@@ -196,7 +196,7 @@ func TestUndeployedReplicaPatchFailsIdentity(t *testing.T) {
 	}
 	// Still at 6 — change not applied
 	obs := &graph.Snapshot{
-		ID: "obs",
+		ID:   "obs",
 		Meta: map[string]any{"cni_ip_available": 0},
 		Nodes: []graph.Node{
 			{ID: "workload/payments/api", Kind: graph.KindWorkload, Name: "api", Namespace: "payments",
@@ -225,7 +225,7 @@ func TestPromMatchCountMustBeZero(t *testing.T) {
 	base := &graph.Snapshot{ID: "b"}
 	ch := &loader.ChangeEnvelope{ID: "p"}
 	obs := &graph.Snapshot{
-		ID: "obs",
+		ID:   "obs",
 		Meta: map[string]any{"metric_match_count": 100},
 	}
 	res := verify.RunWithOptions(pred, obs, verify.Options{Baseline: base, Change: ch})
@@ -253,7 +253,7 @@ func TestLegacyWithoutBaselineCapsInconclusive(t *testing.T) {
 		Findings: []scenario.Finding{{Scenario: "cni-ip-capacity", Components: []string{"workload/payments/api"}}},
 	}
 	obs := &graph.Snapshot{
-		ID: "obs",
+		ID:   "obs",
 		Meta: map[string]any{"cni_ip_available": 0},
 		Nodes: []graph.Node{
 			{ID: "workload/payments/api", Kind: graph.KindWorkload, Name: "api", Namespace: "payments"},
@@ -290,7 +290,7 @@ func TestChangeIdentityAppliedAndConverged(t *testing.T) {
 		}},
 	}
 	obs := &graph.Snapshot{
-		ID: "obs",
+		ID:   "obs",
 		Meta: map[string]any{"cni_ip_available": 0},
 		Nodes: []graph.Node{
 			{ID: "workload/payments/api", Kind: graph.KindWorkload, Name: "api", Namespace: "payments",
@@ -370,7 +370,7 @@ func TestOperatorAnnotationIsSoftOnly(t *testing.T) {
 		PredictedFailures: []string{"cni-ip-capacity"},
 	}
 	obs := &graph.Snapshot{
-		ID: "obs",
+		ID:   "obs",
 		Meta: map[string]any{"observed_failures": []any{"cni-ip-capacity"}},
 		Nodes: []graph.Node{
 			{ID: "workload/payments/api", Kind: graph.KindWorkload, Name: "api", Namespace: "payments",

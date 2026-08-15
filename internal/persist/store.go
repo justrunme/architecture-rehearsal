@@ -29,7 +29,7 @@ type Cluster struct {
 // Store is the durable control-plane repository.
 type Store struct {
 	db      *sql.DB
-	Blob    Blob // filesystem or S3-compatible
+	Blob    Blob   // filesystem or S3-compatible
 	dialect string // sqlite|postgres
 }
 
@@ -53,7 +53,7 @@ func Open(dsn string, blobRoot string) (*Store, error) {
 		if dir := filepath.Dir(dsn); dir != "." && dir != "" {
 			_ = os.MkdirAll(dir, 0o755)
 		}
-		openDSN = "file:" + dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+		openDSN = "file:" + dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
 	}
 
 	db, err := sql.Open(driver, openDSN)
@@ -703,10 +703,12 @@ func (s *Store) ClaimJob(ctx context.Context, holder string, ttl time.Duration) 
 	var j Job
 	var payload sql.NullString
 	var op sql.NullString
-	err = tx.QueryRow(s.rebind(`
-SELECT id, kind, run_id, org, status, attempts, max_attempts, fence_token, COALESCE(payload,''), COALESCE(last_error,''), COALESCE(operation_id,'')
-FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1
-`)).Scan(&j.ID, &j.Kind, &j.RunID, &j.Org, &j.Status, &j.Attempts, &j.MaxAttempts, &j.FenceToken, &payload, &j.LastError, &op)
+	claimSQL := `SELECT id, kind, run_id, org, status, attempts, max_attempts, fence_token, COALESCE(payload,''), COALESCE(last_error,''), COALESCE(operation_id,'')
+FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1`
+	if s.dialect == "postgres" {
+		claimSQL += " FOR UPDATE SKIP LOCKED"
+	}
+	err = tx.QueryRow(s.rebind(claimSQL)).Scan(&j.ID, &j.Kind, &j.RunID, &j.Org, &j.Status, &j.Attempts, &j.MaxAttempts, &j.FenceToken, &payload, &j.LastError, &op)
 	if err == sql.ErrNoRows {
 		_ = tx.Commit()
 		return nil, nil

@@ -118,10 +118,10 @@ func (r RWONodeLoss) Evaluate(ctx Context) Result {
 		}
 		findings = append(findings, Finding{
 			ID: "rwo-node-loss:" + pvc.ID, Scenario: r.Name(), Risk: risk,
-			Title: "Stateful service unavailable after node loss (RWO volume)",
-			Summary: fmt.Sprintf("PVC %s (RWO) bound to %s cannot reattach after node loss.", pvc.Name, display(idx, lostNode)),
+			Title:      "Stateful service unavailable after node loss (RWO volume)",
+			Summary:    fmt.Sprintf("PVC %s (RWO) bound to %s cannot reattach after node loss.", pvc.Name, display(idx, lostNode)),
 			Components: unique(comps), Cascade: cascade,
-			Controls: []string{"validate detach/attach path", "reserve same-AZ capacity", "prepare rollback window"},
+			Controls:  []string{"validate detach/attach path", "reserve same-AZ capacity", "prepare rollback window"},
 			SLOImpact: "availability SLO at risk", Evidence: []string{"accessMode=RWO", "boundNode=" + boundNode},
 			Rollback: rb, Confidence: "high",
 		})

@@ -111,6 +111,12 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) wrap(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.reqTotal.Add(1)
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.reqErrors.Add(1)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
 		h(w, r)
 	}
 }
@@ -642,8 +648,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, actor authn.P
 type handlerFunc func(http.ResponseWriter, *http.Request, authn.Principal)
 
 func (s *Server) withAuth(action authz.Action, next handlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		s.reqTotal.Add(1)
+	return s.wrap(func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.AuthN.Authenticate(r)
 		if err != nil {
 			s.reqErrors.Add(1)
@@ -657,7 +662,7 @@ func (s *Server) withAuth(action authz.Action, next handlerFunc) http.HandlerFun
 			return
 		}
 		next(w, r, p)
-	}
+	})
 }
 
 func resourceFromRun(rr *run.RehearsalRun) authz.Resource {

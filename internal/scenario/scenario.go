@@ -24,7 +24,7 @@ type Requirement struct {
 
 // Result is a structured scenario evaluation.
 type Result struct {
-	Outcome  string    // matched | not_matched | unknown
+	Outcome  string // matched | not_matched | unknown
 	Findings []Finding
 	Missing  []Requirement
 }

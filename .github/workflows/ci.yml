@@ -11,6 +11,15 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      minio:
+        image: minio/minio
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: server /data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

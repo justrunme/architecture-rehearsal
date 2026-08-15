@@ -14,7 +14,7 @@ import (
 type MemoryBackend struct {
 	mu       sync.RWMutex
 	runs     map[string]*run.RehearsalRun // key: org+"\x00"+id
-	idem     map[string]string           // key: org+"\x00"+key → run id
+	idem     map[string]string            // key: org+"\x00"+key → run id
 	clusters map[string]Cluster
 	policies map[string]map[string]any
 	audit    []AuditEntry
@@ -47,7 +47,7 @@ func NewMemoryBackend() *MemoryBackend {
 	}
 }
 
-func runKey(org, id string) string { return org + "\x00" + id }
+func runKey(org, id string) string   { return org + "\x00" + id }
 func idemKey(org, key string) string { return org + "\x00" + key }
 
 func (s *MemoryBackend) CreateRun(r *run.RehearsalRun) error {
