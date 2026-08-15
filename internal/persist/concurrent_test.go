@@ -2,6 +2,8 @@ package persist_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/justrunme/architecture-rehearsal/internal/persist"
 	"github.com/justrunme/architecture-rehearsal/internal/run"
+	_ "modernc.org/sqlite"
 )
 
 func TestConcurrentWorkersClaimOnce(t *testing.T) {
@@ -167,7 +170,13 @@ func TestBackupSQLite_ConcurrentWrites(t *testing.T) {
 			continue
 		}
 
-		// Check PRAGMA integrity_check via raw SQLite query and store methods
+		if err := sqliteIntegrityCheck(bakPath); err != nil {
+			corruptCount++
+			t.Logf("Backup %d failed PRAGMA integrity_check: %v", b, err)
+			_ = bakStore.Close()
+			continue
+		}
+
 		runs, errList := bakStore.ListRuns("test-org")
 		jobs, errJobs := bakStore.ListJobs("test-org", "", 100)
 		_ = bakStore.Close()
@@ -226,6 +235,24 @@ func TestBackupSQLite_EdgeCases(t *testing.T) {
 	if err := s.BackupSQLite(dbPath, ""); err == nil {
 		t.Fatalf("expected error for empty destPath, got nil")
 	}
+}
+
+// sqliteIntegrityCheck runs PRAGMA integrity_check against a backup file without
+// expanding the production Store API.
+func sqliteIntegrityCheck(path string) error {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var result string
+	if err := db.QueryRow("PRAGMA integrity_check").Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("integrity_check=%q", result)
+	}
+	return nil
 }
 
 func checkMinIOOnline(t *testing.T) {

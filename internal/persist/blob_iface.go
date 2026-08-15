@@ -51,12 +51,9 @@ func (b *BlobStore) Ready() error {
 
 // S3Blob is a minimal S3-compatible (path-style) content-addressed store.
 type S3Blob struct {
-	Endpoint  string
-	Bucket    string
-	AccessKey string
-	SecretKey string
-	Client    *http.Client
-	s3Client  *s3.Client
+	Endpoint string
+	Bucket   string
+	s3Client *s3.Client
 }
 
 // NewS3Blob constructs an S3-compatible blob backend using official AWS SDK v2.
@@ -65,22 +62,18 @@ func NewS3Blob(endpoint, bucket, access, secret string) (*S3Blob, error) {
 		return nil, fmt.Errorf("s3 endpoint and bucket required")
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
-	httpClient := &http.Client{Timeout: 60 * time.Second}
 	opts := s3.Options{
 		Region:       "us-east-1",
 		Credentials:  credentials.NewStaticCredentialsProvider(access, secret, ""),
 		UsePathStyle: true,
 		BaseEndpoint: aws.String(endpoint),
-		HTTPClient:   httpClient,
+		HTTPClient:   &http.Client{Timeout: 60 * time.Second},
 	}
 	client := s3.New(opts)
 	return &S3Blob{
-		Endpoint:  endpoint,
-		Bucket:    bucket,
-		AccessKey: access,
-		SecretKey: secret,
-		Client:    httpClient,
-		s3Client:  client,
+		Endpoint: endpoint,
+		Bucket:   bucket,
+		s3Client: client,
 	}, nil
 }
 

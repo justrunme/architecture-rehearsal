@@ -19,7 +19,7 @@ jobs:
           MINIO_ROOT_PASSWORD: minioadmin
         ports:
           - 9000:9000
-        options: server /data
+        command: server /data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
