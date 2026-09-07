@@ -9,6 +9,10 @@ Self-hosted **deterministic pre-deployment failure simulation** and **post-deplo
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
+[![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/architecture-rehearsal/)
+
+Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-rehearsal/) · [Andrey Lesnikov](https://justrunme.com/)
+
 **Status: v1.5.3 (flagship complete)** — multi-arch GHCR, Helm chart with CRDs, Kind operator E2E with terminal evidence.
 
 > Graph and rules decide. AI only explains (optional — never in the risk path).  
