@@ -26,6 +26,20 @@ make demo && make e2e
 make build && ./bin/rehearsal version
 ```
 
+## Architecture
+
+```mermaid
+flowchart LR
+  CLI[cmd/rehearsal] --> Collect[internal/collect]
+  Collect --> Graph[internal/graph]
+  Graph --> Analyze[internal/analyze]
+  Analyze --> Gate[policy gate]
+  Gate --> Evidence[internal/evidence + chain]
+  Op[cmd/rehearsal-operator] --> CRD[api/v1beta1]
+  Helm[deploy/helm] --> Op
+  CI[.github/workflows/ci.yml] --> Rel[release.yml]
+```
+
 ## How it works
 
 ```mermaid
@@ -84,7 +98,7 @@ Collect → Model → Propose → Rehearse → Gate → Observe → Verify → C
 
 ---
 
-## Architecture
+## Architecture details
 
 ```mermaid
 flowchart TB
