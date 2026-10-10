@@ -36,10 +36,10 @@ func (c *ChangeEnvelope) EffectiveKind() string {
 	return c.Kind
 }
 
-func (c *ChangeEnvelope) GetID() string               { return c.ID }
-func (c *ChangeEnvelope) GetTitle() string            { return c.Title }
-func (c *ChangeEnvelope) GetSeeds() []string          { return c.Seeds }
-func (c *ChangeEnvelope) GetRemovedNodes() []string   { return c.RemovedNodes }
+func (c *ChangeEnvelope) GetID() string              { return c.ID }
+func (c *ChangeEnvelope) GetTitle() string           { return c.Title }
+func (c *ChangeEnvelope) GetSeeds() []string         { return c.Seeds }
+func (c *ChangeEnvelope) GetRemovedNodes() []string  { return c.RemovedNodes }
 func (c *ChangeEnvelope) GetPatchNodes() []graph.Node { return c.PatchNodes }
 func (c *ChangeEnvelope) GetAddedNodes() []graph.Node { return c.AddedNodes }
 func (c *ChangeEnvelope) GetAddedEdges() []graph.Edge { return c.AddedEdges }

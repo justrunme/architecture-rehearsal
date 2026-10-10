@@ -71,10 +71,10 @@ func (g *GitHub) PostCommitStatus(sha string, st Status) error {
 // PostCheckRun creates a completed check run (Checks API).
 func (g *GitHub) PostCheckRun(sha, name, conclusion, summary string) error {
 	body := map[string]any{
-		"name":         name,
-		"head_sha":     sha,
-		"status":       "completed",
-		"conclusion":   conclusion, // success, failure, neutral, cancelled
+		"name":        name,
+		"head_sha":    sha,
+		"status":      "completed",
+		"conclusion":  conclusion, // success, failure, neutral, cancelled
 		"completed_at": time.Now().UTC().Format(time.RFC3339),
 		"output": map[string]string{
 			"title":   name,

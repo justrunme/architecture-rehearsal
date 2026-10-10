@@ -156,8 +156,8 @@ func TestSetCondKeepsTimestampWithoutTransition(t *testing.T) {
 				phase = "Completed"
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":     "x",
-				"spec":   map[string]any{"baselineRef": "b.json", "changeRef": "c.json"},
+				"id": "x",
+				"spec": map[string]any{"baselineRef": "b.json", "changeRef": "c.json"},
 				"status": map[string]any{"phase": phase, "decision": "approve", "message": "ok"},
 				"labels": map[string]string{"chainBlob": "abc123"},
 			})
@@ -305,8 +305,8 @@ func TestSpecMatchesIncludesScenarios(t *testing.T) {
 			})
 		case r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":     "x",
-				"spec":   map[string]any{"baselineRef": "b", "changeRef": "c", "scenarios": []string{"old"}},
+				"id": "x",
+				"spec": map[string]any{"baselineRef": "b", "changeRef": "c", "scenarios": []string{"old"}},
 				"status": map[string]any{"phase": "Pending"},
 			})
 		default:

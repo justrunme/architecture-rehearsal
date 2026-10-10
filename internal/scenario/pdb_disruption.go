@@ -106,12 +106,12 @@ func (r PDBDisruption) Evaluate(ctx Context) Result {
 			if remaining < minA {
 				findings = append(findings, Finding{
 					ID: "pdb-disruption:" + pdb.ID + ":" + wid, Scenario: r.Name(), Risk: "high",
-					Title:      "PodDisruptionBudget would block or violate disruption",
-					Summary:    fmt.Sprintf("PDB %s minAvailable=%d; workload %s would have %d after node loss", pdb.Name, minA, display(ctx.BaseIdx, wid), remaining),
+					Title: "PodDisruptionBudget would block or violate disruption",
+					Summary: fmt.Sprintf("PDB %s minAvailable=%d; workload %s would have %d after node loss", pdb.Name, minA, display(ctx.BaseIdx, wid), remaining),
 					Components: []string{pdb.ID, wid},
-					Cascade:    []string{"node loss", fmt.Sprintf("remaining %d < minAvailable %d", remaining, minA), "eviction denied or SLO breach"},
-					Controls:   []string{"increase replicas before drain", "adjust PDB for maintenance"},
-					SLOImpact:  "availability", Evidence: []string{fmt.Sprintf("minAvailable=%d raw=%s", minA, pdb.AttrString("minAvailableRaw"))},
+					Cascade: []string{"node loss", fmt.Sprintf("remaining %d < minAvailable %d", remaining, minA), "eviction denied or SLO breach"},
+					Controls: []string{"increase replicas before drain", "adjust PDB for maintenance"},
+					SLOImpact: "availability", Evidence: []string{fmt.Sprintf("minAvailable=%d raw=%s", minA, pdb.AttrString("minAvailableRaw"))},
 					Rollback: RollbackUnknown, Confidence: "medium",
 				})
 			}

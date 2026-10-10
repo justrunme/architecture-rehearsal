@@ -12,18 +12,18 @@ import (
 type Phase string
 
 const (
-	PhasePending              Phase = "Pending"
-	PhaseCollecting           Phase = "Collecting"
-	PhaseCompiling            Phase = "Compiling"
-	PhaseRehearsing           Phase = "Rehearsing"
-	PhaseGated                Phase = "Gated"
+	PhasePending             Phase = "Pending"
+	PhaseCollecting          Phase = "Collecting"
+	PhaseCompiling           Phase = "Compiling"
+	PhaseRehearsing          Phase = "Rehearsing"
+	PhaseGated               Phase = "Gated"
 	PhaseWaitingForDeployment Phase = "WaitingForDeployment"
-	PhaseObserving            Phase = "Observing"
-	PhaseVerifying            Phase = "Verifying"
-	PhaseCompleted            Phase = "Completed"
-	PhaseFailed               Phase = "Failed"
-	PhaseInconclusive         Phase = "Inconclusive"
-	PhaseCancelled            Phase = "Cancelled"
+	PhaseObserving           Phase = "Observing"
+	PhaseVerifying           Phase = "Verifying"
+	PhaseCompleted           Phase = "Completed"
+	PhaseFailed              Phase = "Failed"
+	PhaseInconclusive        Phase = "Inconclusive"
+	PhaseCancelled           Phase = "Cancelled"
 )
 
 // allowedTransitions defines the state machine.
@@ -48,10 +48,10 @@ type RehearsalRun struct {
 	Kind       string `json:"kind"`
 	ID         string `json:"id"`
 	// IdempotencyKey prevents double-apply of the same run.
-	IdempotencyKey string                   `json:"idempotencyKey,omitempty"`
-	Labels         map[string]string        `json:"labels,omitempty"`
-	Spec           Spec                     `json:"spec"`
-	Status         Status                   `json:"status"`
+	IdempotencyKey string            `json:"idempotencyKey,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	Spec           Spec              `json:"spec"`
+	Status         Status            `json:"status"`
 	Digests        contract.ArtifactDigests `json:"digests,omitempty"`
 	// Version is an optimistic concurrency token (v1.4.1+). Incremented on each durable update.
 	Version   int64     `json:"version,omitempty"`
@@ -83,18 +83,18 @@ type GateSpec struct {
 
 // Status is observed run state.
 type Status struct {
-	Phase    Phase      `json:"phase"`
-	Decision string     `json:"decision,omitempty"`
-	Risk     string     `json:"risk,omitempty"`
-	Message  string     `json:"message,omitempty"`
-	Attempts int        `json:"attempts"`
-	Lease    *Lease     `json:"lease,omitempty"`
-	History  []Event    `json:"history,omitempty"`
-	Deadline *time.Time `json:"deadline,omitempty"`
+	Phase            Phase      `json:"phase"`
+	Decision         string     `json:"decision,omitempty"`
+	Risk             string     `json:"risk,omitempty"`
+	Message          string     `json:"message,omitempty"`
+	Attempts         int        `json:"attempts"`
+	Lease            *Lease     `json:"lease,omitempty"`
+	History          []Event    `json:"history,omitempty"`
+	Deadline         *time.Time `json:"deadline,omitempty"`
 	// ChainPath is where evidence-chain.json was written (v1.1).
-	ChainPath         string   `json:"chainPath,omitempty"`
-	VerifyOutcome     string   `json:"verifyOutcome,omitempty"`
-	PredictedFailures []string `json:"predictedFailures,omitempty"`
+	ChainPath        string     `json:"chainPath,omitempty"`
+	VerifyOutcome    string     `json:"verifyOutcome,omitempty"`
+	PredictedFailures []string  `json:"predictedFailures,omitempty"`
 }
 
 // Lease is a distributed-style exclusive lock (single-node for now).

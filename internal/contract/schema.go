@@ -55,10 +55,10 @@ func ValidateDocument(raw []byte) error {
 
 // SchemaDoc is human-readable schema index for /schemas.
 type SchemaDoc struct {
-	APIVersion  string   `json:"apiVersion"`
-	Kind        string   `json:"kind"`
-	Required    []string `json:"required"`
-	Description string   `json:"description"`
+	APIVersion string   `json:"apiVersion"`
+	Kind       string   `json:"kind"`
+	Required   []string `json:"required"`
+	Description string  `json:"description"`
 }
 
 // Catalog returns built-in schema catalog.

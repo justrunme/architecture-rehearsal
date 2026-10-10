@@ -60,12 +60,12 @@ func (r VolumeAZ) Evaluate(ctx Context) Result {
 		}
 		findings = append(findings, Finding{
 			ID: "volume-az:" + pvc.ID, Scenario: r.Name(), Risk: "critical",
-			Title:      "PVC zone has no remaining nodes after change",
-			Summary:    fmt.Sprintf("PVC %s zone=%s but no nodes remain in that zone.", pvc.Name, z),
+			Title: "PVC zone has no remaining nodes after change",
+			Summary: fmt.Sprintf("PVC %s zone=%s but no nodes remain in that zone.", pvc.Name, z),
 			Components: []string{pvc.ID},
-			Cascade:    []string{fmt.Sprintf("PVC zone=%s", z), "no nodes in zone", "volume cannot attach"},
-			Controls:   []string{"ensure multi-AZ node capacity", "multi-AZ storage where possible"},
-			SLOImpact:  "availability", Evidence: []string{"pvc.zone=" + z},
+			Cascade: []string{fmt.Sprintf("PVC zone=%s", z), "no nodes in zone", "volume cannot attach"},
+			Controls: []string{"ensure multi-AZ node capacity", "multi-AZ storage where possible"},
+			SLOImpact: "availability", Evidence: []string{"pvc.zone=" + z},
 			Rollback: RollbackUnknown, Confidence: "high",
 		})
 	}

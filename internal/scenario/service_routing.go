@@ -74,12 +74,12 @@ func (r ServiceRouting) Evaluate(ctx Context) Result {
 		if alive == 0 {
 			findings = append(findings, Finding{
 				ID: "service-routing:" + svc.ID, Scenario: r.Name(), Risk: "critical",
-				Title:      "Service has no remaining backends after change",
-				Summary:    fmt.Sprintf("Service %s backends are all removed.", display(ctx.BaseIdx, svc.ID)),
+				Title: "Service has no remaining backends after change",
+				Summary: fmt.Sprintf("Service %s backends are all removed.", display(ctx.BaseIdx, svc.ID)),
 				Components: append([]string{svc.ID}, backends...),
-				Cascade:    []string{"backends removed", "endpoints empty", "callers fail"},
-				Controls:   []string{"update selector before remove", "progressive cutover"},
-				SLOImpact:  "availability", Evidence: []string{"alive_backends=0"},
+				Cascade: []string{"backends removed", "endpoints empty", "callers fail"},
+				Controls: []string{"update selector before remove", "progressive cutover"},
+				SLOImpact: "availability", Evidence: []string{"alive_backends=0"},
 				Rollback: RollbackAvailable, Confidence: "high",
 			})
 		}

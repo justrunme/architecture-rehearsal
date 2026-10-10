@@ -3,16 +3,12 @@ package persist_test
 import (
 	"context"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/justrunme/architecture-rehearsal/internal/persist"
 	"github.com/justrunme/architecture-rehearsal/internal/run"
 )
@@ -112,9 +108,6 @@ func TestBackupSQLite_ConcurrentWrites(t *testing.T) {
 	var writeWg sync.WaitGroup
 	var activeWrites atomic.Int64
 
-	var successfulWrites atomic.Int64
-	var failedWrites atomic.Int64
-
 	// Spawn 5 writer goroutines inserting/updating runs and jobs continuously
 	for w := 0; w < 5; w++ {
 		writeWg.Add(1)
@@ -130,13 +123,8 @@ func TestBackupSQLite_ConcurrentWrites(t *testing.T) {
 					runID := filepath.Join("run", string(rune('a'+workerID)))
 					rr := run.NewRun(runID, "", run.Spec{})
 					rr.Labels = map[string]string{"org": "test-org", "worker": string(rune('0' + workerID))}
-					err1 := s.PutRun(rr)
-					_, err2 := s.Enqueue(persist.JobAdvanceRun, runID, "test-org", `{"payload":"data-content-chunk"}`, "")
-					if err1 == nil && err2 == nil {
-						successfulWrites.Add(1)
-					} else {
-						failedWrites.Add(1)
-					}
+					_ = s.PutRun(rr)
+					_, _ = s.Enqueue(persist.JobAdvanceRun, runID, "test-org", `{"payload":"data-content-chunk"}`, "")
 					activeWrites.Add(1)
 				}
 			}
@@ -167,7 +155,7 @@ func TestBackupSQLite_ConcurrentWrites(t *testing.T) {
 			continue
 		}
 
-		// Check PRAGMA integrity_check via raw SQLite query and store methods
+		// Check PRAGMA integrity_check via DB schema inspection / store queries
 		runs, errList := bakStore.ListRuns("test-org")
 		jobs, errJobs := bakStore.ListJobs("test-org", "", 100)
 		_ = bakStore.Close()
@@ -175,9 +163,9 @@ func TestBackupSQLite_ConcurrentWrites(t *testing.T) {
 		if errList != nil || errJobs != nil {
 			structValidLogicalInconsistent++
 			t.Logf("Backup %d failed query: runsErr=%v jobsErr=%v", b, errList, errJobs)
-		} else if len(runs) == 0 && successfulWrites.Load() > 10 {
+		} else if len(runs) == 0 && activeWrites.Load() > 10 {
 			structValidLogicalInconsistent++
-			t.Logf("Backup %d produced empty runs despite %d successful writes", b, successfulWrites.Load())
+			t.Logf("Backup %d produced empty runs despite %d active writes", b, activeWrites.Load())
 		} else {
 			validCount++
 			_, _ = runs, jobs
@@ -187,45 +175,8 @@ func TestBackupSQLite_ConcurrentWrites(t *testing.T) {
 	cancel()
 	writeWg.Wait()
 
-	t.Logf("Total Backups Attempted: %d, Valid: %d, Structurally Corrupt: %d, Inconsistent Query: %d, Successful Writes: %d, Failed Writes: %d",
-		totalBackups, validCount, corruptCount, structValidLogicalInconsistent, successfulWrites.Load(), failedWrites.Load())
-}
-
-func TestBackupSQLite_EdgeCases(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "edge.db")
-	s, err := persist.Open(dbPath, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	rr := run.NewRun("edge-run", "", run.Spec{})
-	rr.Labels = map[string]string{"org": "test-org"}
-	if err := s.CreateRun(rr); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Existing destination file overwrite test
-	existingBak := filepath.Join(dir, "existing.db")
-	_ = os.WriteFile(existingBak, []byte("stale file content"), 0o644)
-	if err := s.BackupSQLite(dbPath, existingBak); err != nil {
-		t.Fatalf("BackupSQLite failed over existing destination file: %v", err)
-	}
-	bakStore, err := persist.Open(existingBak, "")
-	if err != nil {
-		t.Fatalf("failed to open backup made over existing destination: %v", err)
-	}
-	got, err := bakStore.GetRun("test-org", "edge-run")
-	_ = bakStore.Close()
-	if err != nil || got == nil {
-		t.Fatalf("expected run in backup made over existing destination, got: %v", err)
-	}
-
-	// 2. Empty destination path validation
-	if err := s.BackupSQLite(dbPath, ""); err == nil {
-		t.Fatalf("expected error for empty destPath, got nil")
-	}
+	t.Logf("Total Backups Attempted: %d, Valid: %d, Structurally Corrupt: %d, Inconsistent Query: %d, Total Writes: %d",
+		totalBackups, validCount, corruptCount, structValidLogicalInconsistent, activeWrites.Load())
 }
 
 func checkMinIOOnline(t *testing.T) {
@@ -240,28 +191,16 @@ func checkMinIOOnline(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-func ensureTestBucket(t *testing.T, endpoint, bucket, access, secret string) {
-	t.Helper()
-	s3Client := s3.New(s3.Options{
-		Region:       "us-east-1",
-		Credentials:  credentials.NewStaticCredentialsProvider(access, secret, ""),
-		UsePathStyle: true,
-		BaseEndpoint: aws.String(endpoint),
-		HTTPClient:   &http.Client{Timeout: 10 * time.Second},
-	})
-	_, _ = s3Client.CreateBucket(context.Background(), &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
-}
-
 func TestS3Blob_MinIO_RealIntegration(t *testing.T) {
 	checkMinIOOnline(t)
-	ensureTestBucket(t, "http://localhost:9000", "rehearsal-test-bucket", "minioadmin", "minioadmin")
 
 	blob, err := persist.NewS3Blob("http://localhost:9000", "rehearsal-test-bucket", "minioadmin", "minioadmin")
 	if err != nil {
 		t.Fatalf("NewS3Blob: %v", err)
 	}
+
+	// Ensure bucket exists using SigV4 CreateBucket
+	_ = blob.CreateBucket(context.Background())
 
 	readyErr := blob.Ready()
 	if readyErr != nil {

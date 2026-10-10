@@ -16,20 +16,20 @@ import (
 
 // RunRecord is one persisted analyze/verify cycle.
 type RunRecord struct {
-	APIVersion    string            `json:"apiVersion"`
-	Kind          string            `json:"kind"`
-	ID            string            `json:"id"`
-	CreatedAt     time.Time         `json:"createdAt"`
-	Actor         string            `json:"actor,omitempty"`
-	ChangeID      string            `json:"changeId"`
-	BaselineID    string            `json:"baselineId"`
-	Decision      string            `json:"decision"`
-	Risk          string            `json:"risk"`
-	Digest        string            `json:"semanticDigest,omitempty"`
-	EvidenceDir   string            `json:"evidenceDir,omitempty"`
-	ReportPath    string            `json:"reportPath,omitempty"`
-	VerifyOutcome string            `json:"verifyOutcome,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
+	APIVersion string    `json:"apiVersion"`
+	Kind       string    `json:"kind"`
+	ID         string    `json:"id"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Actor      string    `json:"actor,omitempty"`
+	ChangeID   string    `json:"changeId"`
+	BaselineID string    `json:"baselineId"`
+	Decision   string    `json:"decision"`
+	Risk       string    `json:"risk"`
+	Digest     string    `json:"semanticDigest,omitempty"`
+	EvidenceDir string   `json:"evidenceDir,omitempty"`
+	ReportPath  string   `json:"reportPath,omitempty"`
+	VerifyOutcome string `json:"verifyOutcome,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 // AuditEvent is an append-only audit trail entry.

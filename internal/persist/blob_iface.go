@@ -123,6 +123,16 @@ func (s *S3Blob) URI(digest string) string {
 	return fmt.Sprintf("s3://%s/%s", s.Bucket, s.key(digest))
 }
 
+func (s *S3Blob) CreateBucket(ctx context.Context) error {
+	_, err := s.s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(s.Bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 create bucket: %w", err)
+	}
+	return nil
+}
+
 func (s *S3Blob) Ready() error {
 	_, err := s.s3Client.HeadBucket(context.Background(), &s3.HeadBucketInput{
 		Bucket: aws.String(s.Bucket),

@@ -83,11 +83,11 @@ func WalkReverse(idx *Index, seeds []string, allowed map[Relation]bool, maxDepth
 // DependentsOf returns nodes that depend on seed.
 func DependentsOf(idx *Index, seed string) []string {
 	allowed := map[Relation]bool{
-		RelDependsOn:   true,
-		RelObservedBy:  true,
+		RelDependsOn:  true,
+		RelObservedBy: true,
 		RelProtectedBy: true,
-		RelRoutesTo:    true,
-		RelScales:      true,
+		RelRoutesTo:   true,
+		RelScales:     true,
 	}
 	ids := WalkReverse(idx, []string{seed}, allowed, 6)
 	out := make([]string, 0, len(ids))

@@ -23,7 +23,7 @@ type LiveOptions struct {
 	// Kubectl binary (default "kubectl").
 	Kubectl string
 	// Timeout for kubectl (default 120s).
-	Timeout      time.Duration
+	Timeout time.Duration
 	AllowPartial bool
 	Phase        graph.Phase
 	ExtraMeta    map[string]any
