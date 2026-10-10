@@ -3,8 +3,10 @@
 Know what breaks before you deploy — and prove whether you were right.
 
 [![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal?display_name=tag)](https://github.com/justrunme/architecture-rehearsal/releases/latest)
+[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/architecture-rehearsal/)
 
 Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-rehearsal/) · [Andrey Lesnikov](https://justrunme.com/)
 
