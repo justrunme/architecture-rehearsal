@@ -157,27 +157,33 @@ func (s *Store) PurgeOldRuns(org string, olderThan time.Duration) (int64, error)
 	return res.RowsAffected()
 }
 
-// BackupSQLite copies the SQLite database file to destPath (no-op for postgres).
+// BackupSQLite creates a point-in-time consistent SQLite snapshot using VACUUM INTO.
 func (s *Store) BackupSQLite(srcPath, destPath string) error {
 	if s.dialect != "sqlite" {
-		return fmt.Errorf("backup file copy only supported for sqlite (use pg_dump for postgres)")
+		return fmt.Errorf("backup only supported for sqlite (use pg_dump for postgres)")
 	}
-	if srcPath == "" || destPath == "" {
-		return fmt.Errorf("src and dest required")
+	if destPath == "" {
+		return fmt.Errorf("dest path required")
 	}
-	_ = os.MkdirAll(filepath.Dir(destPath), 0o755)
-	in, err := os.Open(srcPath)
+	if s.db == nil {
+		return fmt.Errorf("database connection closed")
+	}
+	absDest, err := filepath.Abs(destPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("abs path: %w", err)
 	}
-	defer in.Close()
-	out, err := os.Create(destPath)
+	if err := os.MkdirAll(filepath.Dir(absDest), 0o755); err != nil {
+		return fmt.Errorf("mkdir backup dir: %w", err)
+	}
+	// SQLite VACUUM INTO fails if destination already exists; remove stale target file if present
+	_ = os.Remove(absDest)
+
+	_, err = s.db.Exec("VACUUM INTO ?", absDest)
 	if err != nil {
-		return err
+		_ = os.Remove(absDest) // cleanup partial backup on failure
+		return fmt.Errorf("vacuum into: %w", err)
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	return nil
 }
 
 // RestoreSQLite replaces dest DB file with backup (caller must not have open Store).

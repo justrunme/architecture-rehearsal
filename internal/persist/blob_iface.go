@@ -2,6 +2,7 @@ package persist
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +10,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Blob is the content-addressed storage interface (FS or S3-compatible).
@@ -51,20 +56,31 @@ type S3Blob struct {
 	AccessKey string
 	SecretKey string
 	Client    *http.Client
+	s3Client  *s3.Client
 }
 
-// NewS3Blob constructs an S3-compatible blob backend.
+// NewS3Blob constructs an S3-compatible blob backend using official AWS SDK v2.
 func NewS3Blob(endpoint, bucket, access, secret string) (*S3Blob, error) {
 	if endpoint == "" || bucket == "" {
 		return nil, fmt.Errorf("s3 endpoint and bucket required")
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
+	httpClient := &http.Client{Timeout: 60 * time.Second}
+	opts := s3.Options{
+		Region:       "us-east-1",
+		Credentials:  credentials.NewStaticCredentialsProvider(access, secret, ""),
+		UsePathStyle: true,
+		BaseEndpoint: aws.String(endpoint),
+		HTTPClient:   httpClient,
+	}
+	client := s3.New(opts)
 	return &S3Blob{
 		Endpoint:  endpoint,
 		Bucket:    bucket,
 		AccessKey: access,
 		SecretKey: secret,
-		Client:    &http.Client{Timeout: 60 * time.Second},
+		Client:    httpClient,
+		s3Client:  client,
 	}, nil
 }
 
@@ -74,69 +90,55 @@ func (s *S3Blob) key(digest string) string {
 
 func (s *S3Blob) Put(data []byte, contentType string) (string, string, error) {
 	sum := digestSHA256(data)
-	url := fmt.Sprintf("%s/%s/%s", s.Endpoint, s.Bucket, s.key(sum))
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(data))
-	if err != nil {
-		return "", "", err
-	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	req.Header.Set("Content-Type", contentType)
-	if s.AccessKey != "" {
-		req.SetBasicAuth(s.AccessKey, s.SecretKey)
-	}
-	resp, err := s.Client.Do(req)
+	key := s.key(sum)
+	_, err := s.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket:      aws.String(s.Bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String(contentType),
+	})
 	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", "", fmt.Errorf("s3 put %d: %s", resp.StatusCode, b)
+		return "", "", fmt.Errorf("s3 put: %w", err)
 	}
 	return sum, s.URI(sum), nil
 }
 
 func (s *S3Blob) Get(digest string) ([]byte, error) {
-	url := fmt.Sprintf("%s/%s/%s", s.Endpoint, s.Bucket, s.key(digest))
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	key := s.key(digest)
+	out, err := s.s3Client.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(s.Bucket),
+		Key:    aws.String(key),
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("s3 get: %w", err)
 	}
-	if s.AccessKey != "" {
-		req.SetBasicAuth(s.AccessKey, s.SecretKey)
-	}
-	resp, err := s.Client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("s3 get %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
+	defer out.Body.Close()
+	return io.ReadAll(out.Body)
 }
 
 func (s *S3Blob) URI(digest string) string {
 	return fmt.Sprintf("s3://%s/%s", s.Bucket, s.key(digest))
 }
 
+func (s *S3Blob) CreateBucket(ctx context.Context) error {
+	_, err := s.s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(s.Bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 create bucket: %w", err)
+	}
+	return nil
+}
+
 func (s *S3Blob) Ready() error {
-	req, err := http.NewRequest(http.MethodHead, fmt.Sprintf("%s/%s", s.Endpoint, s.Bucket), nil)
+	_, err := s.s3Client.HeadBucket(context.Background(), &s3.HeadBucketInput{
+		Bucket: aws.String(s.Bucket),
+	})
 	if err != nil {
-		return err
-	}
-	if s.AccessKey != "" {
-		req.SetBasicAuth(s.AccessKey, s.SecretKey)
-	}
-	resp, err := s.Client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 500 {
-		return fmt.Errorf("s3 not ready: %d", resp.StatusCode)
+		return fmt.Errorf("s3 ready: %w", err)
 	}
 	return nil
 }
