@@ -35,11 +35,16 @@ jobs:
         run: |
           set +e
           rehearsal analyze --baseline baseline.json --change change.json --out out --quiet
-          echo "code=$?" >> $GITHUB_OUTPUT
-        continue-on-error: true
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
       - name: Policy
         run: |
-          rehearsal policy --risk high --decision block || true
+          set +e
+          rehearsal policy --risk high --decision block
+          code=$?
+          set -e
+          test "$code" -eq 3
       - name: Publish GitHub commit status
         if: always()
         env:
@@ -47,7 +52,7 @@ jobs:
         run: |
           rehearsal status github --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --exit-code "${{ steps.analyze.outputs.code }}" \
-            --description "Architecture Rehearsal gate" || true
+            --description "Architecture Rehearsal gate"
       - name: Publish check summary
         if: always()
         run: |

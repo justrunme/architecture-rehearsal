@@ -41,7 +41,7 @@ rehearsal verify --report out/latest-report.json --observed observed.json \
 
 | Backend | Action |
 | ------- | ------ |
-| SQLite | Copy DB file + blob directory; or `rehearsal backup --db … --out …` |
+| SQLite | `rehearsal backup --db … --out …` (consistent snapshot via `VACUUM INTO`); also copy blob directory |
 | PostgreSQL | Standard `pg_dump` / restore |
 | Blobs | Copy content-addressed blob root (or versioned bucket) |
 

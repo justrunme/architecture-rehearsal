@@ -19,8 +19,8 @@ jobs:
         env:
           initialBuckets: rehearsal-test-bucket
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
       - name: Vet
@@ -42,10 +42,14 @@ jobs:
         run: bash scripts/e2e_pipeline.sh
       - name: Verify loop (golden multi-scenario)
         run: |
+          set +e
           ./bin/rehearsal analyze \
             --baseline examples/golden/rwo-node-loss/baseline.json \
             --change examples/golden/rwo-node-loss/change.json \
-            --out out --quiet || true
+            --out out --quiet
+          code=$?
+          set -e
+          test "$code" -eq 3
           test -f out/latest-report.json
           ./bin/rehearsal verify \
             --report out/latest-report.json \
@@ -83,9 +87,9 @@ jobs:
             http://127.0.0.1:18080/v1/runs | grep -q ci-run
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" "http://127.0.0.1:18080/v1/jobs?limit=10"
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" "http://127.0.0.1:18080/v1/audit?limit=10"
-          # backup smoke
-          ./bin/rehearsal backup --db "$PWD/rehearsal.db" --out /tmp/rehearsal-bak.db || \
-            ./bin/rehearsal backup --db data/rehearsal.db --out /tmp/rehearsal-bak.db || true
+          # backup smoke (serve defaults to $workdir/rehearsal.db)
+          ./bin/rehearsal backup --db "$PWD/rehearsal.db" --out /tmp/rehearsal-bak.db
+          test -f /tmp/rehearsal-bak.db
           kill $pid
       - name: Docker build (control plane + operator)
         run: |
@@ -116,8 +120,8 @@ jobs:
     # Helm install + full operator lifecycle + terminal evidence; ~10–15 min
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
       - name: Install kind
@@ -149,8 +153,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
       - name: Postgres contract (Open + CreateRun + ClaimJob)

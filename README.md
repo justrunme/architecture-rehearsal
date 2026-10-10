@@ -226,7 +226,7 @@ Manifests: `kubectl apply -k config/operator/` · docs: [docs/operator.md](docs/
 | Policy gate (approve/warn/block/unknown) | **Supported** |
 | Control plane HTTP API | **Supported** (token + optional OIDC/JWKS) |
 | Durable SQL store | **Supported** (SQLite + Postgres) |
-| Content-addressed blobs | **Supported** (local FS); S3 path-style reference |
+| Content-addressed blobs | **Supported** (local FS); S3-compatible via AWS SDK v2 SigV4 + path-style |
 | Job / Audit APIs | **Supported** |
 | Hierarchical RBAC + bearer auth | **Supported** (org-scoped) |
 | GitHub/GitLab commit status | **Supported** (`rehearsal status`) |
