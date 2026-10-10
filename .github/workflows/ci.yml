@@ -13,12 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       minio:
-        image: bitnami/minio:2024
+        image: adobe/s3mock:latest
         ports:
           - 9000:9000
         env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
+          initialBuckets: rehearsal-test-bucket
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
