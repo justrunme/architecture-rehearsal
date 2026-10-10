@@ -17,5 +17,5 @@ for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
   CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH go build -trimpath -ldflags="-s -w" -o "$opout" ./cmd/rehearsal-operator
 done
 ( cd dist && shasum -a 256 rehearsal-* rehearsal-operator-* > SHA256SUMS )
-bash scripts/sbom.sh || true
+bash scripts/sbom.sh
 echo "assets ready in dist/ for v${VER}"

@@ -35,15 +35,22 @@ release-assets:
 	bash scripts/release-assets.sh 1.5.3
 
 verify-example: build
-	$(BIN) analyze \
-	  --baseline examples/golden/rwo-node-loss/baseline.json \
-	  --change examples/golden/rwo-node-loss/change.json \
-	  --out out --quiet || true
+	@set +e; \
+	  $(BIN) analyze \
+	    --baseline examples/golden/rwo-node-loss/baseline.json \
+	    --change examples/golden/rwo-node-loss/change.json \
+	    --out out --quiet; \
+	  code=$$?; \
+	  set -e; \
+	  test $$code -eq 3
 	@# post-deploy observed fixture claims the predicted failure happened
 	$(BIN) verify \
 	  --report out/latest-report.json \
 	  --observed examples/golden/rwo-node-loss/observed.json \
+	  --baseline examples/golden/rwo-node-loss/baseline.json \
+	  --change examples/golden/rwo-node-loss/change.json \
 	  --out out/verify.json
+	@test "$$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
 
 clean:
 	rm -rf bin out

@@ -49,7 +49,7 @@ func (b *BlobStore) Ready() error {
 	return nil
 }
 
-// S3Blob is a minimal S3-compatible (path-style) content-addressed store.
+// S3Blob is a minimal S3-compatible content-addressed store (AWS SDK v2 SigV4, path-style).
 type S3Blob struct {
 	Endpoint  string
 	Bucket    string

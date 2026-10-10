@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Persist / blobs
+- S3Blob uses AWS SDK for Go v2 with **SigV4** signing and path-style addressing for S3-compatible stores (MinIO and peers)
+- `BackupSQLite` creates point-in-time snapshots with **`VACUUM INTO`** (replaces plain file copy)
+
+### CI / maintenance
+- Removed failure masking from CI test steps (`|| true` on expected-block analyze and backup smoke)
+- Removed failure masking from `integrations/github-actions/gate.yml` and `scripts/release-assets.sh`
+- GitHub Actions bumped to current majors (`actions/checkout@v7`, `actions/setup-go@v7`, Docker actions v4/v7, `softprops/action-gh-release@v3`)
+- CI keeps `adobe/s3mock` for S3-compatible integration coverage
+- Grouped Dependabot config for Go modules, GitHub Actions, and Docker
+- README / ops docs aligned with SigV4 blobs and VACUUM INTO backups
+
 ## 1.5.3 — 2026-08-04
 
 **Production hardening** — multi-arch OCI, Helm-in-Kind E2E, terminal evidence, version cleanup.
