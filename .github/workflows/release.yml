@@ -130,8 +130,8 @@ jobs:
       - name: Sign images
         run: |
           set -euo pipefail
-          cosign sign --yes "${{ steps.meta.outputs.cp }}@${{ steps.build-cp.outputs.digest }}"
-          cosign sign --yes "${{ steps.meta.outputs.op }}@${{ steps.build-op.outputs.digest }}"
+          cosign sign --yes --registry-referrers-mode=legacy "${{ steps.meta.outputs.cp }}@${{ steps.build-cp.outputs.digest }}"
+          cosign sign --yes --registry-referrers-mode=legacy "${{ steps.meta.outputs.op }}@${{ steps.build-op.outputs.digest }}"
       - name: Verify signed images
         run: |
           set -euo pipefail
