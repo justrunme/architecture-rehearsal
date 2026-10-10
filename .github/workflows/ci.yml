@@ -21,7 +21,7 @@ jobs:
           docker run -d --name minio -p 9000:9000 \
             -e "MINIO_ROOT_USER=minioadmin" \
             -e "MINIO_ROOT_PASSWORD=minioadmin" \
-            quay.io/minio/minio:RELEASE.2024-10-02T17-50-41Z server /data
+            quay.io/minio/minio:latest server /data
       - name: Vet
         run: go vet ./...
       - name: Test
