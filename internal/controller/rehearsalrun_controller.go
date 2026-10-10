@@ -1,4 +1,4 @@
-// Package controller implements the Kubernetes RehearsalRun reconciler (v1.5.3).
+// Package controller implements the Kubernetes RehearsalRun reconciler (v1.5.4).
 // Trust boundary: control plane URL and token come ONLY from operator deployment.
 package controller
 
