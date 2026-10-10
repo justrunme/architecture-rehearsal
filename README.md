@@ -1,25 +1,30 @@
 # Architecture Rehearsal
 
-**Know what breaks before you deploy — and prove whether you were right.**
-
-Self-hosted **deterministic pre-deployment failure simulation** and **post-deployment verification control plane**.
+Know what breaks before you deploy — and prove whether you were right.
 
 [![CI](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/architecture-rehearsal/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal)](https://github.com/justrunme/architecture-rehearsal/releases)
-[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Release](https://img.shields.io/github/v/release/justrunme/architecture-rehearsal?display_name=tag)](https://github.com/justrunme/architecture-rehearsal/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-
-[![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/architecture-rehearsal/)
 
 Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-rehearsal/) · [Andrey Lesnikov](https://justrunme.com/)
 
-**Status: v1.5.4 (flagship complete)** — multi-arch GHCR, Helm chart with CRDs, Kind operator E2E with terminal evidence.
+## What it does
 
-> Graph and rules decide. AI only explains (optional — never in the risk path).  
-> Missing data never becomes a false approve.  
-> Every production gate decision links to a content-addressed evidence chain.
+- Builds a causal architecture graph from a cluster baseline and rehearses a proposed change
+- Gates deploy with approve / warn / block / unknown using a deterministic policy engine
+- Verifies post-deploy observations against rehearsed scenarios and writes a content-addressed evidence chain
 
----
+## Why
+
+- Blast radius should be simulated before apply, not discovered in production
+- Missing data must not become a false approve; every gate decision links to evidence
+
+## Quickstart
+
+```bash
+make demo && make e2e
+make build && ./bin/rehearsal version
+```
 
 ## How it works
 
