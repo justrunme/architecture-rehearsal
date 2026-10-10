@@ -13,17 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       minio:
-        image: bitnami/minio:latest
+        image: adobe/s3mock:latest
         ports:
           - 9000:9000
         env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+          initialBuckets: rehearsal-test-bucket
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

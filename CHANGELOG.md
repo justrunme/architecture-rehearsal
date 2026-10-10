@@ -8,8 +8,9 @@
 
 ### CI / maintenance
 - Removed failure masking from CI test steps (`|| true` on expected-block analyze and backup smoke)
+- Removed failure masking from `integrations/github-actions/gate.yml` and `scripts/release-assets.sh`
 - GitHub Actions bumped to current majors (`actions/checkout@v7`, `actions/setup-go@v7`, Docker actions v4/v7, `softprops/action-gh-release@v3`)
-- CI MinIO service aligned with SigV4 integration tests
+- CI keeps `adobe/s3mock` for S3-compatible integration coverage
 - Grouped Dependabot config for Go modules, GitHub Actions, and Docker
 - README / ops docs aligned with SigV4 blobs and VACUUM INTO backups
 
