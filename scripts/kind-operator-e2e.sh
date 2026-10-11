@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kind operator E2E (v1.5.4). Requires: kind, kubectl, docker, helm.
+# Kind operator E2E (v1.6.0). Requires: kind, kubectl, docker, helm.
 # CI: operator-kind-e2e job.
 # Installs via Helm chart (CRD + control plane + operator), then asserts full lifecycle.
 set -euo pipefail
