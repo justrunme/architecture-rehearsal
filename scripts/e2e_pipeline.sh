@@ -30,9 +30,12 @@ echo "==> 2/5 change manifests (scoped to payments; removals off)"
   --title "Helm upgrade: scale payments stack (e2e)" \
   --out "$OUT/change.json"
 
-# Scoped change must not mass-delete gitops
-if command -v python3 >/dev/null 2>&1; then
-  python3 - <<'PY' "$OUT/change.json"
+# Scoped change must not mass-delete gitops (hard asserts — python3 required)
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is required for e2e hard asserts" >&2
+  exit 1
+fi
+python3 - <<'PY' "$OUT/change.json"
 import json, sys
 ch = json.load(open(sys.argv[1]))
 removed = ch.get("removedNodes") or []
@@ -43,7 +46,6 @@ for p in patches:
     assert p["id"].startswith("workload/payments/"), p
 print(f"  scope OK: {len(patches)} patch(es), 0 removals")
 PY
-fi
 
 echo "==> 3/5 analyze (expect exit 3 block)"
 set +e
@@ -94,8 +96,11 @@ if [[ "$vcode" -ne 0 ]]; then
   exit 1
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-  python3 - <<'PY' "$OUT/verify.json" "$REPORT"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is required for e2e hard asserts" >&2
+  exit 1
+fi
+python3 - <<'PY' "$OUT/verify.json" "$REPORT"
 import json, sys
 v = json.load(open(sys.argv[1]))
 r = json.load(open(sys.argv[2]))
@@ -109,7 +114,6 @@ assert any(n.startswith("scenario:cni-ip-capacity") for n in names), names
 print(f"  verify OK outcome={v['outcome']} score={v.get('score')} digest={v.get('deployedChangeDigest')}")
 print(f"  decision={r['decision']} risk={r['risk']} failures={r.get('predicted_failures')}")
 PY
-fi
 
 echo "e2e pipeline OK: dump→graph→scoped change→block→verify"
 echo "artifacts: $OUT"
