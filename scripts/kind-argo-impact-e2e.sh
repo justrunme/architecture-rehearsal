@@ -101,7 +101,11 @@ SYNC=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.s
 test "$SYNC" = "Synced"
 kubectl -n demo get deploy,svc 2>/dev/null | tee "$OUT_ROOT/demo-resources.txt" || true
 
-echo "==> install argocd CLI + obtain auth token for CLIFetcher"
+echo "==> enable admin apiKey, install argocd CLI, obtain auth token for CLIFetcher"
+# Patch before port-forward: restarting the server would kill an existing PF.
+kubectl -n "$ARGO_NS" patch configmap argocd-cm --type merge -p '{"data":{"accounts.admin":"apiKey, login"}}'
+kubectl -n "$ARGO_NS" rollout restart deploy/argocd-server
+kubectl -n "$ARGO_NS" rollout status deploy/argocd-server --timeout=180s
 ARCH=$(uname -m)
 case "$ARCH" in
   x86_64|amd64) ARGO_ARCH=amd64 ;;
@@ -111,15 +115,24 @@ esac
 curl -sSL -o /tmp/argocd "https://github.com/argoproj/argo-cd/releases/download/v2.14.9/argocd-linux-${ARGO_ARCH}"
 chmod +x /tmp/argocd
 sudo mv /tmp/argocd /usr/local/bin/argocd
-kubectl -n "$ARGO_NS" port-forward svc/argocd-server 8080:443 >/tmp/argocd-pf.log 2>&1 &
-PF_PID=$!
-sleep 3
-# Enable apiKey on admin (default install only has login), then mint a token for CLIFetcher env auth.
-kubectl -n "$ARGO_NS" patch configmap argocd-cm --type merge -p '{"data":{"accounts.admin":"apiKey, login"}}'
-kubectl -n "$ARGO_NS" rollout restart deploy/argocd-server
-kubectl -n "$ARGO_NS" rollout status deploy/argocd-server --timeout=120s
-ARGO_PASS=$(kubectl -n "$ARGO_NS" get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)
-argocd login localhost:8080 --username admin --password "$ARGO_PASS" --insecure --grpc-web
+# Retry port-forward until login works.
+PF_PID=""
+for attempt in $(seq 1 10); do
+  if [[ -n "$PF_PID" ]]; then kill "$PF_PID" 2>/dev/null || true; fi
+  kubectl -n "$ARGO_NS" port-forward svc/argocd-server 8080:443 >/tmp/argocd-pf.log 2>&1 &
+  PF_PID=$!
+  sleep 3
+  ARGO_PASS=$(kubectl -n "$ARGO_NS" get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)
+  if argocd login localhost:8080 --username admin --password "$ARGO_PASS" --insecure --grpc-web; then
+    break
+  fi
+  if [[ "$attempt" -eq 10 ]]; then
+    echo "argocd login failed after retries" >&2
+    cat /tmp/argocd-pf.log >&2 || true
+    exit 1
+  fi
+  sleep 3
+done
 export ARGOCD_SERVER=localhost:8080
 export ARGOCD_INSECURE=true
 export ARGOCD_BINARY=argocd
