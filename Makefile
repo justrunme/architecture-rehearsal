@@ -1,7 +1,7 @@
 BIN ?= bin/rehearsal
 GO ?= go
 
-.PHONY: all build test race vet demo e2e e2e-argo tidy clean docker image verify-example
+.PHONY: all build test race vet demo e2e e2e-argo e2e-argo-presync tidy clean docker image verify-example
 
 all: vet test build
 
@@ -31,9 +31,14 @@ e2e: build
 e2e-argo: build
 	bash scripts/e2e_argo_impact.sh
 
+# Argo CD PreSync hook gate (Kind + pinned Argo CD)
+e2e-argo-presync: build
+	bash scripts/kind-argo-presync-e2e.sh
+
 docker image:
 	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.6.0 -f Dockerfile .
 	docker build -t ghcr.io/justrunme/architecture-rehearsal-operator:1.6.0 -f Dockerfile.operator .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal-presync:1.6.0 -f Dockerfile.presync .
 
 release-assets:
 	bash scripts/release-assets.sh 1.6.0

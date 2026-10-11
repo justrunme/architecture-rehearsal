@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "fix/**"]
+    branches: [main, "fix/**", "feat/**"]
   pull_request:
 
 permissions:
@@ -173,6 +173,34 @@ jobs:
         with:
           name: kind-argo-impact-e2e
           path: out/argo-e2e/
+          if-no-files-found: ignore
+
+  argo-presync-kind-e2e:
+    runs-on: ubuntu-latest
+    # Kind + pinned Argo CD + real PreSync hook (safe/risky/fail-closed/break-glass)
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Head SHA is on the PR/push branch and fetchable by Argo CD as targetRevision.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Kind Argo CD PreSync gate E2E
+        run: bash scripts/kind-argo-presync-e2e.sh
+      - name: Upload kind argo-presync artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-argo-presync-e2e
+          path: out/argo-presync-e2e/
           if-no-files-found: ignore
 
   postgres:
