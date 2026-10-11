@@ -2,6 +2,7 @@ package impact_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/justrunme/architecture-rehearsal/internal/argo"
@@ -49,12 +50,12 @@ func TestNetworkPolicyCut_Block(t *testing.T) {
 	}
 }
 
-func TestPDBRollout_WarnOrBlock(t *testing.T) {
+func TestPDBRollout_ExactBlock(t *testing.T) {
 	base, ch := loadArgo(t, "pdb-violation")
 	rep := impact.Run(base, ch, []impact.Detector{impact.PDBRollout{}})
 	v := rep.Detectors[0]
-	if v.Status != impact.Block && v.Status != impact.Warn {
-		t.Fatalf("expected WARN or BLOCK, got %s: %s", v.Status, v.Explanation)
+	if v.Status != impact.Block {
+		t.Fatalf("expected BLOCK, got %s: %s", v.Status, v.Explanation)
 	}
 }
 
@@ -135,13 +136,23 @@ func TestPVC_UnknownMissingNodeZones(t *testing.T) {
 	}
 }
 
-func TestBlastRadius_Warn(t *testing.T) {
+func TestBlastRadius_ExactAffected(t *testing.T) {
 	base, ch := loadArgo(t, "unschedulable")
-	// Ensure seeds present from scale
 	rep := impact.Run(base, ch, []impact.Detector{impact.BlastRadius{}})
-	// api→postgres dependency: at least WARN or PASS depending on fan-out
-	if rep.Detectors[0].Status == impact.Unknown {
-		t.Fatalf("unexpected UNKNOWN: %s", rep.Detectors[0].Explanation)
+	v := rep.Detectors[0]
+	wantStatus := impact.Warn
+	if v.Status != wantStatus {
+		t.Fatalf("expected %s, got %s: %s affected=%v", wantStatus, v.Status, v.Explanation, v.Affected)
+	}
+	found := false
+	for _, a := range v.Affected {
+		if a == "workload/demo/postgres" || strings.Contains(a, "postgres") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected postgres in affected set, got %v", v.Affected)
 	}
 }
 
@@ -167,5 +178,82 @@ func TestNetpol_UnknownWithoutDeps(t *testing.T) {
 	})
 	if v.Status != impact.Unknown {
 		t.Fatalf("expected UNKNOWN without DEPENDS_ON, got %s", v.Status)
+	}
+}
+
+func TestAggregate_EmptyAndUnknown(t *testing.T) {
+	if got := impact.Aggregate(nil); got != impact.Unknown {
+		t.Fatalf("empty detectors: got %s", got)
+	}
+	if got := impact.Aggregate([]impact.Verdict{{Status: ""}}); got != impact.Unknown {
+		t.Fatalf("empty status: got %s", got)
+	}
+	if got := impact.Aggregate([]impact.Verdict{{Status: impact.Pass}, {Status: impact.Unknown}}); got != impact.Unknown {
+		t.Fatalf("unknown must dominate pass: got %s", got)
+	}
+}
+
+func TestExitCode_AggregateMapping(t *testing.T) {
+	cases := []struct {
+		v    string
+		code int
+	}{
+		{impact.Pass, 0},
+		{impact.Warn, 1},
+		{impact.Block, 3},
+		{impact.Unknown, 4},
+		{"", 5},
+	}
+	for _, tc := range cases {
+		if got := impact.ExitCode(tc.v); got != tc.code {
+			t.Fatalf("ExitCode(%q)=%d want %d", tc.v, got, tc.code)
+		}
+	}
+}
+
+func TestPDB_UnknownWhenInventoryMissing(t *testing.T) {
+	base, ch := loadArgo(t, "benign")
+	delete(base.Meta, "pdbsCollected")
+	base.Nodes = filterOutKind(base.Nodes, graph.KindPDB)
+	rep := impact.Run(base, ch, []impact.Detector{impact.PDBRollout{}})
+	if rep.Detectors[0].Status != impact.Unknown {
+		t.Fatalf("expected UNKNOWN, got %s: %s", rep.Detectors[0].Status, rep.Detectors[0].Explanation)
+	}
+	if impact.ExitCode(rep.Verdict) != 4 {
+		t.Fatalf("gate exit want 4, verdict=%s", rep.Verdict)
+	}
+}
+
+func filterOutKind(nodes []graph.Node, k graph.Kind) []graph.Node {
+	var out []graph.Node
+	for _, n := range nodes {
+		if n.Kind != k {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func TestPDB_UnknownUnresolvedWorkload(t *testing.T) {
+	base := &graph.Snapshot{
+		ID: "pdb-unresolved", Phase: graph.PhaseBaseline,
+		Meta: map[string]any{"pdbsCollected": true},
+		Nodes: []graph.Node{
+			{ID: "pdb/demo/api-pdb", Kind: graph.KindPDB, Name: "api-pdb", Namespace: "demo",
+				Attributes: map[string]any{"minAvailable": 1, "matchLabels": map[string]any{"app": "missing"}}},
+		},
+		Edges: []graph.Edge{
+			{From: "workload/demo/missing", To: "pdb/demo/api-pdb", Rel: graph.RelProtectedBy},
+		},
+	}
+	ch := &loader.ChangeEnvelope{Kind: "argo-sync", ID: "x", Facts: map[string]any{"scenario": "argo-impact"}, Seeds: []string{"pdb/demo/api-pdb"}}
+	prop := loader.ApplyChange(base, ch)
+	v := impact.PDBRollout{}.Evaluate(impact.Context{
+		Baseline: base, Proposed: prop, Change: ch,
+		BaseIdx: graph.BuildIndex(base), PropIdx: graph.BuildIndex(prop),
+		PDBsCollected: true,
+	})
+	if v.Status != impact.Unknown {
+		t.Fatalf("expected UNKNOWN for unresolved workload, got %s: %s", v.Status, v.Explanation)
 	}
 }
