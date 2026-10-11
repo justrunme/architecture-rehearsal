@@ -136,6 +136,7 @@ done
 export ARGOCD_SERVER=localhost:8080
 export ARGOCD_INSECURE=true
 export ARGOCD_BINARY=argocd
+export ARGOCD_GRPC_WEB=true
 # Prefer env token (no --auth-token flag) for CLIFetcher.
 export ARGOCD_AUTH_TOKEN
 ARGOCD_AUTH_TOKEN=$(argocd account generate-token --account admin)
