@@ -32,11 +32,11 @@ e2e-argo: build
 	bash scripts/e2e_argo_impact.sh
 
 docker image:
-	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.5.4 -f Dockerfile .
-	docker build -t ghcr.io/justrunme/architecture-rehearsal-operator:1.5.4 -f Dockerfile.operator .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.6.0 -f Dockerfile .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal-operator:1.6.0 -f Dockerfile.operator .
 
 release-assets:
-	bash scripts/release-assets.sh 1.5.4
+	bash scripts/release-assets.sh 1.6.0
 
 verify-example: build
 	@set +e; \

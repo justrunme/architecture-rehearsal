@@ -46,4 +46,4 @@ flowchart TB
 ## Version
 
 Docs target **v1.5.3**. See [CHANGELOG.md](../CHANGELOG.md) for release history.  
-Do not move published git tags; ship fixes as new versions (`v1.5.4+`).
+Do not move published git tags; ship fixes as new versions (`v1.6.0+`).
