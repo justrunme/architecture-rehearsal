@@ -1,0 +1,16 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "google_container_node_pool.default",
+      "mode": "managed",
+      "type": "google_container_node_pool",
+      "name": "default",
+      "change": {
+        "actions": ["update"],
+        "before": {"node_count": 3},
+        "after": {"node_count": 6}
+      }
+    }
+  ]
+}

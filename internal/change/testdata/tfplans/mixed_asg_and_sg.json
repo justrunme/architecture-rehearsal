@@ -1,0 +1,27 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "aws_autoscaling_group.nodes",
+      "mode": "managed",
+      "type": "aws_autoscaling_group",
+      "name": "nodes",
+      "change": {
+        "actions": ["update"],
+        "before": {"desired_capacity": 2, "max_size": 4},
+        "after": {"desired_capacity": 3, "max_size": 6}
+      }
+    },
+    {
+      "address": "aws_security_group_rule.ingress",
+      "mode": "managed",
+      "type": "aws_security_group_rule",
+      "name": "ingress",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {"type": "ingress", "from_port": 443}
+      }
+    }
+  ]
+}

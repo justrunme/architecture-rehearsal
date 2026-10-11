@@ -1,0 +1,16 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "aws_eks_node_group.main",
+      "mode": "managed",
+      "type": "aws_eks_node_group",
+      "name": "main",
+      "change": {
+        "actions": ["update"],
+        "before": {"desired_size": 2, "max_size": 4},
+        "after": {"desired_size": 5, "max_size": 8}
+      }
+    }
+  ]
+}

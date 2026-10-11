@@ -184,6 +184,10 @@ func TestSetCondKeepsTimestampWithoutTransition(t *testing.T) {
 		},
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "demo", Namespace: "default"}}
+	// Reconcile 1: add finalizer; reconcile 2: ensure+advance to Completed
+	if _, err := rec.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := rec.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +218,7 @@ func TestSetCondKeepsTimestampWithoutTransition(t *testing.T) {
 		t.Fatal("Accepted condition missing")
 	}
 	time.Sleep(5 * time.Millisecond)
-	// Second reconcile: terminal, should not re-advance
+	// Another reconcile: terminal, should not re-advance
 	if _, err := rec.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -278,6 +282,9 @@ func TestGenerationCreatesNewRunID(t *testing.T) {
 	if _, err := rec.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := rec.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
 	want := controller.ControlPlaneRunID("ns", "demo", "abcdef12-3456-7890", 2)
 	if len(createIDs) != 1 || createIDs[0] != want {
 		t.Fatalf("create ids=%v want %s", createIDs, want)
@@ -330,17 +337,24 @@ func TestSpecMatchesIncludesScenarios(t *testing.T) {
 	if _, err := rec.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
+	res, err := rec.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("spec mismatch is permanent; want no requeue, got %+v", res)
+	}
 	var got v1beta1.RehearsalRun
 	_ = cl.Get(context.Background(), req.NamespacedName, &got)
 	// should be Failed condition due to spec mismatch
 	failed := false
 	for _, c := range got.Status.Conditions {
-		if c.Type == v1beta1.ConditionFailed && c.Status == metav1.ConditionTrue {
+		if c.Type == v1beta1.ConditionFailed && c.Status == metav1.ConditionTrue && c.Reason == "SpecConflict" {
 			failed = true
 		}
 	}
 	if !failed {
-		t.Fatalf("want Failed condition on scenario mismatch, status=%+v", got.Status)
+		t.Fatalf("want Failed SpecConflict on scenario mismatch, status=%+v", got.Status)
 	}
 }
 

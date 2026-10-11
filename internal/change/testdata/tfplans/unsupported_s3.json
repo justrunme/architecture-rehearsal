@@ -1,0 +1,27 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "aws_s3_bucket.logs",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "name": "logs",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {"bucket": "acme-logs"}
+      }
+    },
+    {
+      "address": "aws_iam_role.extra",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "extra",
+      "change": {
+        "actions": ["update"],
+        "before": {"name": "extra"},
+        "after": {"name": "extra"}
+      }
+    }
+  ]
+}

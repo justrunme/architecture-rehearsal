@@ -49,10 +49,11 @@ func main() {
 	}
 
 	if err := (&controller.RehearsalRunReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		APIBase: os.Getenv("REHEARSAL_API_URL"), // deployment-only; CR cannot override
-		Token:   os.Getenv("REHEARSAL_API_TOKEN"),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("rehearsalrun-controller"),
+		APIBase:  os.Getenv("REHEARSAL_API_URL"), // deployment-only; CR cannot override
+		Token:    os.Getenv("REHEARSAL_API_TOKEN"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller")
 		os.Exit(1)

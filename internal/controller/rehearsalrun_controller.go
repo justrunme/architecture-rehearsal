@@ -7,29 +7,65 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	rehearsalv1beta1 "github.com/justrunme/architecture-rehearsal/api/v1beta1"
 	"github.com/justrunme/architecture-rehearsal/internal/operator"
 	"github.com/justrunme/architecture-rehearsal/internal/run"
 )
 
+// FinalizerCancelRun cancels the control-plane run before CR deletion completes.
+const FinalizerCancelRun = "rehearsal.io/cancel-run"
+
+// PermanentError is a non-retryable reconcile failure (wait for generation change).
+type PermanentError struct {
+	Reason  string
+	Message string
+}
+
+func (e *PermanentError) Error() string {
+	if e == nil {
+		return "permanent error"
+	}
+	return e.Message
+}
+
+// IsPermanent reports whether err should not be requeued.
+func IsPermanent(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *PermanentError
+	if errors.As(err, &pe) {
+		return true
+	}
+	return operator.IsPermanent(err)
+}
+
 // RehearsalRunReconciler reconciles RehearsalRun CRs against the control plane.
 // APIBase and Token MUST be set from deployment env — never from CR.
 type RehearsalRunReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// APIBase is REHEARSAL_API_URL (deployment-only).
 	APIBase string
 	// Token is REHEARSAL_API_TOKEN (from Secret).
@@ -50,6 +86,13 @@ func (r *RehearsalRunReconciler) cpClient(base, token string) *operator.ControlP
 		return r.ClientFactory(base, token)
 	}
 	return &operator.ControlPlaneClient{BaseURL: base, Token: token}
+}
+
+func (r *RehearsalRunReconciler) event(obj runtime.Object, eventtype, reason, msg string) {
+	if r.Recorder == nil || obj == nil {
+		return
+	}
+	r.Recorder.Event(obj, eventtype, reason, msg)
 }
 
 // ControlPlaneRunID builds an immutable run id including CR UID (survives delete/recreate).
@@ -81,15 +124,35 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if apiURL == "" {
 		apiURL = os.Getenv("REHEARSAL_API_URL")
 	}
-	if apiURL == "" {
-		return r.fail(ctx, &cr, "REHEARSAL_API_URL required (set only on operator Deployment, never on CR)")
-	}
 	token := r.Token
 	if token == "" {
 		token = os.Getenv("REHEARSAL_API_TOKEN")
 	}
+
+	// Deletion: cancel control-plane run then drop finalizer (idempotent).
+	if !cr.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &cr, apiURL, token)
+	}
+
+	if !controllerutil.ContainsFinalizer(&cr, FinalizerCancelRun) {
+		controllerutil.AddFinalizer(&cr, FinalizerCancelRun)
+		if err := r.Update(ctx, &cr); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if apiURL == "" {
+		return r.fail(ctx, &cr, &PermanentError{
+			Reason:  "InvalidConfig",
+			Message: "REHEARSAL_API_URL required (set only on operator Deployment, never on CR)",
+		})
+	}
 	if token == "" {
-		return r.fail(ctx, &cr, "REHEARSAL_API_TOKEN required (Secret mount)")
+		return r.fail(ctx, &cr, &PermanentError{
+			Reason:  "InvalidConfig",
+			Message: "REHEARSAL_API_TOKEN required (Secret mount)",
+		})
 	}
 
 	setCond(&cr, rehearsalv1beta1.ConditionAccepted, metav1.ConditionTrue, "Accepted", "spec accepted by operator")
@@ -97,7 +160,7 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	digest, err := SpecDigest(cr.Spec)
 	if err != nil {
-		return r.fail(ctx, &cr, "spec digest: "+err.Error())
+		return r.fail(ctx, &cr, &PermanentError{Reason: "InvalidSpec", Message: "spec digest: " + err.Error()})
 	}
 
 	runID := ControlPlaneRunID(cr.Namespace, cr.Name, string(cr.UID), cr.Generation)
@@ -124,12 +187,15 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	ens, err := cp.EnsureRun(rr)
 	if err != nil {
 		logger.Error(err, "ensure run")
-		return r.fail(ctx, &cr, err.Error())
+		return r.fail(ctx, &cr, err)
 	}
 	// Always validate existing run matches Spec (200 idempotent + 409 conflict paths).
 	if ens != nil && ens.Run != nil && !specMatchesRun(cr.Spec, ens.Run) {
-		return r.fail(ctx, &cr, fmt.Sprintf(
-			"control plane run %q does not match CR spec (immutable); delete CR or use a new name", runID))
+		return r.fail(ctx, &cr, &PermanentError{
+			Reason: "SpecConflict",
+			Message: fmt.Sprintf(
+				"control plane run %q does not match CR spec (immutable); delete CR or use a new name", runID),
+		})
 	}
 
 	async := true
@@ -142,25 +208,33 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	needAdvance := !alreadyAdvanced && !existingTerminal &&
 		(cr.Status.Phase == "" || !isTerminal(cr.Status.Phase) || !sameGen)
 
+	prevPhase := cr.Status.Phase
 	if needAdvance {
 		adv, err := cp.Advance(runID, async)
 		if err != nil {
 			logger.Error(err, "advance")
-			return r.fail(ctx, &cr, err.Error())
+			return r.fail(ctx, &cr, err)
 		}
 		if adv != nil && adv.JobID != "" {
 			cr.Status.JobID = adv.JobID
 		}
 		setCond(&cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionTrue, "Advancing", "control plane advance requested")
+		r.event(&cr, corev1.EventTypeNormal, "RunAdvanced", "control plane advance requested for "+runID)
 	}
 
 	latest, err := cp.GetRun(runID)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		if IsPermanent(err) {
+			return r.fail(ctx, &cr, err)
+		}
+		return ctrl.Result{}, err
 	}
 	// Re-check after get (race with external mutation)
 	if !specMatchesRun(cr.Spec, latest) {
-		return r.fail(ctx, &cr, fmt.Sprintf("control plane run %q drifted from CR spec", runID))
+		return r.fail(ctx, &cr, &PermanentError{
+			Reason:  "SpecConflict",
+			Message: fmt.Sprintf("control plane run %q drifted from CR spec", runID),
+		})
 	}
 
 	cr.Status.ControlPlaneRunID = runID
@@ -172,27 +246,90 @@ func (r *RehearsalRunReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	cr.Status.SpecDigest = digest
 	cr.Status.EvidenceDigest = evidenceFromRun(latest)
 
+	if prevPhase != cr.Status.Phase && cr.Status.Phase != "" {
+		r.event(&cr, corev1.EventTypeNormal, "PhaseTransition",
+			fmt.Sprintf("phase %s → %s", emptyAsNone(prevPhase), cr.Status.Phase))
+	}
+
 	if isTerminal(cr.Status.Phase) {
 		setCond(&cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionFalse, "Terminal", "run finished")
-		if cr.Status.Phase == string(run.PhaseFailed) {
+		switch cr.Status.Phase {
+		case string(run.PhaseFailed):
 			setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "Failed", latest.Status.Message)
 			setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionTrue, "Failed", latest.Status.Message)
-		} else {
+			r.event(&cr, corev1.EventTypeWarning, "RunFailed", latest.Status.Message)
+		case string(run.PhaseInconclusive):
+			// Inconclusive must not report Ready=True — distinct reason for operators.
+			setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "Inconclusive", latest.Status.Message)
+			setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionFalse, "Inconclusive", latest.Status.Message)
+			r.event(&cr, corev1.EventTypeWarning, "RunInconclusive", latest.Status.Message)
+		case string(run.PhaseCancelled):
+			setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "Cancelled", latest.Status.Message)
+			setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionFalse, "Cancelled", latest.Status.Message)
+			r.event(&cr, corev1.EventTypeNormal, "RunCancelled", latest.Status.Message)
+		default:
 			setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionTrue, "Complete", "run reached terminal phase")
 			setCond(&cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionFalse, "None", "")
+			r.event(&cr, corev1.EventTypeNormal, "RunCompleted", "run reached terminal phase "+cr.Status.Phase)
 		}
 	} else {
 		setCond(&cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionTrue, "InProgress", "run not terminal")
 		setCond(&cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "InProgress", "waiting for control plane")
 	}
 
-	if err := r.Status().Update(ctx, &cr); err != nil {
+	if err := r.patchStatus(ctx, &cr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if isTerminal(cr.Status.Phase) {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+}
+
+func (r *RehearsalRunReconciler) reconcileDelete(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun, apiURL, token string) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(cr, FinalizerCancelRun) {
+		return ctrl.Result{}, nil
+	}
+	runID := cr.Status.ControlPlaneRunID
+	if runID == "" {
+		runID = ControlPlaneRunID(cr.Namespace, cr.Name, string(cr.UID), cr.Generation)
+	}
+	if apiURL != "" && token != "" && runID != "" {
+		cp := r.cpClient(apiURL, token)
+		if err := cp.Cancel(runID); err != nil {
+			if IsPermanent(err) && !operator.IsNotFound(err) {
+				// Still remove finalizer on permanent cancel failures to avoid stuck CRs;
+				// log via event and continue.
+				r.event(cr, corev1.EventTypeWarning, "CancelFailed", err.Error())
+			} else if !IsPermanent(err) {
+				return ctrl.Result{}, err
+			}
+		} else {
+			r.event(cr, corev1.EventTypeNormal, "RunCancelled", "cancelled control plane run "+runID)
+		}
+	}
+	controllerutil.RemoveFinalizer(cr, FinalizerCancelRun)
+	if err := r.Update(ctx, cr); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+func emptyAsNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+func (r *RehearsalRunReconciler) patchStatus(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun) error {
+	var latest rehearsalv1beta1.RehearsalRun
+	if err := r.Get(ctx, client.ObjectKeyFromObject(cr), &latest); err != nil {
+		return err
+	}
+	base := latest.DeepCopy()
+	latest.Status = cr.Status
+	return r.Status().Patch(ctx, &latest, client.MergeFrom(base))
 }
 
 // SpecDigest returns a stable sha256 of the CR spec for drift detection.
@@ -272,35 +409,51 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func (r *RehearsalRunReconciler) fail(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun, msg string) (ctrl.Result, error) {
+func (r *RehearsalRunReconciler) fail(ctx context.Context, cr *rehearsalv1beta1.RehearsalRun, failErr error) (ctrl.Result, error) {
+	if failErr == nil {
+		failErr = &PermanentError{Reason: "Error", Message: "unknown failure"}
+	}
+	msg := failErr.Error()
+	reason := "Error"
+	permanent := IsPermanent(failErr)
+	var pe *PermanentError
+	if errors.As(failErr, &pe) && pe.Reason != "" {
+		reason = pe.Reason
+	} else if permanent {
+		reason = "PermanentError"
+	}
+	if reason == "SpecConflict" {
+		r.event(cr, corev1.EventTypeWarning, "SpecConflict", msg)
+	} else if permanent {
+		r.event(cr, corev1.EventTypeWarning, reason, msg)
+	} else {
+		r.event(cr, corev1.EventTypeWarning, "TransientError", msg)
+	}
+
 	cr.Status.Message = msg
 	setCond(cr, rehearsalv1beta1.ConditionAccepted, metav1.ConditionTrue, "Accepted", "spec accepted")
-	setCond(cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionFalse, "Error", msg)
-	setCond(cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, "Error", msg)
-	setCond(cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionTrue, "Error", msg)
-	_ = r.Status().Update(ctx, cr)
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	setCond(cr, rehearsalv1beta1.ConditionRunning, metav1.ConditionFalse, reason, msg)
+	setCond(cr, rehearsalv1beta1.ConditionReady, metav1.ConditionFalse, reason, msg)
+	setCond(cr, rehearsalv1beta1.ConditionFailed, metav1.ConditionTrue, reason, msg)
+	if err := r.patchStatus(ctx, cr); err != nil {
+		return ctrl.Result{}, err
+	}
+	if permanent {
+		// Wait for generation change; do not hot-loop.
+		return ctrl.Result{}, nil
+	}
+	// Transient: return error so the workqueue applies exponential backoff.
+	return ctrl.Result{}, failErr
 }
 
-// setCond updates a condition. lastTransitionTime changes only when status/reason/message change.
+// setCond updates a condition via meta.SetStatusCondition (ObservedGeneration, stable transitions).
 func setCond(cr *rehearsalv1beta1.RehearsalRun, typ string, status metav1.ConditionStatus, reason, msg string) {
-	now := metav1.Now()
-	for i := range cr.Status.Conditions {
-		c := &cr.Status.Conditions[i]
-		if c.Type != typ {
-			continue
-		}
-		if c.Status == status && c.Reason == reason && c.Message == msg {
-			return
-		}
-		c.Status = status
-		c.Reason = reason
-		c.Message = msg
-		c.LastTransitionTime = now
-		return
-	}
-	cr.Status.Conditions = append(cr.Status.Conditions, metav1.Condition{
-		Type: typ, Status: status, Reason: reason, Message: msg, LastTransitionTime: now,
+	meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+		Type:               typ,
+		Status:             status,
+		Reason:             reason,
+		Message:            msg,
+		ObservedGeneration: cr.Generation,
 	})
 }
 
@@ -313,11 +466,28 @@ func isTerminal(phase string) bool {
 	}
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *RehearsalRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&rehearsalv1beta1.RehearsalRun{}).
-		Complete(r)
+// deletionOrGenerationChanged reconciles on spec generation changes and on deletion.
+func deletionOrGenerationChanged() predicate.Predicate {
+	return predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				if e.ObjectNew == nil {
+					return false
+				}
+				return !e.ObjectNew.GetDeletionTimestamp().IsZero()
+			},
+		},
+	)
 }
 
-var _ = time.Second
+// SetupWithManager sets up the controller with the Manager.
+func (r *RehearsalRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("rehearsalrun-controller")
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&rehearsalv1beta1.RehearsalRun{}).
+		WithEventFilter(deletionOrGenerationChanged()).
+		Complete(r)
+}
