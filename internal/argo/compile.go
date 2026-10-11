@@ -380,7 +380,13 @@ func walkYAML(dir string, fn func(map[string]any) error) error {
 		if err != nil {
 			return err
 		}
+		// Kubernetes ConfigMap/Secret volumes use atomic symlink dirs ("..data", "..2026_…").
+		// Walking them doubles every manifest (symlink + real file) and can drop attributes
+		// when duplicate patchNodes are applied (e.g. nodeSelector lost → false ALLOW).
 		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), "..") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		name := strings.ToLower(d.Name())

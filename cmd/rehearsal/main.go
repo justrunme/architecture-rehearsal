@@ -66,6 +66,8 @@ func main() {
 		code = cmdStatus(os.Args[2:])
 	case "argo-impact":
 		code = cmdArgoImpact(os.Args[2:])
+	case "argo-presync":
+		code = cmdArgoPresync(os.Args[2:])
 	case "backup":
 		code = cmdBackup(os.Args[2:])
 	case "version":
@@ -101,6 +103,7 @@ Usage:
   rehearsal status   github|gitlab --sha SHA --state success|failure [--decision block]
   rehearsal argo-impact --app NAME [--revision REV] --baseline FILE|--live|--dump-dir DIR
   rehearsal argo-impact --desired-dir DIR --baseline FILE   # offline fixtures
+  rehearsal argo-presync --desired-dir DIR --baseline FILE|--live  # Argo PreSync hook
   rehearsal backup   --db PATH --out PATH
   rehearsal merge|store|audit|sign|verify-sign ...
   rehearsal version

@@ -19,6 +19,7 @@ Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-re
 - Gates deploy with approve / warn / block / unknown using a deterministic policy engine
 - Verifies post-deploy observations against rehearsed scenarios and writes a content-addressed evidence chain
 - Explains Argo CD sync impact (`rehearsal argo-impact`) — scheduling, PVC, NetworkPolicy, PDB, blast radius — without re-implementing Argo diff ([docs](docs/argo-impact-gate.md))
+- Blocks risky GitOps syncs inside the cluster via an Argo CD **PreSync** hook (`rehearsal argo-presync`) so CI bypass (manual/UI sync) cannot skip the gate ([docs](docs/argo-presync-gate.md))
 
 ## Why
 
@@ -32,6 +33,10 @@ make demo && make e2e
 make e2e-argo   # Argo CD impact gate fixtures (PASS/BLOCK scenarios)
 make build && ./bin/rehearsal version
 ```
+
+## Argo CD PreSync gate
+
+Platform teams: run the change-impact gate as a PreSync Job on every sync (not only in CI). Fail closed on `BLOCK`/`UNKNOWN`; optional audited break-glass annotations on the Application. Kind e2e: `make e2e-argo-presync` · metrics in [docs/EVIDENCE.md](docs/EVIDENCE.md).
 
 ## Architecture
 

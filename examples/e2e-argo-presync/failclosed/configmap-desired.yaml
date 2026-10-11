@@ -1,0 +1,11 @@
+# Intentionally empty desired payload so the gate cannot compute impact → UNKNOWN / non-zero.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rehearsal-argo-presync-desired
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  README.txt: "no yaml manifests — fail-closed negative fixture"

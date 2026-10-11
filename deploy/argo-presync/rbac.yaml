@@ -1,0 +1,55 @@
+# Least-privilege read-only access for the PreSync change-impact gate.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-2"
+  name: rehearsal-argo-presync
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "services", "persistentvolumeclaims", "persistentvolumes", "events", "endpoints", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  # Break-glass annotations on the Argo CD Application.
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-2"
+  name: rehearsal-argo-presync
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: default # kustomize/helm overlay sets destination namespace

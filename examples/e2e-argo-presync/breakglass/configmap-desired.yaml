@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rehearsal-argo-presync-desired
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  app.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: demo-api
+      namespace: presync-breakglass
+      labels:
+        app: demo-api
+        e2e.rehearsal.io/scenario: breakglass
+    spec:
+      replicas: 8
+      selector:
+        matchLabels:
+          app: demo-api
+      strategy:
+        rollingUpdate:
+          maxSurge: 4
+      template:
+        metadata:
+          labels:
+            app: demo-api
+        spec:
+          nodeSelector:
+            e2e.rehearsal.io/no-such-node: "true"
+          containers:
+            - name: api
+              image: registry.k8s.io/pause:3.9
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 2Gi
