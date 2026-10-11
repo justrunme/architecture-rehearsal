@@ -61,12 +61,14 @@ test "${CTRL_READY:-0}" -ge 1
 
 echo "==> in-cluster git HTTP server for native Application sync"
 kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
-# Pack repo into a ConfigMap of files is awkward for .git; use a hostPath-less approach:
-# create a Pod that clones from a tar of the repo baked into a ConfigMap via emptyDir init.
-TAR="$OUT_ROOT/git-src.tar"
-tar -C "$OUT_ROOT" -cf "$TAR" git-src
-kubectl -n "$ARGO_NS" delete configmap git-src-tar --ignore-not-found
-kubectl -n "$ARGO_NS" create configmap git-src-tar --from-file=git-src.tar="$TAR"
+BARE="$OUT_ROOT/git-src.git"
+rm -rf "$BARE"
+git clone --bare "$REPO_DIR" "$BARE"
+git --git-dir="$BARE" update-server-info
+# Ensure dumb HTTP info files are present for nginx static serve.
+test -f "$BARE/HEAD"
+test -f "$BARE/info/refs" || git --git-dir="$BARE" update-server-info
+
 cat <<'EOF' | kubectl apply -f -
 apiVersion: v1
 kind: Pod
@@ -85,34 +87,13 @@ spec:
         - name: www
           mountPath: /usr/share/nginx/html
       readinessProbe:
-        httpGet:
-          path: /git-src.git/HEAD
+        tcpSocket:
           port: 80
-        initialDelaySeconds: 2
+        initialDelaySeconds: 1
         periodSeconds: 2
-  initContainers:
-    - name: seed
-      image: alpine:3.20
-      command: ["sh", "-c"]
-      args:
-        - |
-          set -e
-          apk add --no-cache tar git >/dev/null
-          mkdir -p /www
-          tar -xf /tar/git-src.tar -C /www
-          git clone --bare /www/git-src /www/git-src.git
-          cd /www/git-src.git && git update-server-info
-      volumeMounts:
-        - name: www
-          mountPath: /www
-        - name: tar
-          mountPath: /tar
   volumes:
     - name: www
       emptyDir: {}
-    - name: tar
-      configMap:
-        name: git-src-tar
 ---
 apiVersion: v1
 kind: Service
@@ -127,6 +108,25 @@ spec:
       targetPort: 80
 EOF
 kubectl -n "$ARGO_NS" wait --for=condition=Ready pod/git-http --timeout=120s
+# Seed bare repo into the pod (avoids ConfigMap size / init apk issues).
+kubectl -n "$ARGO_NS" cp "$BARE" "git-http:/usr/share/nginx/html/git-src.git"
+kubectl -n "$ARGO_NS" exec git-http -- ls /usr/share/nginx/html/git-src.git/HEAD
+
+# Allow insecure HTTP repo in Argo CD
+kubectl -n "$ARGO_NS" patch configmap argocd-cm --type merge -p '{"data":{"timeout.reconciliation":"30s"}}' || true
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-http-repo
+  namespace: ${ARGO_NS}
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: git
+  url: http://git-http.${ARGO_NS}.svc.cluster.local/git-src.git
+  insecure: "true"
+EOF
 
 echo "==> create demo Application CR syncing in-cluster git repo"
 cat <<EOF | kubectl apply -f -
