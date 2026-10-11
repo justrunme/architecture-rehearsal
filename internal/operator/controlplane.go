@@ -4,6 +4,7 @@ package operator
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,49 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/run"
 )
+
+// HTTPStatusError is returned for non-success control-plane HTTP responses.
+type HTTPStatusError struct {
+	Op         string
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e == nil {
+		return "http status error"
+	}
+	if e.Body == "" {
+		return fmt.Sprintf("%s %d", e.Op, e.StatusCode)
+	}
+	return fmt.Sprintf("%s %d: %s", e.Op, e.StatusCode, e.Body)
+}
+
+// Permanent reports whether the status is a non-retryable client error (4xx except 429).
+func (e *HTTPStatusError) Permanent() bool {
+	if e == nil {
+		return false
+	}
+	return e.StatusCode >= 400 && e.StatusCode < 500 && e.StatusCode != 429
+}
+
+// IsNotFound reports whether the error is an HTTP 404.
+func IsNotFound(err error) bool {
+	var he *HTTPStatusError
+	return errors.As(err, &he) && he.StatusCode == http.StatusNotFound
+}
+
+// IsPermanent reports whether err is a permanent (non-requeue) control-plane/client error.
+func IsPermanent(err error) bool {
+	if err == nil {
+		return false
+	}
+	var he *HTTPStatusError
+	if errors.As(err, &he) {
+		return he.Permanent()
+	}
+	return false
+}
 
 // ControlPlaneClient talks to rehearsal serve HTTP API.
 // BaseURL must come only from operator deployment config — never from user CR fields.
@@ -96,7 +140,7 @@ func (c *ControlPlaneClient) EnsureRun(rr *run.RehearsalRun) (*EnsureResult, err
 		}
 		return &EnsureResult{Conflict: true, Run: existing}, nil
 	default:
-		return nil, fmt.Errorf("create run %d: %s", resp.StatusCode, raw)
+		return nil, &HTTPStatusError{Op: "create run", StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 }
 
@@ -119,7 +163,7 @@ func (c *ControlPlaneClient) Advance(runID string, async bool) (*AdvanceResult, 
 	out := &AdvanceResult{StatusCode: resp.StatusCode}
 	_ = json.Unmarshal(raw, &out.Raw)
 	if resp.StatusCode != 200 && resp.StatusCode != 202 {
-		return out, fmt.Errorf("advance %d: %s", resp.StatusCode, raw)
+		return out, &HTTPStatusError{Op: "advance", StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 	if resp.StatusCode == 202 {
 		if j, ok := out.Raw["jobId"].(string); ok {
@@ -141,14 +185,47 @@ func (c *ControlPlaneClient) GetRun(runID string) (*run.RehearsalRun, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("get run %d", resp.StatusCode)
+		return nil, &HTTPStatusError{Op: "get run", StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 	var rr run.RehearsalRun
-	if err := json.NewDecoder(resp.Body).Decode(&rr); err != nil {
+	if err := json.Unmarshal(raw, &rr); err != nil {
 		return nil, err
 	}
 	return &rr, nil
+}
+
+// Cancel requests cancellation of a control-plane run (POST advance action=cancel).
+// Idempotent: 404 and already-terminal runs are treated as success.
+func (c *ControlPlaneClient) Cancel(runID string) error {
+	if runID == "" {
+		return nil
+	}
+	existing, err := c.GetRun(runID)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if existing != nil && existing.Status.Phase.Terminal() {
+		return nil
+	}
+	resp, err := c.do(http.MethodPost, "/v1/runs/"+runID+"/advance", map[string]any{"action": "cancel"})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusAccepted:
+		return nil
+	case http.StatusNotFound:
+		return nil
+	default:
+		return &HTTPStatusError{Op: "cancel run", StatusCode: resp.StatusCode, Body: string(raw)}
+	}
 }
 
 // Reconciler drives RehearsalRun objects from a watch directory.

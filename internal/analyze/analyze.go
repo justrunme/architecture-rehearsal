@@ -407,6 +407,19 @@ func applyActiveCoverageGaps(ch *loader.ChangeEnvelope, base *graph.Snapshot, co
 			cov.RequiredMissing = append(cov.RequiredMissing, "yaml_parse_errors")
 			cov.Gaps = append(cov.Gaps, fmt.Sprintf("change yaml_parse_errors=%d", n))
 		}
+		if n := loader.FactInt(ch.Facts, "unsupported_resource_changes", 0); n > 0 {
+			cov.RequiredMissing = append(cov.RequiredMissing, "unsupported_resource_changes")
+			cov.Gaps = append(cov.Gaps, fmt.Sprintf("unsupported_resource_changes=%d", n))
+			if addrs, ok := ch.Facts["unsupported_resource_addresses"].([]string); ok && len(addrs) > 0 {
+				cov.Gaps = append(cov.Gaps, "unsupported addresses: "+strings.Join(addrs, ", "))
+			} else if raw, ok := ch.Facts["unsupported_resource_addresses"].([]any); ok && len(raw) > 0 {
+				parts := make([]string, 0, len(raw))
+				for _, a := range raw {
+					parts = append(parts, fmt.Sprint(a))
+				}
+				cov.Gaps = append(cov.Gaps, "unsupported addresses: "+strings.Join(parts, ", "))
+			}
+		}
 	}
 	if base != nil && base.Meta != nil {
 		if gap, ok := base.Meta["coverage_gap"].(string); ok && gap != "" {
