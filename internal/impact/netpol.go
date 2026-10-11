@@ -140,20 +140,6 @@ func cutsEdge(np, from, to *graph.Node) bool {
 	egressEmpty := np.AttrBool("egressEmpty")
 	ingressEmpty := np.AttrBool("ingressEmpty")
 
-	// Explicit fact override for fixtures: cutsDependencies list.
-	if raw, ok := np.Attributes["cutsDependencies"].([]any); ok {
-		for _, c := range raw {
-			if fmt.Sprint(c) == from.ID+"->"+to.ID || fmt.Sprint(c) == from.Name+"->"+to.Name {
-				return true
-			}
-		}
-	}
-	if s := np.AttrString("cutsDependency"); s != "" {
-		if s == from.ID+"->"+to.ID || s == from.Name+"->"+to.Name || s == "*" {
-			return true
-		}
-	}
-
 	if selectsFrom && egressEmpty && (np.Namespace == "" || np.Namespace == from.Namespace) {
 		return true
 	}

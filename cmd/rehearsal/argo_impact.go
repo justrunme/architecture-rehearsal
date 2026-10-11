@@ -43,6 +43,7 @@ func cmdArgoImpact(args []string) int {
 	title := fs.String("title", "", "change title")
 	quiet := fs.Bool("quiet", false, "compact summary only")
 	postStatus := fs.Bool("post-status", false, "post GitHub/GitLab commit status when env configured")
+	statusErrors := fs.String("status-errors", "fail", "how to treat commit-status/check-run post failures: fail|warn")
 	sha := fs.String("sha", "", "commit sha for status (defaults GITHUB_SHA / CI_COMMIT_SHA)")
 	workdir := fs.String("workdir", "", "scratch dir for fetched manifests (default under --out)")
 	fs.SetOutput(os.Stderr)
@@ -184,12 +185,33 @@ func cmdArgoImpact(args []string) int {
 		if commit != "" {
 			st, conclusion := status.MapDecision(impact.ToAnalyzeDecision(imp.Verdict), code)
 			desc := fmt.Sprintf("argo-impact %s", imp.Verdict)
+			warnOnly := strings.EqualFold(*statusErrors, "warn")
+			handleStatusErr := func(what string, err error) int {
+				if err == nil {
+					return 0
+				}
+				msg := fmt.Sprintf("status post %s failed: %v", what, err)
+				if warnOnly {
+					fmt.Fprintf(os.Stderr, "WARNING: %s\n", msg)
+					return 0
+				}
+				fmt.Fprintf(os.Stderr, "%s\n", msg)
+				return 5
+			}
 			if g, err := status.FromEnvGitHub(); err == nil {
-				_ = g.PostCommitStatus(commit, status.Status{State: st, Description: desc, Context: "architecture-rehearsal/argo-impact"})
-				_ = g.PostCheckRun(commit, "Argo CD impact gate", conclusion, impact.CheckSummary(imp))
+				if ec := handleStatusErr("github commit status", g.PostCommitStatus(commit, status.Status{State: st, Description: desc, Context: "architecture-rehearsal/argo-impact"})); ec != 0 {
+					return ec
+				}
+				if ec := handleStatusErr("github check run", g.PostCheckRun(commit, "Argo CD impact gate", conclusion, impact.CheckSummary(imp))); ec != 0 {
+					return ec
+				}
+			} else if err != nil && !warnOnly {
+				fmt.Fprintf(os.Stderr, "status post github client: %v\n", err)
 			}
 			if gl, err := status.FromEnvGitLab(); err == nil {
-				_ = gl.PostCommitStatus(commit, status.Status{State: st, Description: desc, Context: "architecture-rehearsal/argo-impact"})
+				if ec := handleStatusErr("gitlab commit status", gl.PostCommitStatus(commit, status.Status{State: st, Description: desc, Context: "architecture-rehearsal/argo-impact"})); ec != 0 {
+					return ec
+				}
 			}
 		}
 	}

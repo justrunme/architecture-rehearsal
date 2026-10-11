@@ -38,6 +38,9 @@ func NewCLIFetcherFromEnv() *CLIFetcher {
 	if os.Getenv("ARGOCD_INSECURE") == "true" || os.Getenv("ARGOCD_INSECURE") == "1" {
 		f.Insecure = true
 	}
+	if os.Getenv("ARGOCD_GRPC_WEB") == "true" || os.Getenv("ARGOCD_GRPC_WEB") == "1" {
+		f.ExtraArgs = append(f.ExtraArgs, "--grpc-web")
+	}
 	return f
 }
 
@@ -53,18 +56,17 @@ func (f *CLIFetcher) Fetch(app ApplicationRef, destDir string) error {
 	if bin == "" {
 		bin = "argocd"
 	}
-	args := []string{"app", "manifests", app.Name}
+	// Argo CD CLI resolves apps in other namespaces via "ns/name" (no --app-namespace on manifests).
+	appArg := app.Name
+	if app.Namespace != "" && !strings.Contains(app.Name, "/") {
+		appArg = app.Namespace + "/" + app.Name
+	}
+	args := []string{"app", "manifests", appArg}
 	if app.Revision != "" {
 		args = append(args, "--revision", app.Revision)
 	}
-	if app.Namespace != "" {
-		args = append(args, "--app-namespace", app.Namespace)
-	}
 	if f.Server != "" {
 		args = append(args, "--server", f.Server)
-	}
-	if f.AuthToken != "" {
-		args = append(args, "--auth-token", f.AuthToken)
 	}
 	if f.Insecure {
 		args = append(args, "--insecure")
@@ -72,6 +74,10 @@ func (f *CLIFetcher) Fetch(app ApplicationRef, destDir string) error {
 	args = append(args, f.ExtraArgs...)
 
 	cmd := exec.Command(bin, args...)
+	// Prefer ARGOCD_AUTH_TOKEN env over --auth-token (avoids process-list leakage).
+	if f.AuthToken != "" {
+		cmd.Env = append(os.Environ(), "ARGOCD_AUTH_TOKEN="+f.AuthToken)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

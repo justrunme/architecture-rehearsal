@@ -32,18 +32,8 @@ run() {
 
 run unschedulable 3
 run netpol-cut 3
-echo "==> pdb-violation (expect 1 or 3)"
-mkdir -p "$OUT/pdb-violation"
-set +e
-"$BIN" argo-impact --app demo-pdb-violation \
-  --desired-dir examples/e2e-argo/pdb-violation/desired \
-  --baseline examples/e2e-argo/pdb-violation/baseline.json \
-  --out "$OUT/pdb-violation" --quiet | tee "$OUT/pdb-violation/cli.txt"
-code=$?
-set -e
-echo "pdb-violation exit=$code expect=1|3" | tee -a "$OUT/results.txt"
-test "$code" -eq 1 -o "$code" -eq 3
-test -f "$OUT/pdb-violation/argo-impact.md"
+run pdb-violation 3
+run unknown-pdb-inventory 4
 run benign 0
 
 echo "OK e2e_argo_impact"

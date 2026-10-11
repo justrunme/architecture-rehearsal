@@ -7,13 +7,43 @@
   "phase": "baseline",
   "createdAt": "2026-10-11T00:00:00Z",
   "meta": {
-    "pod_scheduling_capacity_estimate": 50
+    "pod_scheduling_capacity_estimate": 50,
+    "pdbsCollected": true
   },
   "nodes": [
-    { "id": "cluster/kind", "kind": "Cluster", "name": "kind" },
-    { "id": "ns/demo", "kind": "Namespace", "name": "demo" },
-    { "id": "node/worker-a", "kind": "Node", "name": "worker-a", "attributes": { "allocatablePods": 110, "zone": "z1" } },
-    { "id": "workload/demo/api", "kind": "Workload", "name": "api", "namespace": "demo", "attributes": { "type": "Deployment", "replicas": 2, "maxSurge": "1", "podLabels": { "app": "api" } } }
+    {
+      "id": "cluster/kind",
+      "kind": "Cluster",
+      "name": "kind"
+    },
+    {
+      "id": "ns/demo",
+      "kind": "Namespace",
+      "name": "demo"
+    },
+    {
+      "id": "node/worker-a",
+      "kind": "Node",
+      "name": "worker-a",
+      "attributes": {
+        "allocatablePods": 110,
+        "zone": "z1"
+      }
+    },
+    {
+      "id": "workload/demo/api",
+      "kind": "Workload",
+      "name": "api",
+      "namespace": "demo",
+      "attributes": {
+        "type": "Deployment",
+        "replicas": 2,
+        "maxSurge": "1",
+        "podLabels": {
+          "app": "api"
+        }
+      }
+    }
   ],
   "edges": []
 }

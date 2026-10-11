@@ -29,6 +29,13 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 		pdbs = ctx.BaseIdx.ByKind[graph.KindPDB]
 	}
 	if len(pdbs) == 0 {
+		if !ctx.PDBsCollected {
+			v.Status = Unknown
+			v.Explanation = "PDB inventory status unknown (baseline did not record PDB collection)"
+			v.Missing = []string{"pdb-inventory"}
+			v.Confidence = "low"
+			return v
+		}
 		v.Status = Pass
 		v.Explanation = "no PodDisruptionBudgets in graph"
 		v.Confidence = "high"
@@ -69,11 +76,19 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 				w = ctx.BaseIdx.ByID[wid]
 			}
 			if w == nil {
-				continue
+				v.Status = Unknown
+				v.Explanation = fmt.Sprintf("PDB %s references unresolved workload %s", pdb.Name, wid)
+				v.Missing = []string{"workload:" + wid}
+				v.Confidence = "low"
+				return v
 			}
 			rep := w.WorkloadReplicas()
 			if rep <= 0 {
-				continue
+				v.Status = Unknown
+				v.Explanation = fmt.Sprintf("PDB %s workload %s has replicas<=0 (unknown rollout impact)", pdb.Name, display(ctx.PropIdx, wid))
+				v.Missing = []string{"replicas:" + wid}
+				v.Confidence = "low"
+				return v
 			}
 			minA := effectiveMinAvailable(pdb, rep)
 			maxU := effectiveMaxUnavailable(pdb, rep)

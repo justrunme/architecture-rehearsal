@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+- Argo impact fail-closed: empty detector list / empty status → UNKNOWN; PDB inventory unknown → UNKNOWN; unresolved workload or replicas<=0 → UNKNOWN
+- Remove NetworkPolicy fixture override attributes (`cutsDependencies` / `cutsDependency`)
+- Kind e2e exercises native Argo Application sync + CLIFetcher (`argocd app manifests`) with `--live`
+- Pass Argo token via `ARGOCD_AUTH_TOKEN` env (not `--auth-token`); surface commit-status/check-run post errors (`--status-errors=fail|warn`)
+- Scheduling capacity accounts for CPU/memory requests vs allocatable (UNKNOWN when requests missing)
+
+### Tests
+- Exact PDB BLOCK and blast-radius affected-set assertions; Aggregate/exit-code unit tests; e2e UNKNOWN exit 4
+
+
 ### Argo CD change-impact gate
 - Native adapter: Argo Application desired manifests (`argocd app manifests --revision` or rendered directory) + live baseline → `ChangeEnvelope` (`argo-sync`) → causal graph
 - Detectors with PASS/WARN/BLOCK/UNKNOWN: scheduling capacity, PVC zone conflicts, NetworkPolicy cutting `DEPENDS_ON`, PDB rollout, blast radius

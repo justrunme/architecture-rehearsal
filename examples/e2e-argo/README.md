@@ -7,6 +7,7 @@ Four asserted scenarios for `rehearsal argo-impact`:
 | `unschedulable/` | BLOCK (replicas vs capacity) | 3 |
 | `netpol-cut/` | BLOCK (NetworkPolicy cuts app→postgres) | 3 |
 | `pdb-violation/` | WARN or BLOCK (PDB vs rollout) | 1 or 3 |
+| `unknown-pdb-inventory/` | UNKNOWN (PDB inventory not collected) | 4 |
 | `benign/` | PASS | 0 |
 
 ```bash

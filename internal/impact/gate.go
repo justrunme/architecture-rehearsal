@@ -15,11 +15,12 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope, detectors []Detector) 
 	}
 	proposed := loader.ApplyChange(base, ch)
 	ctx := Context{
-		Baseline: base,
-		Proposed: proposed,
-		Change:   ch,
-		BaseIdx:  graph.BuildIndex(base),
-		PropIdx:  graph.BuildIndex(proposed),
+		Baseline:      base,
+		Proposed:      proposed,
+		Change:        ch,
+		BaseIdx:       graph.BuildIndex(base),
+		PropIdx:       graph.BuildIndex(proposed),
+		PDBsCollected: pdbsInventoryKnown(base),
 	}
 
 	var verdicts []Verdict
@@ -132,4 +133,24 @@ func summaryLine(gate string, vs []Verdict) string {
 	}
 	return fmt.Sprintf("gate=%s detectors: PASS=%d WARN=%d BLOCK=%d UNKNOWN=%d",
 		gate, counts[Pass], counts[Warn], counts[Block], counts[Unknown])
+}
+
+func pdbsInventoryKnown(base *graph.Snapshot) bool {
+	if base == nil {
+		return false
+	}
+	if base.Meta != nil {
+		switch v := base.Meta["pdbsCollected"].(type) {
+		case bool:
+			return v
+		case string:
+			return v == "true" || v == "1"
+		}
+	}
+	for _, n := range base.Nodes {
+		if n.Kind == graph.KindPDB {
+			return true
+		}
+	}
+	return false
 }
