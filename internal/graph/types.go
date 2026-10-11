@@ -76,6 +76,7 @@ const (
 	KindTeam           Kind = "Team"
 	KindChange         Kind = "Change"
 	KindIAMRole        Kind = "IAMRole"
+	KindNetworkPolicy  Kind = "NetworkPolicy"
 )
 
 // KnownKinds for validation.
@@ -84,6 +85,7 @@ var KnownKinds = map[Kind]bool{
 	KindPod: true, KindService: true, KindIngress: true, KindPVC: true, KindPV: true,
 	KindPDB: true, KindHPA: true, KindServiceAccount: true, KindAlert: true,
 	KindSLO: true, KindTeam: true, KindChange: true, KindIAMRole: true,
+	KindNetworkPolicy: true,
 }
 
 // Relation enumerates edge types.

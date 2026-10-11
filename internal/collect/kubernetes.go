@@ -689,6 +689,35 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			ID: id, Kind: graph.KindIngress, Name: name, Namespace: ns,
 			Source: "kubernetes", SourceRef: "networking/Ingress/" + ns + "/" + name,
 		})
+	case "NetworkPolicy":
+		id := fmt.Sprintf("netpol/%s/%s", ns, name)
+		attrs := map[string]any{}
+		if spec, ok := obj["spec"].(map[string]any); ok {
+			if pt, ok := spec["policyTypes"]; ok {
+				attrs["policyTypes"] = pt
+			}
+			if podSel, ok := spec["podSelector"].(map[string]any); ok {
+				if ml, ok := podSel["matchLabels"].(map[string]any); ok {
+					attrs["podSelector"] = ml
+				}
+			}
+			if ing, ok := spec["ingress"]; ok {
+				attrs["ingress"] = ing
+				if list, ok := ing.([]any); ok && len(list) == 0 {
+					attrs["ingressEmpty"] = true
+				}
+			}
+			if eg, ok := spec["egress"]; ok {
+				attrs["egress"] = eg
+				if list, ok := eg.([]any); ok && len(list) == 0 {
+					attrs["egressEmpty"] = true
+				}
+			}
+		}
+		addNode(snap, graph.Node{
+			ID: id, Kind: graph.KindNetworkPolicy, Name: name, Namespace: ns, Attributes: attrs,
+			Source: "kubernetes", SourceRef: "networking/NetworkPolicy/" + ns + "/" + name,
+		})
 	default:
 		// ignore
 	}

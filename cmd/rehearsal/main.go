@@ -64,6 +64,8 @@ func main() {
 		code = cmdOperator(os.Args[2:])
 	case "status":
 		code = cmdStatus(os.Args[2:])
+	case "argo-impact":
+		code = cmdArgoImpact(os.Args[2:])
 	case "backup":
 		code = cmdBackup(os.Args[2:])
 	case "version":
@@ -97,6 +99,8 @@ Usage:
   rehearsal serve    --workdir DIR [--addr :8080] [--db PATH|postgres://] [--blob DIR] [--async] [--workers N]
   rehearsal operator [--watch DIR] [--api URL] [--token TOK] [--once]
   rehearsal status   github|gitlab --sha SHA --state success|failure [--decision block]
+  rehearsal argo-impact --app NAME [--revision REV] --baseline FILE|--live|--dump-dir DIR
+  rehearsal argo-impact --desired-dir DIR --baseline FILE   # offline fixtures
   rehearsal backup   --db PATH --out PATH
   rehearsal merge|store|audit|sign|verify-sign ...
   rehearsal version

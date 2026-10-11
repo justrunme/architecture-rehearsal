@@ -1,0 +1,92 @@
+# Example: Argo CD change-impact gate on pull requests.
+# Explains sync consequences (scheduling, PVC, NetworkPolicy, PDB, blast radius).
+# Does not re-implement Argo CD diff — desired manifests come from argocd or a render step.
+name: Argo CD impact gate
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "charts/**"
+      - "k8s/**"
+      - "examples/e2e-argo/**"
+
+jobs:
+  argo-impact:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Install rehearsal
+        run: go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@latest
+      - name: Desired manifests
+        id: desired
+        run: |
+          # Prefer live Argo when credentials exist; otherwise use a render step / fixture dir.
+          mkdir -p /tmp/argo-desired
+          if [[ -n "${{ secrets.ARGOCD_AUTH_TOKEN }}" && -n "${{ vars.ARGOCD_APP }}" ]]; then
+            echo "mode=argocd" >> "$GITHUB_OUTPUT"
+            # argocd app manifests is invoked by: rehearsal argo-impact --app ...
+          else
+            echo "mode=directory" >> "$GITHUB_OUTPUT"
+            # Replace with: helm template / kustomize build / argocd app manifests > /tmp/argo-desired
+            cp -a examples/e2e-argo/benign/desired/. /tmp/argo-desired/
+          fi
+      - name: Baseline snapshot
+        run: |
+          # Live: rehearsal snapshot k8s --live --out baseline.json
+          # CI example uses fixture baseline:
+          cp examples/e2e-argo/benign/baseline.json baseline.json
+      - name: Argo impact gate
+        id: gate
+        env:
+          ARGOCD_SERVER: ${{ vars.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          ARGOCD_INSECURE: ${{ vars.ARGOCD_INSECURE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          if [[ "${{ steps.desired.outputs.mode }}" == "argocd" ]]; then
+            rehearsal argo-impact \
+              --app "${{ vars.ARGOCD_APP }}" \
+              --revision "${{ github.event.pull_request.head.sha || github.sha }}" \
+              --baseline baseline.json \
+              --out out/argo-impact \
+              --post-status \
+              --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+              --quiet
+          else
+            rehearsal argo-impact \
+              --app "${{ vars.ARGOCD_APP || 'demo' }}" \
+              --desired-dir /tmp/argo-desired \
+              --baseline baseline.json \
+              --out out/argo-impact \
+              --post-status \
+              --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+              --quiet
+          fi
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+      - name: Publish check summary
+        if: always()
+        run: |
+          echo "### Argo CD change-impact gate" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f out/argo-impact/argo-impact.md ]]; then
+            cat out/argo-impact/argo-impact.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Exit code: ${{ steps.gate.outputs.code }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "0=PASS 1=WARN 3=BLOCK 4=UNKNOWN" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: argo-impact-report
+          path: out/argo-impact/
+          if-no-files-found: ignore

@@ -190,6 +190,7 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	seen[key] = true
 	replicas := 1
 	maxSurge := ""
+	attrsMu := ""
 	if spec, ok := obj["spec"].(map[string]any); ok {
 		if v, ok := spec["replicas"]; ok {
 			switch t := v.(type) {
@@ -204,6 +205,9 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 				if ms, ok := ru["maxSurge"]; ok {
 					maxSurge = fmt.Sprint(ms)
 				}
+				if mu, ok := ru["maxUnavailable"]; ok {
+					attrsMu = fmt.Sprint(mu)
+				}
 			}
 		}
 	}
@@ -212,8 +216,14 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	if maxSurge != "" {
 		attrs["maxSurge"] = maxSurge
 	}
+	if attrsMu != "" {
+		attrs["maxUnavailable"] = attrsMu
+	}
 	if bn, ok := baseWL[key]; ok {
-		if bn.WorkloadReplicas() != replicas || (maxSurge != "" && bn.AttrString("maxSurge") != maxSurge) {
+		changed := bn.WorkloadReplicas() != replicas ||
+			(maxSurge != "" && bn.AttrString("maxSurge") != maxSurge) ||
+			(attrsMu != "" && bn.AttrString("maxUnavailable") != attrsMu)
+		if changed {
 			ch.PatchNodes = append(ch.PatchNodes, graph.Node{ID: id, Attributes: attrs})
 			ch.Seeds = append(ch.Seeds, id)
 		}
