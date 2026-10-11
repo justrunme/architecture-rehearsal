@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- Argo CD PreSync change-impact gate: `rehearsal argo-presync` Job hook (`deploy/argo-presync`, Helm `argoPresync`), fail-closed exit mapping (ALLOW/WARN→0, BLOCK/UNKNOWN→non-zero), audited break-glass Application annotations
+- Kind e2e job `argo-presync-kind-e2e` (`scripts/kind-argo-presync-e2e.sh`) proving safe sync, risky block (live object unchanged), fail-closed, and break-glass
+- Docs: `docs/argo-presync-gate.md`; EVIDENCE metrics for fixture risky/safe rates and hook latency
+
 ## [1.6.0] - 2026-10-11
 
 Native Argo CD change-impact gate and related hardening since 1.5.4:

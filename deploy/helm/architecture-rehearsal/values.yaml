@@ -87,3 +87,22 @@ serviceAccount:
 
 rbac:
   create: true
+
+# Argo CD PreSync change-impact gate (SA/RBAC; Job is normally part of Application sources).
+# See deploy/argo-presync/ and docs/argo-presync-gate.md.
+argoPresync:
+  enabled: false
+  includeHookJob: false
+  desiredConfigMap: rehearsal-argo-presync-desired
+  timeout: 90s
+  image:
+    repository: ghcr.io/justrunme/architecture-rehearsal-presync
+    tag: "1.6.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

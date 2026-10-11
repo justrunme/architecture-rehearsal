@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  labels:
+    app: demo-api
+    e2e.rehearsal.io/scenario: breakglass
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: demo-api
+  strategy:
+    rollingUpdate:
+      maxSurge: "4"
+  template:
+    metadata:
+      labels:
+        app: demo-api
+    spec:
+      # Matches zero kind nodes → scheduling-capacity BLOCK.
+      nodeSelector:
+        e2e.rehearsal.io/no-such-node: "true"
+      containers:
+        - name: api
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
