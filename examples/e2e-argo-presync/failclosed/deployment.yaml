@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo-api
+  namespace: presync-failclosed
   labels:
     app: demo-api
     e2e.rehearsal.io/scenario: failclosed
@@ -18,3 +19,4 @@ spec:
       containers:
         - name: api
           image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent

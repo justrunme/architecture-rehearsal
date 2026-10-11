@@ -1,9 +1,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: rehearsal-argo-presync
+  name: rehearsal-argo-presync-breakglass
   labels:
     app.kubernetes.io/name: rehearsal-argo-presync
+    e2e.rehearsal.io/scenario: breakglass
   annotations:
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
@@ -28,9 +29,11 @@ spec:
       containers:
         - name: gate
           image: architecture-rehearsal-presync:e2e
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           args:
             - argo-presync
+            - --app=presync-breakglass
+            - --app-namespace=argocd
             - --desired-dir=/gate/desired
             - --live
             - --namespace=presync-breakglass
@@ -39,6 +42,8 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            - name: SCENARIO
+              value: breakglass
           resources:
             requests:
               cpu: 50m

@@ -50,6 +50,59 @@ func TestDirFetcher(t *testing.T) {
 	}
 }
 
+func TestCompile_SkipsKubeConfigMapAtomicDirs(t *testing.T) {
+	// Simulate a projected ConfigMap volume: app.yaml symlink + ..data real file.
+	base := &graph.Snapshot{APIVersion: graph.APIVersionV1Alpha1, Nodes: []graph.Node{
+		{ID: "node/n1", Kind: graph.KindNode, Name: "n1", Attributes: map[string]any{"allocatablePods": 4, "schedulable": true}},
+		{ID: "workload/demo/api", Kind: graph.KindWorkload, Name: "api", Namespace: "demo",
+			Attributes: map[string]any{"replicas": 1, "type": "Deployment"}},
+	}}
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "..2026_01_01_00_00_00.1")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: demo
+spec:
+  replicas: 8
+  strategy:
+    rollingUpdate:
+      maxSurge: 4
+  template:
+    spec:
+      nodeSelector:
+        e2e.rehearsal.io/no-such-node: "true"
+      containers: [{name: api, image: x}]
+`)
+	if err := os.WriteFile(filepath.Join(realDir, "app.yaml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(realDir), filepath.Join(dir, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..data", "app.yaml"), filepath.Join(dir, "app.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := argo.Compile(base, argo.CompileOptions{
+		AppName: "demo", DesiredDir: dir,
+		Scope: change.ManifestScope{Namespaces: []string{"demo"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch.PatchNodes) != 1 {
+		t.Fatalf("expected 1 patchNode (no ConfigMap-volume duplicate), got %d: %#v", len(ch.PatchNodes), ch.PatchNodes)
+	}
+	ns, _ := ch.PatchNodes[0].Attributes["nodeSelector"].(map[string]any)
+	if len(ns) == 0 {
+		t.Fatalf("nodeSelector lost from patch: %#v", ch.PatchNodes[0].Attributes)
+	}
+}
+
 func TestCompileRecordsArgocdCLISource(t *testing.T) {
 	base := &graph.Snapshot{APIVersion: graph.APIVersionV1Alpha1, Nodes: []graph.Node{
 		{ID: "workload/demo/api", Kind: graph.KindWorkload, Name: "api", Namespace: "demo",

@@ -60,7 +60,11 @@ func FromManifestsDiff(base *graph.Snapshot, manifestDir, changeID, title string
 		if err != nil {
 			return err
 		}
+		// Skip kube ConfigMap/Secret atomic-update dirs ("..data", "..<timestamp>").
 		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), "..") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		name := strings.ToLower(d.Name())

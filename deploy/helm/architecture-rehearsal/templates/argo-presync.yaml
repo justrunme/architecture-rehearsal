@@ -64,7 +64,7 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 0
   template:
@@ -95,6 +95,10 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            - name: ARGOCD_APP_NAME
+              value: {{ .Values.argoPresync.appName | default "" | quote }}
+            - name: ARGOCD_APP_NAMESPACE
+              value: {{ .Values.argoPresync.appNamespace | default "argocd" | quote }}
           resources:
             {{- toYaml .Values.argoPresync.resources | nindent 12 }}
           securityContext:

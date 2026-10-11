@@ -94,6 +94,9 @@ argoPresync:
   enabled: false
   includeHookJob: false
   desiredConfigMap: rehearsal-argo-presync-desired
+  # Application name/namespace for break-glass annotation lookup (PreSync Job).
+  appName: ""
+  appNamespace: argocd
   timeout: 90s
   image:
     repository: ghcr.io/justrunme/architecture-rehearsal-presync

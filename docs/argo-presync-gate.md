@@ -41,6 +41,8 @@ metadata:
 
 The Job logs `BREAK-GLASS OVERRIDE reason=...` and emits `override` in the JSON line. Missing reason → fail closed.
 
+The PreSync Job must know the Application name (`--app` / `ARGOCD_APP_NAME`) so it can read these annotations (RBAC: `get`/`list` on `applications`).
+
 ## Install
 
 ### Kustomize / raw manifests

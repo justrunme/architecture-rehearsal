@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo-api
+  namespace: presync-demo
   labels:
     app: demo-api
     e2e.rehearsal.io/scenario: safe
@@ -18,6 +19,7 @@ spec:
       containers:
         - name: api
           image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
           resources:
             requests:
               cpu: 10m

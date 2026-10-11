@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo-api
+  namespace: presync-breakglass
   labels:
     app: demo-api
     e2e.rehearsal.io/scenario: breakglass
@@ -12,7 +13,7 @@ spec:
       app: demo-api
   strategy:
     rollingUpdate:
-      maxSurge: "4"
+      maxSurge: 4
   template:
     metadata:
       labels:
@@ -24,6 +25,7 @@ spec:
       containers:
         - name: api
           image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
           resources:
             requests:
               cpu: "2"
