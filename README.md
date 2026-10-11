@@ -9,6 +9,8 @@ Know what breaks before you deploy — and prove whether you were right.
 [![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/architecture-rehearsal/)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/justrunme/architecture-rehearsal/badge)](https://securityscorecards.dev/viewer/?uri=github.com/justrunme/architecture-rehearsal)
 
+Evidence: [docs/EVIDENCE.md](docs/EVIDENCE.md)
+
 Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-rehearsal/) · [Andrey Lesnikov](https://justrunme.com/)
 
 ## What it does
