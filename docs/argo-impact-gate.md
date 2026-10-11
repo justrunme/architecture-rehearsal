@@ -48,26 +48,28 @@ Exit codes match the decision model: `0` PASS · `1` WARN · `3` BLOCK · `4` UN
 
 See [`integrations/github-actions/argo-impact.yml`](../integrations/github-actions/argo-impact.yml).
 
-## Real gate output (fixture scenarios)
+## Real gate output (CI iron path)
 
-Captured from `rehearsal argo-impact` against `examples/e2e-argo/*` (same assertions as CI).
+Captured verbatim from `bash scripts/e2e_argo_impact.sh` (CI job step **Argo impact gate**). Same assertions as Kind + Argo CD e2e.
 
-### Results
+### Scenario exits
 
 ```
-unschedulable: verdict=BLOCK … exit=3
-netpol-cut:    verdict=BLOCK … exit=3
-pdb-violation: verdict=BLOCK … exit=3
-benign:        verdict=PASS  … exit=0
+unschedulable exit=3 expect=3
+netpol-cut exit=3 expect=3
+pdb-violation exit=3 expect=1|3
+benign exit=0 expect=0
 ```
 
 ### Unschedulable replicas → BLOCK
 
-```
+```markdown
 # Argo CD change-impact report
 
 - **Application:** `demo-unschedulable`
+- **Change ID:** `argo-demo-unschedulable`
 - **Gate verdict:** **BLOCK**
+- **Confidence:** medium
 - **Analyze decision:** `block` (risk=high)
 
 ## Summary
@@ -83,26 +85,150 @@ gate=BLOCK detectors: PASS=3 WARN=1 BLOCK=1 UNKNOWN=0
 | `pdb-rollout` | **PASS** | high | no PodDisruptionBudgets in graph |
 | `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
 | `scheduling-capacity` | **BLOCK** | high | unschedulable: need 8 pods (delta 6 + surge 2) but allocatable capacity is 2 (pod_scheduling_capacity_estimate) |
+
+## Affected workloads
+
+- `workload/demo/api`
+- `workload/demo/postgres`
+
+## Predicted failures
+
+- [WARN] blast radius includes 1 dependent workload
+- [BLOCK] unschedulable: need 8 pods (delta 6 + surge 2) but allocatable capacity is 2 (pod_scheduling_capacity_estimate)
+
+## Missing data
+
+_Required coverage present for evaluated detectors._
+
+---
+_Architecture Rehearsal explains consequences of the desired sync; it does not re-implement Argo CD diff._
 ```
 
 ### NetworkPolicy cutting DB → BLOCK
 
-```
-verdict=BLOCK decision=block findings=1 confidence=high
-```
+```markdown
+# Argo CD change-impact report
 
-Detector `networkpolicy-cut` returns **BLOCK** when an egress-deny (or equivalent) policy would cut a `DEPENDS_ON` edge such as `api → postgres`.
+- **Application:** `demo-netpol-cut`
+- **Change ID:** `argo-demo-netpol-cut`
+- **Gate verdict:** **BLOCK**
+- **Confidence:** high
+- **Analyze decision:** `block` (risk=high)
+
+## Summary
+
+gate=BLOCK detectors: PASS=4 WARN=0 BLOCK=1 UNKNOWN=0
+
+## Detectors
+
+| Detector | Status | Confidence | Explanation |
+|----------|--------|------------|-------------|
+| `blast-radius` | **PASS** | high | no additional workloads in blast radius beyond change seeds |
+| `networkpolicy-cut` | **BLOCK** | high | NetworkPolicy change cuts a known dependency edge (e.g. app → database) |
+| `pdb-rollout` | **PASS** | high | no PodDisruptionBudgets in graph |
+| `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
+| `scheduling-capacity` | **PASS** | high | no additional replica or surge demand vs baseline |
+
+## Affected workloads
+
+- `netpol/demo/deny-api-egress`
+- `workload/demo/api`
+- `workload/demo/postgres`
+
+## Predicted failures
+
+- [BLOCK] NetworkPolicy change cuts a known dependency edge (e.g. app → database)
+
+## Missing data
+
+_Required coverage present for evaluated detectors._
+
+---
+_Architecture Rehearsal explains consequences of the desired sync; it does not re-implement Argo CD diff._
+```
 
 ### PDB violation → WARN/BLOCK
 
-```
-verdict=BLOCK decision=block findings=2 confidence=medium
+```markdown
+# Argo CD change-impact report
+
+- **Application:** `demo-pdb-violation`
+- **Change ID:** `argo-demo-pdb-violation`
+- **Gate verdict:** **BLOCK**
+- **Confidence:** medium
+- **Analyze decision:** `block` (risk=high)
+
+## Summary
+
+gate=BLOCK detectors: PASS=3 WARN=1 BLOCK=1 UNKNOWN=0
+
+## Detectors
+
+| Detector | Status | Confidence | Explanation |
+|----------|--------|------------|-------------|
+| `blast-radius` | **WARN** | medium | blast radius includes 1 dependent workload |
+| `networkpolicy-cut` | **PASS** | high | no NetworkPolicy changes in the proposed sync |
+| `pdb-rollout` | **BLOCK** | high | rollout would violate PodDisruptionBudget (maxUnavailable vs minAvailable) |
+| `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
+| `scheduling-capacity` | **PASS** | high | no additional replica or surge demand vs baseline |
+
+## Affected workloads
+
+- `pdb/demo/api-pdb`
+- `workload/demo/api`
+
+## Predicted failures
+
+- [WARN] blast radius includes 1 dependent workload
+- [BLOCK] rollout would violate PodDisruptionBudget (maxUnavailable vs minAvailable)
+
+## Missing data
+
+_Required coverage present for evaluated detectors._
+
+---
+_Architecture Rehearsal explains consequences of the desired sync; it does not re-implement Argo CD diff._
 ```
 
 ### Benign change → PASS
 
-```
-verdict=PASS decision=approve findings=0 confidence=high
+```markdown
+# Argo CD change-impact report
+
+- **Application:** `demo-benign`
+- **Change ID:** `argo-demo-benign`
+- **Gate verdict:** **PASS**
+- **Confidence:** high
+- **Analyze decision:** `approve` (risk=none)
+
+## Summary
+
+gate=PASS detectors: PASS=5 WARN=0 BLOCK=0 UNKNOWN=0
+
+## Detectors
+
+| Detector | Status | Confidence | Explanation |
+|----------|--------|------------|-------------|
+| `blast-radius` | **PASS** | high | empty change; no blast radius |
+| `networkpolicy-cut` | **PASS** | high | no NetworkPolicy changes in the proposed sync |
+| `pdb-rollout` | **PASS** | high | no PodDisruptionBudgets in graph |
+| `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
+| `scheduling-capacity` | **PASS** | high | no additional replica or surge demand vs baseline |
+
+## Affected workloads
+
+_None beyond change seeds (or not determined)._
+
+## Predicted failures
+
+_None predicted._
+
+## Missing data
+
+_Required coverage present for evaluated detectors._
+
+---
+_Architecture Rehearsal explains consequences of the desired sync; it does not re-implement Argo CD diff._
 ```
 
 ## CI
