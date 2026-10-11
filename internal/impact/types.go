@@ -52,6 +52,9 @@ type Context struct {
 	Change   *loader.ChangeEnvelope
 	BaseIdx  *graph.Index
 	PropIdx  *graph.Index
+	// PDBsCollected is true when the baseline inventory included PDB collection
+	// (even if the set is empty). When false, absence of PDBs is UNKNOWN not PASS.
+	PDBsCollected bool
 }
 
 // Detector evaluates one impact concern.
@@ -63,11 +66,12 @@ type Detector interface {
 // FromScenario builds impact.Context from scenario.Context.
 func FromScenario(ctx scenario.Context) Context {
 	return Context{
-		Baseline: ctx.Baseline,
-		Proposed: ctx.Proposed,
-		Change:   ctx.Change,
-		BaseIdx:  ctx.BaseIdx,
-		PropIdx:  ctx.PropIdx,
+		Baseline:      ctx.Baseline,
+		Proposed:      ctx.Proposed,
+		Change:        ctx.Change,
+		BaseIdx:       ctx.BaseIdx,
+		PropIdx:       ctx.PropIdx,
+		PDBsCollected: pdbsInventoryKnown(ctx.Baseline),
 	}
 }
 
@@ -83,12 +87,23 @@ func DefaultDetectors() []Detector {
 }
 
 // Aggregate picks the strongest detector status as the gate verdict.
+// Empty detector list or any empty/unknown status → UNKNOWN (fail-closed).
 func Aggregate(vs []Verdict) string {
+	if len(vs) == 0 {
+		return Unknown
+	}
 	order := map[string]int{Pass: 0, Warn: 1, Unknown: 2, Block: 3}
 	best := Pass
 	for _, v := range vs {
-		if order[v.Status] > order[best] {
-			best = v.Status
+		st := v.Status
+		if st == "" {
+			st = Unknown
+		}
+		if _, ok := order[st]; !ok {
+			st = Unknown
+		}
+		if order[st] > order[best] {
+			best = st
 		}
 	}
 	return best

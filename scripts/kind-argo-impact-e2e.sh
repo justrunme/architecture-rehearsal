@@ -48,43 +48,166 @@ cp examples/e2e-argo/benign/desired/api.yaml "$REPO_DIR/demo/api.yaml"
   git config user.name "e2e"
   git add .
   git commit -m "benign demo app"
+  git update-server-info
 )
-# Serve repo to the kind network via a pod mounting the host path is heavy;
-# instead create Application with in-cluster empty and still prove Argo is healthy,
-# then assert impact scenarios via --desired-dir (same compile path as argocd manifests).
 
 echo "==> assert Argo CD control plane healthy"
 kubectl -n "$ARGO_NS" get deploy argocd-server argocd-repo-server -o wide
 kubectl -n "$ARGO_NS" get statefulset argocd-application-controller -o wide
 READY=$(kubectl -n "$ARGO_NS" get deploy argocd-server -o jsonpath='{.status.readyReplicas}')
 test "${READY:-0}" -ge 1
-# application-controller is a StatefulSet in upstream install manifests
 CTRL_READY=$(kubectl -n "$ARGO_NS" get statefulset argocd-application-controller -o jsonpath='{.status.readyReplicas}')
 test "${CTRL_READY:-0}" -ge 1
 
-echo "==> create demo Application CR (destination in-cluster; source is placeholder until synced)"
+echo "==> in-cluster git HTTP server for native Application sync"
+kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
+# Pack repo into a ConfigMap of files is awkward for .git; use a hostPath-less approach:
+# create a Pod that clones from a tar of the repo baked into a ConfigMap via emptyDir init.
+TAR="$OUT_ROOT/git-src.tar"
+tar -C "$OUT_ROOT" -cf "$TAR" git-src
+kubectl -n "$ARGO_NS" delete configmap git-src-tar --ignore-not-found
+kubectl -n "$ARGO_NS" create configmap git-src-tar --from-file=git-src.tar="$TAR"
 cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: git-http
+  namespace: argocd
+  labels:
+    app: git-http
+spec:
+  containers:
+    - name: git
+      image: nginx:1.27-alpine
+      ports:
+        - containerPort: 80
+      volumeMounts:
+        - name: www
+          mountPath: /usr/share/nginx/html
+      readinessProbe:
+        httpGet:
+          path: /git-src.git/HEAD
+          port: 80
+        initialDelaySeconds: 2
+        periodSeconds: 2
+  initContainers:
+    - name: seed
+      image: alpine:3.20
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          apk add --no-cache tar git >/dev/null
+          mkdir -p /www
+          tar -xf /tar/git-src.tar -C /www
+          git clone --bare /www/git-src /www/git-src.git
+          cd /www/git-src.git && git update-server-info
+      volumeMounts:
+        - name: www
+          mountPath: /www
+        - name: tar
+          mountPath: /tar
+  volumes:
+    - name: www
+      emptyDir: {}
+    - name: tar
+      configMap:
+        name: git-src-tar
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-http
+  namespace: argocd
+spec:
+  selector:
+    app: git-http
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+kubectl -n "$ARGO_NS" wait --for=condition=Ready pod/git-http --timeout=120s
+
+echo "==> create demo Application CR syncing in-cluster git repo"
+cat <<EOF | kubectl apply -f -
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: demo-benign
-  namespace: argocd
+  namespace: ${ARGO_NS}
 spec:
   project: default
   source:
-    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    repoURL: http://git-http.${ARGO_NS}.svc.cluster.local/git-src.git
     targetRevision: HEAD
-    path: guestbook
+    path: demo
   destination:
     server: https://kubernetes.default.svc
-    namespace: default
+    namespace: demo
   syncPolicy:
-    automated: null
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
 EOF
-kubectl -n "$ARGO_NS" get application demo-benign
-# Wait until Argo has observed the app (status may be Unknown/Missing until refresh).
-sleep 5
-kubectl -n "$ARGO_NS" get application demo-benign -o yaml | tee "$OUT_ROOT/application-demo-benign.yaml" | grep -q "demo-benign"
+
+echo "==> wait for Application sync"
+for _ in $(seq 1 90); do
+  sync=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+  health=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+  echo "  sync=$sync health=$health"
+  if [[ "$sync" == "Synced" ]]; then
+    break
+  fi
+  sleep 2
+done
+kubectl -n "$ARGO_NS" get application demo-benign -o yaml | tee "$OUT_ROOT/application-demo-benign.yaml" >/dev/null
+SYNC=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.sync.status}')
+test "$SYNC" = "Synced"
+
+echo "==> install argocd CLI + obtain auth token for CLIFetcher"
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64|amd64) ARGO_ARCH=amd64 ;;
+  aarch64|arm64) ARGO_ARCH=arm64 ;;
+  *) ARGO_ARCH=amd64 ;;
+esac
+curl -sSL -o /tmp/argocd "https://github.com/argoproj/argo-cd/releases/download/v2.14.9/argocd-linux-${ARGO_ARCH}"
+chmod +x /tmp/argocd
+sudo mv /tmp/argocd /usr/local/bin/argocd
+kubectl -n "$ARGO_NS" port-forward svc/argocd-server 8080:443 >/tmp/argocd-pf.log 2>&1 &
+PF_PID=$!
+sleep 3
+ARGO_PASS=$(kubectl -n "$ARGO_NS" get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)
+argocd login localhost:8080 --username admin --password "$ARGO_PASS" --insecure --grpc-web
+export ARGOCD_AUTH_TOKEN
+ARGOCD_AUTH_TOKEN=$(argocd account generate-token --account admin)
+export ARGOCD_SERVER=localhost:8080
+export ARGOCD_INSECURE=true
+export ARGOCD_BINARY=argocd
+
+echo "==> native CLIFetcher path: argo-impact --app demo-benign --live"
+NATIVE_OUT="$OUT_ROOT/native-cli"
+mkdir -p "$NATIVE_OUT"
+# Live baseline from the kind cluster; desired from argocd app manifests (CLIFetcher).
+set +e
+"$BIN" argo-impact \
+  --app demo-benign \
+  --app-namespace "$ARGO_NS" \
+  --live \
+  --cluster kind \
+  --out "$NATIVE_OUT" \
+  --quiet | tee "$NATIVE_OUT/cli.txt"
+native_code=$?
+set -e
+echo "scenario=native-cli exit=$native_code" | tee -a "$OUT_ROOT/results.txt"
+test -f "$NATIVE_OUT/argo-impact.md"
+test -f "$NATIVE_OUT/argo-impact.json"
+grep -q "Gate verdict" "$NATIVE_OUT/argo-impact.md"
+# Benign sync against a sparse live graph should not BLOCK; allow PASS/WARN/UNKNOWN.
+test "$native_code" -eq 0 -o "$native_code" -eq 1 -o "$native_code" -eq 4
+kill "$PF_PID" 2>/dev/null || true
 
 run_scenario() {
   local name="$1"
@@ -114,21 +237,10 @@ run_scenario() {
 run_scenario unschedulable 3
 # NetworkPolicy cutting DB dependency -> BLOCK (3)
 run_scenario netpol-cut 3
-# PDB violation -> WARN(1) or BLOCK(3)
-echo "==> scenario pdb-violation (expect exit 1 or 3)"
-mkdir -p "$OUT_ROOT/pdb-violation"
-set +e
-"$BIN" argo-impact \
-  --app demo-pdb-violation \
-  --desired-dir examples/e2e-argo/pdb-violation/desired \
-  --baseline examples/e2e-argo/pdb-violation/baseline.json \
-  --out "$OUT_ROOT/pdb-violation" \
-  --quiet | tee "$OUT_ROOT/pdb-violation/cli.txt"
-pdb_code=$?
-set -e
-echo "scenario=pdb-violation exit=$pdb_code expect=1|3" | tee -a "$OUT_ROOT/results.txt"
-test "$pdb_code" -eq 1 -o "$pdb_code" -eq 3
-test -f "$OUT_ROOT/pdb-violation/argo-impact.md"
+# PDB violation -> BLOCK (3)
+run_scenario pdb-violation 3
+# UNKNOWN when PDB inventory missing -> exit 4
+run_scenario unknown-pdb-inventory 4
 # benign change -> PASS (0)
 run_scenario benign 0
 
@@ -142,7 +254,7 @@ echo "==> collect CI-facing summary artifact"
   cat "$OUT_ROOT/results.txt"
   echo '```'
   echo
-  for name in unschedulable netpol-cut pdb-violation benign; do
+  for name in native-cli unschedulable netpol-cut pdb-violation unknown-pdb-inventory benign; do
     echo "## $name"
     echo
     if [[ -f "$OUT_ROOT/$name/cli.txt" ]]; then

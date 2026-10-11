@@ -169,6 +169,9 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		snap.Meta["capacity_model"] = "node_allocatable_pods_minus_desired_replicas"
 	}
 
+	// PDB list is part of the recommended kubectl dump; mark inventory complete.
+	snap.Meta["pdbsCollected"] = true
+
 	// Operator/CI annotations (observed_failures, incident notes, …) after derived capacity.
 	for k, v := range opts.ExtraMeta {
 		snap.Meta[k] = v

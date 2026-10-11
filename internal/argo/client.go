@@ -63,15 +63,16 @@ func (f *CLIFetcher) Fetch(app ApplicationRef, destDir string) error {
 	if f.Server != "" {
 		args = append(args, "--server", f.Server)
 	}
-	if f.AuthToken != "" {
-		args = append(args, "--auth-token", f.AuthToken)
-	}
 	if f.Insecure {
 		args = append(args, "--insecure")
 	}
 	args = append(args, f.ExtraArgs...)
 
 	cmd := exec.Command(bin, args...)
+	// Prefer ARGOCD_AUTH_TOKEN env over --auth-token (avoids process-list leakage).
+	if f.AuthToken != "" {
+		cmd.Env = append(os.Environ(), "ARGOCD_AUTH_TOKEN="+f.AuthToken)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
