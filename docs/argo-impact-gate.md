@@ -48,17 +48,26 @@ Exit codes match the decision model: `0` PASS · `1` WARN · `3` BLOCK · `4` UN
 
 See [`integrations/github-actions/argo-impact.yml`](../integrations/github-actions/argo-impact.yml).
 
-## Real gate output (CI iron path)
+## Real gate output (CI)
 
-Captured verbatim from `bash scripts/e2e_argo_impact.sh` (CI job step **Argo impact gate**). Same assertions as Kind + Argo CD e2e.
+Captured from GitHub Actions job `argo-kind-e2e` on run [38122225720](https://github.com/justrunme/architecture-rehearsal/actions/runs/38122225720) (Kind + Argo CD install, then four asserted scenarios; no failure masking).
 
 ### Scenario exits
 
 ```
-unschedulable exit=3 expect=3
-netpol-cut exit=3 expect=3
-pdb-violation exit=3 expect=1|3
-benign exit=0 expect=0
+scenario=unschedulable exit=3 expect=3
+scenario=netpol-cut exit=3 expect=3
+scenario=pdb-violation exit=3 expect=1|3
+scenario=benign exit=0 expect=0
+```
+
+### CLI summaries
+
+```
+unschedulable: verdict=BLOCK decision=block findings=2 confidence=medium evidence=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/unschedulable/argo-demo-unschedulable-20261011T074320Z md=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/unschedulable/argo-impact.md
+netpol-cut:    verdict=BLOCK decision=block findings=1 confidence=high evidence=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/netpol-cut/argo-demo-netpol-cut-20261011T074320Z md=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/netpol-cut/argo-impact.md
+pdb-violation: verdict=BLOCK decision=block findings=2 confidence=medium evidence=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/pdb-violation/argo-demo-pdb-violation-20261011T074320Z md=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/pdb-violation/argo-impact.md
+benign:        verdict=PASS decision=approve findings=0 confidence=high evidence=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/benign/argo-demo-benign-20261011T074320Z md=/home/runner/work/architecture-rehearsal/architecture-rehearsal/out/argo-e2e/benign/argo-impact.md
 ```
 
 ### Unschedulable replicas → BLOCK
