@@ -27,7 +27,7 @@ There is no `docs/results.md` with published wall-clock SLOs; do not invent timi
 
 ```bash
 make demo && make e2e
-make build && ./bin/rehearsal version   # expects 1.5.4 line
+make build && ./bin/rehearsal version   # expects 1.6.0 line
 bash scripts/e2e_pipeline.sh
 bash scripts/kind-operator-e2e.sh
 bash scripts/kind-argo-impact-e2e.sh   # requires kind + Argo CD
