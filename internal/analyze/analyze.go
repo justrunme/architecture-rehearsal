@@ -19,6 +19,11 @@ const Version = "1.5.4"
 
 // Run builds proposed graph, validates, runs scenarios, returns Report.
 func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
+	return RunWithRunners(base, ch, scenario.DefaultRunners())
+}
+
+// RunWithRunners is Run with an explicit scenario runner list (e.g. Default + Argo impact).
+func RunWithRunners(base *graph.Snapshot, ch *loader.ChangeEnvelope, runners []scenario.Runner) (*Report, error) {
 	if err := validate.Snapshot(base); err != nil {
 		return nil, err
 	}
@@ -52,7 +57,10 @@ func Run(base *graph.Snapshot, ch *loader.ChangeEnvelope) (*Report, error) {
 		BaseIdx:  baseIdx,
 		PropIdx:  propIdx,
 	}
-	findings, unknownReqs := scenario.RunAll(ctx, scenario.DefaultRunners())
+	if runners == nil {
+		runners = scenario.DefaultRunners()
+	}
+	findings, unknownReqs := scenario.RunAll(ctx, runners)
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Scenario != findings[j].Scenario {
 			return findings[i].Scenario < findings[j].Scenario

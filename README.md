@@ -16,6 +16,7 @@ Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-re
 - Builds a causal architecture graph from a cluster baseline and rehearses a proposed change
 - Gates deploy with approve / warn / block / unknown using a deterministic policy engine
 - Verifies post-deploy observations against rehearsed scenarios and writes a content-addressed evidence chain
+- Explains Argo CD sync impact (`rehearsal argo-impact`) — scheduling, PVC, NetworkPolicy, PDB, blast radius — without re-implementing Argo diff ([docs](docs/argo-impact-gate.md))
 
 ## Why
 
@@ -26,6 +27,7 @@ Case study: [Architecture Rehearsal](https://justrunme.com/cases/architecture-re
 
 ```bash
 make demo && make e2e
+make e2e-argo   # Argo CD impact gate fixtures (PASS/BLOCK scenarios)
 make build && ./bin/rehearsal version
 ```
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Argo CD change-impact gate
+- Native adapter: Argo Application desired manifests (`argocd app manifests --revision` or rendered directory) + live baseline → `ChangeEnvelope` (`argo-sync`) → causal graph
+- Detectors with PASS/WARN/BLOCK/UNKNOWN: scheduling capacity, PVC zone conflicts, NetworkPolicy cutting `DEPENDS_ON`, PDB rollout, blast radius
+- CLI: `rehearsal argo-impact --app <name>` (markdown + JSON report, evidence bundle, optional commit status)
+- GitHub Action example: `integrations/github-actions/argo-impact.yml`
+- CI: offline `scripts/e2e_argo_impact.sh` + Kind job `argo-kind-e2e` with Argo CD installed (4 asserted scenarios)
+- Docs: `docs/argo-impact-gate.md` with real gate output
+
 ## [1.5.4] - 2026-10-10
 
 Maintenance release since 1.5.3:

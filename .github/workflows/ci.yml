@@ -40,6 +40,15 @@ jobs:
         run: bash scripts/demo.sh
       - name: E2E pipeline (dump → graph → scoped change → block → verify)
         run: bash scripts/e2e_pipeline.sh
+      - name: Argo impact gate (4 scenarios, asserted)
+        run: bash scripts/e2e_argo_impact.sh
+      - name: Upload argo-impact e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: argo-impact-e2e
+          path: out/argo-impact-e2e/
+          if-no-files-found: ignore
       - name: Verify loop (golden multi-scenario)
         run: |
           set +e
@@ -135,6 +144,30 @@ jobs:
           helm version
       - name: Kind operator Helm E2E
         run: bash scripts/kind-operator-e2e.sh
+
+  argo-kind-e2e:
+    runs-on: ubuntu-latest
+    # Kind + Argo CD install + 4 asserted impact scenarios
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Kind Argo CD impact E2E
+        run: bash scripts/kind-argo-impact-e2e.sh
+      - name: Upload kind argo-impact artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-argo-impact-e2e
+          path: out/argo-e2e/
+          if-no-files-found: ignore
 
   postgres:
     runs-on: ubuntu-latest
