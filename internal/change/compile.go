@@ -2,7 +2,6 @@
 package change
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -231,103 +230,4 @@ func normalizeNS(ns string) string {
 		return "default"
 	}
 	return ns
-}
-
-// FromTerraformPlan extracts change facts and valid graph seeds from terraform show -json.
-func FromTerraformPlan(path, changeID, title string, base *graph.Snapshot) (*loader.ChangeEnvelope, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var plan map[string]any
-	if err := json.Unmarshal(raw, &plan); err != nil {
-		return nil, err
-	}
-	ch := &loader.ChangeEnvelope{
-		APIVersion: graph.APIVersionV1Alpha1,
-		Kind:       "terraform-plan",
-		ID:         changeID,
-		Title:      title,
-		Facts:      map[string]any{},
-	}
-	// Prefer cluster/node seeds from baseline when TF touches node groups.
-	var nodeIDs []string
-	if base != nil {
-		for _, n := range base.Nodes {
-			if n.Kind == graph.KindNode {
-				nodeIDs = append(nodeIDs, n.ID)
-			}
-		}
-		if len(nodeIDs) > 0 {
-			// capacity scenario seed: first node / cluster
-			ch.Seeds = append(ch.Seeds, nodeIDs[0])
-			if c := base.Labels["cluster"]; c != "" {
-				ch.Seeds = append(ch.Seeds, "cluster/"+c)
-			}
-		}
-	}
-	rcs, _ := plan["resource_changes"].([]any)
-	unsupported := 0
-	for _, rc := range rcs {
-		m, ok := rc.(map[string]any)
-		if !ok {
-			continue
-		}
-		typ, _ := m["type"].(string)
-		addr, _ := m["address"].(string)
-		change, _ := m["change"].(map[string]any)
-		if change == nil {
-			continue
-		}
-		actions, _ := change["actions"].([]any)
-		action := ""
-		if len(actions) > 0 {
-			action, _ = actions[0].(string)
-		}
-		if strings.Contains(typ, "node_group") || strings.Contains(typ, "autoscaling_group") {
-			ch.Facts["scenario"] = "cni-ip-capacity"
-			ch.Kind = "terraform-plan"
-			after, _ := change["after"].(map[string]any)
-			before, _ := change["before"].(map[string]any)
-			if after != nil {
-				if ds, ok := after["desired_size"]; ok {
-					ch.Facts["terraform_desired_size"] = ds
-				}
-			}
-			if before != nil && after != nil {
-				ch.Facts["terraform_nodegroup_change"] = true
-			}
-			// do NOT add tf: address as seed
-			_ = addr
-		} else if action == "delete" && (strings.Contains(typ, "instance") || strings.Contains(strings.ToLower(addr), "node")) {
-			ch.Kind = "node-failure"
-			ch.Facts["event"] = "node_loss"
-			ch.Facts["scenario"] = "rwo-node-loss"
-			// if only one node in baseline, mark it removed
-			if len(nodeIDs) == 1 {
-				ch.RemovedNodes = []string{nodeIDs[0]}
-				ch.Facts["lost_node"] = nodeIDs[0]
-				ch.Seeds = []string{nodeIDs[0]}
-			} else if len(nodeIDs) > 0 {
-				// cannot know which — coverage gap
-				ch.Facts["coverage_gap"] = "node_delete_ambiguous"
-				ch.Facts["lost_node_candidates"] = len(nodeIDs)
-			}
-		} else {
-			unsupported++
-		}
-	}
-	if unsupported > 0 {
-		ch.Facts["unsupported_resource_changes"] = unsupported
-	}
-	if len(ch.Seeds) == 0 && base != nil && len(base.Nodes) > 0 {
-		// last resort: seed cluster node if any
-		for _, n := range base.Nodes {
-			if n.Kind == graph.KindCluster {
-				ch.Seeds = []string{n.ID}
-				break
-			}
-		}
-	}
-	return ch, nil
 }
