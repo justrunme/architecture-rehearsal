@@ -7,6 +7,7 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/argo"
 	"github.com/justrunme/architecture-rehearsal/internal/change"
+	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
 )
 
@@ -46,5 +47,40 @@ func TestDirFetcher(t *testing.T) {
 	entries, _ := os.ReadDir(dst)
 	if len(entries) == 0 {
 		t.Fatal("expected copied yaml")
+	}
+}
+
+func TestCompileRecordsArgocdCLISource(t *testing.T) {
+	base := &graph.Snapshot{APIVersion: graph.APIVersionV1Alpha1, Nodes: []graph.Node{
+		{ID: "workload/demo/api", Kind: graph.KindWorkload, Name: "api", Namespace: "demo",
+			Attributes: map[string]any{"replicas": 1}},
+	}}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "api.yaml"), []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api}
+    spec:
+      containers: [{name: api, image: x}]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := argo.Compile(base, argo.CompileOptions{
+		AppName: "demo", DesiredDir: dir, Source: argo.SourceArgocdCLI,
+		Scope: change.ManifestScope{Namespaces: []string{"demo"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Facts["source"] != argo.SourceArgocdCLI {
+		t.Fatalf("source=%v", ch.Facts["source"])
 	}
 }

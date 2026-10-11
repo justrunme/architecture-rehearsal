@@ -146,27 +146,98 @@ argocd app manifests demo-benign --grpc-web >/tmp/demo-benign-manifests.yaml
 test -s /tmp/demo-benign-manifests.yaml
 
 echo "==> native CLIFetcher path: argo-impact --app demo-benign --live"
-NATIVE_OUT="$OUT_ROOT/native-cli"
+NATIVE_OUT="$OUT_ROOT/native-benign"
 mkdir -p "$NATIVE_OUT"
 set +e
 "$BIN" argo-impact \
   --app demo-benign \
   --app-namespace "$ARGO_NS" \
+  --namespace demo \
   --live \
   --cluster kind \
   --out "$NATIVE_OUT" \
   --quiet | tee "$NATIVE_OUT/cli.txt"
 native_code=$?
 set -e
-echo "scenario=native-cli exit=$native_code" | tee -a "$OUT_ROOT/results.txt"
+echo "scenario=native-benign exit=$native_code" | tee -a "$OUT_ROOT/results.txt"
 test -f "$NATIVE_OUT/argo-impact.md"
 test -f "$NATIVE_OUT/argo-impact.json"
+test -f "$NATIVE_OUT/change.json"
 grep -q "Gate verdict" "$NATIVE_OUT/argo-impact.md"
-# Live guestbook graph may be PASS/WARN/UNKNOWN; must not crash; BLOCK unexpected for benign guestbook.
-test "$native_code" -eq 0 -o "$native_code" -eq 1 -o "$native_code" -eq 4
-# Prove CLIFetcher was used (not --desired-dir): change source should mention argocd CLI or app manifests path.
-grep -Eiq 'argocd|CLIFetcher|SourceArgocdCLI|app manifests|argo' "$NATIVE_OUT/argo-impact.json" "$NATIVE_OUT/change.json" 2>/dev/null || \
-  test -f "$NATIVE_OUT/change.json"
+# Exact source field from Compile (SourceArgocdCLI); no fallback.
+python3 -c 'import json,sys; ch=json.load(open(sys.argv[1])); src=(ch.get("facts") or {}).get("source");
+assert src=="argocd-cli", src; print("facts.source="+src)' "$NATIVE_OUT/change.json"
+# Benign Synced guestbook: desired manifests from Argo equal live demo workloads, so the
+# change envelope has no replica/netpol/pdb mutations. All detectors PASS and analyze
+# approves → gate PASS → exit 0. (BLOCK/WARN/UNKNOWN would mean drift or missing inventory.)
+test "$native_code" -eq 0
+
+echo "==> native risky Application (OutOfSync desired; do not apply)"
+REPO_URL="${ARGO_E2E_REPO_URL:-https://github.com/justrunme/architecture-rehearsal.git}"
+REPO_REV="${ARGO_E2E_REPO_REVISION:-${GITHUB_SHA:-$(git rev-parse HEAD)}}"
+echo "  repo=$REPO_URL rev=$REPO_REV path=examples/e2e-argo/native-risky/desired"
+kubectl create namespace risky --dry-run=client -o yaml | kubectl apply -f -
+cat <<EOF | kubectl apply -f -
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-risky
+  namespace: ${ARGO_NS}
+spec:
+  project: default
+  source:
+    repoURL: ${REPO_URL}
+    targetRevision: ${REPO_REV}
+    path: examples/e2e-argo/native-risky/desired
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: risky
+  # Manual sync only: desired is intentionally unschedulable; never apply to the cluster.
+  syncPolicy: {}
+EOF
+# Wait until Argo can render desired manifests (repo cloned), not until Synced.
+for i in $(seq 1 90); do
+  if argocd app manifests demo-risky --grpc-web >/tmp/demo-risky-manifests.yaml 2>/tmp/demo-risky-manifests.err; then
+    if grep -q 'kind: Deployment' /tmp/demo-risky-manifests.yaml; then
+      echo "  manifests ready (attempt $i)"
+      break
+    fi
+  fi
+  if [[ "$i" -eq 90 ]]; then
+    echo "demo-risky manifests not ready" >&2
+    cat /tmp/demo-risky-manifests.err >&2 || true
+    kubectl -n "$ARGO_NS" get application demo-risky -o yaml | tee "$OUT_ROOT/application-demo-risky.yaml" >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
+test -s /tmp/demo-risky-manifests.yaml
+grep -q 'no-such-node' /tmp/demo-risky-manifests.yaml
+
+RISKY_OUT="$OUT_ROOT/native-risky"
+mkdir -p "$RISKY_OUT"
+set +e
+"$BIN" argo-impact \
+  --app demo-risky \
+  --app-namespace "$ARGO_NS" \
+  --namespace risky \
+  --live \
+  --cluster kind \
+  --out "$RISKY_OUT" \
+  --quiet | tee "$RISKY_OUT/cli.txt"
+risky_code=$?
+set -e
+echo "scenario=native-risky exit=$risky_code" | tee -a "$OUT_ROOT/results.txt"
+test -f "$RISKY_OUT/change.json"
+python3 -c 'import json,sys; ch=json.load(open(sys.argv[1])); src=(ch.get("facts") or {}).get("source");
+assert src=="argocd-cli", src; print("facts.source="+src)' "$RISKY_OUT/change.json"
+grep -q "Gate verdict" "$RISKY_OUT/argo-impact.md"
+# Desired heavy-api uses a nodeSelector that matches zero kind nodes while live namespace
+# risky is empty → scheduling-capacity BLOCK. Aggregate prefers BLOCK over UNKNOWN.
+# Expect exit 3.
+test "$risky_code" -eq 3
+grep -q '"gateVerdict": "BLOCK"' "$RISKY_OUT/argo-impact.json"
+
 kill "$PF_PID" 2>/dev/null || true
 
 run_scenario() {
@@ -214,7 +285,7 @@ echo "==> collect CI-facing summary artifact"
   cat "$OUT_ROOT/results.txt"
   echo '```'
   echo
-  for name in native-cli unschedulable netpol-cut pdb-violation unknown-pdb-inventory benign; do
+  for name in native-benign native-risky unschedulable netpol-cut pdb-violation unknown-pdb-inventory benign; do
     echo "## $name"
     echo
     if [[ -f "$OUT_ROOT/$name/cli.txt" ]]; then
