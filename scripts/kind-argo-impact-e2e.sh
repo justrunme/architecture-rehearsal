@@ -84,15 +84,14 @@ spec:
 EOF
 
 echo "==> wait for Application sync"
-for _ in $(seq 1 90); do
-  sync=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
-  health=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.health.status}' 2>/dev/null || true)
-  echo "  sync=$sync health=$health"
-  if [[ "$sync" == "Synced" ]]; then
+for i in $(seq 1 90); do
+  sync_st=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+  health_st=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+  echo "  sync=$sync_st health=$health_st"
+  if [[ "$sync_st" == "Synced" ]]; then
     break
   fi
-  # kick refresh/sync if stuck
-  if [[ "$_" -eq 15 ]]; then
+  if [[ "$i" -eq 15 ]]; then
     kubectl -n "$ARGO_NS" patch application demo-benign --type merge -p '{"operation":{"initiatedBy":{"username":"e2e"},"sync":{"revision":"HEAD"}}}' 2>/dev/null || true
   fi
   sleep 2
@@ -115,13 +114,22 @@ sudo mv /tmp/argocd /usr/local/bin/argocd
 kubectl -n "$ARGO_NS" port-forward svc/argocd-server 8080:443 >/tmp/argocd-pf.log 2>&1 &
 PF_PID=$!
 sleep 3
+# Enable apiKey on admin (default install only has login), then mint a token for CLIFetcher env auth.
+kubectl -n "$ARGO_NS" patch configmap argocd-cm --type merge -p '{"data":{"accounts.admin":"apiKey, login"}}'
+kubectl -n "$ARGO_NS" rollout restart deploy/argocd-server
+kubectl -n "$ARGO_NS" rollout status deploy/argocd-server --timeout=120s
 ARGO_PASS=$(kubectl -n "$ARGO_NS" get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)
 argocd login localhost:8080 --username admin --password "$ARGO_PASS" --insecure --grpc-web
-export ARGOCD_AUTH_TOKEN
-ARGOCD_AUTH_TOKEN=$(argocd account generate-token --account admin)
 export ARGOCD_SERVER=localhost:8080
 export ARGOCD_INSECURE=true
 export ARGOCD_BINARY=argocd
+# Prefer env token (no --auth-token flag) for CLIFetcher.
+export ARGOCD_AUTH_TOKEN
+ARGOCD_AUTH_TOKEN=$(argocd account generate-token --account admin)
+test -n "$ARGOCD_AUTH_TOKEN"
+# Smoke: CLIFetcher path resolves manifests for the synced app.
+argocd app manifests demo-benign --grpc-web >/tmp/demo-benign-manifests.yaml
+test -s /tmp/demo-benign-manifests.yaml
 
 echo "==> native CLIFetcher path: argo-impact --app demo-benign --live"
 NATIVE_OUT="$OUT_ROOT/native-cli"
