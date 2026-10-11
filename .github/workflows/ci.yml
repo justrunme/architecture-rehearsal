@@ -147,10 +147,14 @@ jobs:
 
   argo-kind-e2e:
     runs-on: ubuntu-latest
-    # Kind + Argo CD install + 4 asserted impact scenarios
+    # Kind + Argo CD install + native CLIFetcher + fixture scenarios
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Head SHA is on the PR branch and fetchable by Argo CD as targetRevision.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
