@@ -36,7 +36,7 @@ kubectl -n "$ARGO_NS" wait --for=condition=Available deploy/argocd-applicationse
 # StatefulSet has no Available condition; wait for readyReplicas via rollout status
 kubectl -n "$ARGO_NS" rollout status statefulset/argocd-application-controller --timeout=300s
 
-echo "==> local git repo for Application source"
+echo "==> local git repo retained for fixture scenarios (offline compile path)"
 REPO_DIR="$OUT_ROOT/git-src"
 rm -rf "$REPO_DIR"
 mkdir -p "$REPO_DIR/demo"
@@ -48,7 +48,6 @@ cp examples/e2e-argo/benign/desired/api.yaml "$REPO_DIR/demo/api.yaml"
   git config user.name "e2e"
   git add .
   git commit -m "benign demo app"
-  git update-server-info
 )
 
 echo "==> assert Argo CD control plane healthy"
@@ -59,76 +58,8 @@ test "${READY:-0}" -ge 1
 CTRL_READY=$(kubectl -n "$ARGO_NS" get statefulset argocd-application-controller -o jsonpath='{.status.readyReplicas}')
 test "${CTRL_READY:-0}" -ge 1
 
-echo "==> in-cluster git HTTP server for native Application sync"
+echo "==> create Application that syncs real manifests (guestbook) into kind"
 kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
-BARE="$OUT_ROOT/git-src.git"
-rm -rf "$BARE"
-git clone --bare "$REPO_DIR" "$BARE"
-git --git-dir="$BARE" update-server-info
-# Ensure dumb HTTP info files are present for nginx static serve.
-test -f "$BARE/HEAD"
-test -f "$BARE/info/refs" || git --git-dir="$BARE" update-server-info
-
-cat <<'EOF' | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: git-http
-  namespace: argocd
-  labels:
-    app: git-http
-spec:
-  containers:
-    - name: git
-      image: nginx:1.27-alpine
-      ports:
-        - containerPort: 80
-      volumeMounts:
-        - name: www
-          mountPath: /usr/share/nginx/html
-      readinessProbe:
-        tcpSocket:
-          port: 80
-        initialDelaySeconds: 1
-        periodSeconds: 2
-  volumes:
-    - name: www
-      emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: git-http
-  namespace: argocd
-spec:
-  selector:
-    app: git-http
-  ports:
-    - port: 80
-      targetPort: 80
-EOF
-kubectl -n "$ARGO_NS" wait --for=condition=Ready pod/git-http --timeout=120s
-# Seed bare repo into the pod (avoids ConfigMap size / init apk issues).
-kubectl -n "$ARGO_NS" cp "$BARE" "git-http:/usr/share/nginx/html/git-src.git"
-kubectl -n "$ARGO_NS" exec git-http -- ls /usr/share/nginx/html/git-src.git/HEAD
-
-# Allow insecure HTTP repo in Argo CD
-kubectl -n "$ARGO_NS" patch configmap argocd-cm --type merge -p '{"data":{"timeout.reconciliation":"30s"}}' || true
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: git-http-repo
-  namespace: ${ARGO_NS}
-  labels:
-    argocd.argoproj.io/secret-type: repository
-stringData:
-  type: git
-  url: http://git-http.${ARGO_NS}.svc.cluster.local/git-src.git
-  insecure: "true"
-EOF
-
-echo "==> create demo Application CR syncing in-cluster git repo"
 cat <<EOF | kubectl apply -f -
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -138,9 +69,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: http://git-http.${ARGO_NS}.svc.cluster.local/git-src.git
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
     targetRevision: HEAD
-    path: demo
+    path: guestbook
   destination:
     server: https://kubernetes.default.svc
     namespace: demo
@@ -160,11 +91,16 @@ for _ in $(seq 1 90); do
   if [[ "$sync" == "Synced" ]]; then
     break
   fi
+  # kick refresh/sync if stuck
+  if [[ "$_" -eq 15 ]]; then
+    kubectl -n "$ARGO_NS" patch application demo-benign --type merge -p '{"operation":{"initiatedBy":{"username":"e2e"},"sync":{"revision":"HEAD"}}}' 2>/dev/null || true
+  fi
   sleep 2
 done
 kubectl -n "$ARGO_NS" get application demo-benign -o yaml | tee "$OUT_ROOT/application-demo-benign.yaml" >/dev/null
 SYNC=$(kubectl -n "$ARGO_NS" get application demo-benign -o jsonpath='{.status.sync.status}')
 test "$SYNC" = "Synced"
+kubectl -n demo get deploy,svc 2>/dev/null | tee "$OUT_ROOT/demo-resources.txt" || true
 
 echo "==> install argocd CLI + obtain auth token for CLIFetcher"
 ARCH=$(uname -m)
@@ -190,7 +126,6 @@ export ARGOCD_BINARY=argocd
 echo "==> native CLIFetcher path: argo-impact --app demo-benign --live"
 NATIVE_OUT="$OUT_ROOT/native-cli"
 mkdir -p "$NATIVE_OUT"
-# Live baseline from the kind cluster; desired from argocd app manifests (CLIFetcher).
 set +e
 "$BIN" argo-impact \
   --app demo-benign \
@@ -205,8 +140,11 @@ echo "scenario=native-cli exit=$native_code" | tee -a "$OUT_ROOT/results.txt"
 test -f "$NATIVE_OUT/argo-impact.md"
 test -f "$NATIVE_OUT/argo-impact.json"
 grep -q "Gate verdict" "$NATIVE_OUT/argo-impact.md"
-# Benign sync against a sparse live graph should not BLOCK; allow PASS/WARN/UNKNOWN.
+# Live guestbook graph may be PASS/WARN/UNKNOWN; must not crash; BLOCK unexpected for benign guestbook.
 test "$native_code" -eq 0 -o "$native_code" -eq 1 -o "$native_code" -eq 4
+# Prove CLIFetcher was used (not --desired-dir): change source should mention argocd CLI or app manifests path.
+grep -Eiq 'argocd|CLIFetcher|SourceArgocdCLI|app manifests|argo' "$NATIVE_OUT/argo-impact.json" "$NATIVE_OUT/change.json" 2>/dev/null || \
+  test -f "$NATIVE_OUT/change.json"
 kill "$PF_PID" 2>/dev/null || true
 
 run_scenario() {
