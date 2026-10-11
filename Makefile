@@ -1,7 +1,7 @@
 BIN ?= bin/rehearsal
 GO ?= go
 
-.PHONY: all build test race vet demo e2e tidy clean docker image verify-example
+.PHONY: all build test race vet demo e2e e2e-argo tidy clean docker image verify-example
 
 all: vet test build
 
@@ -26,6 +26,10 @@ demo: build
 # v0.4 iron path: real YAML dump → graph → scoped change → analyze → verify
 e2e: build
 	bash scripts/e2e_pipeline.sh
+
+# Argo CD impact gate (fixture scenarios; Kind variant: scripts/kind-argo-impact-e2e.sh)
+e2e-argo: build
+	bash scripts/e2e_argo_impact.sh
 
 docker image:
 	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.5.4 -f Dockerfile .

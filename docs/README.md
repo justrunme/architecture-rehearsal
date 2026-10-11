@@ -20,6 +20,7 @@ flowchart TB
 | Document | Audience | Contents |
 | -------- | -------- | -------- |
 | [../README.md](../README.md) | Everyone | Positioning, diagrams, quick start, capability matrix |
+| [argo-impact-gate.md](argo-impact-gate.md) | GitOps / platform | Argo CD change-impact gate, detectors, CLI, real CI output |
 | [operator.md](operator.md) | Platform / SRE | Helm & manifests, CR status, conditions, troubleshooting |
 | [operator-security.md](operator-security.md) | Security | Token trust boundary, RBAC, hardening |
 | [api.md](api.md) | Integrators | HTTP API, auth, advance semantics |
