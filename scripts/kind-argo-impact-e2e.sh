@@ -33,6 +33,8 @@ kubectl apply -n "$ARGO_NS" -f https://raw.githubusercontent.com/argoproj/argo-c
 kubectl -n "$ARGO_NS" wait --for=condition=Available deploy/argocd-server --timeout=300s
 kubectl -n "$ARGO_NS" wait --for=condition=Available deploy/argocd-repo-server --timeout=300s
 kubectl -n "$ARGO_NS" wait --for=condition=Available deploy/argocd-applicationset-controller --timeout=180s || true
+# StatefulSet has no Available condition; wait for readyReplicas via rollout status
+kubectl -n "$ARGO_NS" rollout status statefulset/argocd-application-controller --timeout=300s
 
 echo "==> local git repo for Application source"
 REPO_DIR="$OUT_ROOT/git-src"
@@ -52,9 +54,13 @@ cp examples/e2e-argo/benign/desired/api.yaml "$REPO_DIR/demo/api.yaml"
 # then assert impact scenarios via --desired-dir (same compile path as argocd manifests).
 
 echo "==> assert Argo CD control plane healthy"
-kubectl -n "$ARGO_NS" get deploy argocd-server argocd-repo-server argocd-application-controller -o wide
+kubectl -n "$ARGO_NS" get deploy argocd-server argocd-repo-server -o wide
+kubectl -n "$ARGO_NS" get statefulset argocd-application-controller -o wide
 READY=$(kubectl -n "$ARGO_NS" get deploy argocd-server -o jsonpath='{.status.readyReplicas}')
 test "${READY:-0}" -ge 1
+# application-controller is a StatefulSet in upstream install manifests
+CTRL_READY=$(kubectl -n "$ARGO_NS" get statefulset argocd-application-controller -o jsonpath='{.status.readyReplicas}')
+test "${CTRL_READY:-0}" -ge 1
 
 echo "==> create demo Application CR (destination in-cluster; source is placeholder until synced)"
 cat <<'EOF' | kubectl apply -f -
