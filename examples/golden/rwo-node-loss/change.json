@@ -1,5 +1,5 @@
 {
-  "apiVersion": "rehearsal.io/v1alpha1",
+  "apiVersion": "rehearsal.io/v1beta1",
   "kind": "node-failure",
   "id": "change-node-loss-12-44",
   "title": "Worker node ip-10-0-12-44 lost / drained",

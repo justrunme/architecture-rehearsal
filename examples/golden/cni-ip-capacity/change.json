@@ -1,5 +1,5 @@
 {
-  "apiVersion": "rehearsal.io/v1alpha1",
+  "apiVersion": "rehearsal.io/v1beta1",
   "kind": "helm-upgrade",
   "id": "change-helm-scale-payments",
   "title": "Helm upgrade: scale payments stack",
