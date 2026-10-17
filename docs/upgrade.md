@@ -44,7 +44,9 @@ Compatible:
 Documents may include:
 
 ```json
-"apiVersion": "rehearsal.io/v1alpha1"
+"apiVersion": "rehearsal.io/v1beta1"
 ```
+
+Legacy `rehearsal.io/v1alpha1` documents are still accepted and normalized.
 
 Validation is fail-closed on duplicate IDs and dangling edges.

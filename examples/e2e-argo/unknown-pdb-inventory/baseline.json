@@ -1,5 +1,5 @@
 {
-  "apiVersion": "rehearsal.io/v1alpha1",
+  "apiVersion": "rehearsal.io/v1beta1",
   "kind": "ArchitectureSnapshot",
   "id": "argo-e2e-benign-baseline",
   "name": "argo benign baseline",
