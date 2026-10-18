@@ -1,12 +1,12 @@
 # Argo CD PreSync gate image: rehearsal binary + kubectl for live collect / Application annotations.
-FROM golang:1.26-bookworm AS build
+FROM golang:1.27-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rehearsal ./cmd/rehearsal
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates curl \
   && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.32.3/bin/linux/amd64/kubectl" \
   && chmod +x /usr/local/bin/kubectl \
