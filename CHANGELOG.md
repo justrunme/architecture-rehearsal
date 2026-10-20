@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [1.7.1] - 2026-10-20
+
+### Fixed
+- docs: EVIDENCE and ADR-0001 synced with merged PreSync gate (#46); EVIDENCE no longer cites the feature branch
+- Version strings (binary, API, operator, Helm chart, image tags, CI checks) bumped to 1.7.1; v1.7.0 still reported 1.6.0
+
+## [1.7.0] - 2026-10-17
+
 ### Added
 - Argo CD PreSync change-impact gate: `rehearsal argo-presync` Job hook (`deploy/argo-presync`, Helm `argoPresync`), fail-closed exit mapping (ALLOW/WARN→0, BLOCK/UNKNOWN→non-zero), audited break-glass Application annotations
 - Kind e2e job `argo-presync-kind-e2e` (`scripts/kind-argo-presync-e2e.sh`) proving safe sync, risky block (live object unchanged), fail-closed, and break-glass
