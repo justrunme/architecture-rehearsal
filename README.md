@@ -173,7 +173,7 @@ Run identity: `{namespace}-{name}-{uid8}-g{generation}` — Spec changes create 
 git clone https://github.com/justrunme/architecture-rehearsal.git
 cd architecture-rehearsal
 make demo && make e2e
-make build && ./bin/rehearsal version   # 1.6.0
+make build && ./bin/rehearsal version   # 1.7.1
 ```
 
 ### Offline iron path
@@ -228,17 +228,17 @@ Non-durable local only: `serve --memory --insecure-dev` (still needs `--workdir`
 ```bash
 helm upgrade --install rehearsal deploy/helm/architecture-rehearsal \
   --set api.token="$(openssl rand -hex 32)" \
-  --set image.tag=1.6.0 \
+  --set image.tag=1.7.1 \
   --set operator.enabled=true \
-  --set operator.image.tag=1.6.0
+  --set operator.image.tag=1.7.1
 # CRD from chart crds/; NetworkPolicy off by default
 kubectl get crd rehearsalruns.rehearsal.io
 ```
 
 Images (multi-arch `linux/amd64` + `linux/arm64`):
 
-- `ghcr.io/justrunme/architecture-rehearsal:1.6.0`
-- `ghcr.io/justrunme/architecture-rehearsal-operator:1.6.0`
+- `ghcr.io/justrunme/architecture-rehearsal:1.7.1`
+- `ghcr.io/justrunme/architecture-rehearsal-operator:1.7.1`
 
 Manifests: `kubectl apply -k config/operator/` · docs: [docs/operator.md](docs/operator.md) · security: [docs/operator-security.md](docs/operator-security.md).
 
