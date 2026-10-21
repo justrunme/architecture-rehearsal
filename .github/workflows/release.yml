@@ -84,9 +84,17 @@ jobs:
       - name: Smoke-test presync image per platform
         run: |
           set -euo pipefail
-          img="${{ steps.meta.outputs.ps }}@${{ steps.build-ps.outputs.digest }}"
+          repo="${{ steps.meta.outputs.ps }}"
+          index="${repo}@${{ steps.build-ps.outputs.digest }}"
           for p in amd64 arm64; do
-            docker run --rm --platform "linux/${p}" --entrypoint sh "$img" -c 'rehearsal version && kubectl version --client'
+            # Run each platform by its own manifest digest: running a second platform of the same
+            # index digest fails with "cannot overwrite digest" in Docker's containerd store.
+            d=$(docker buildx imagetools inspect --raw "$index" \
+              | jq -r --arg a "$p" '.manifests[] | select(.platform.os=="linux" and .platform.architecture==$a) | .digest')
+            test -n "$d"
+            echo "== linux/${p} ${d}"
+            docker run --rm --platform "linux/${p}" --entrypoint sh "${repo}@${d}" \
+              -c 'uname -m && rehearsal version && kubectl version --client'
           done
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
