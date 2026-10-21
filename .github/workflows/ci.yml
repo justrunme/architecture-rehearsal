@@ -70,7 +70,7 @@ jobs:
             --out out/verify.json
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.7.1'
+        run: ./bin/rehearsal version | grep -q '1.8.0'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null
@@ -90,7 +90,7 @@ jobs:
           curl -sf http://127.0.0.1:18080/readyz
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
           test "$code" = "401"
-          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.7.1
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.8.0
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/metrics | grep -q rehearsal_queue_depth
           # create run + job list + audit
           curl -sf -X POST -H "Authorization: Bearer $REHEARSAL_API_TOKEN" -H "Content-Type: application/json" \

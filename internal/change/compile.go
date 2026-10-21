@@ -10,6 +10,7 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 	"gopkg.in/yaml.v3"
 )
 
@@ -195,6 +196,7 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	replicas := 1
 	maxSurge := ""
 	attrsMu := ""
+	var tplAttrs map[string]any
 	if spec, ok := obj["spec"].(map[string]any); ok {
 		if v, ok := spec["replicas"]; ok {
 			switch t := v.(type) {
@@ -214,6 +216,9 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 				}
 			}
 		}
+		if tpl, ok := spec["template"].(map[string]any); ok {
+			tplAttrs = podtemplate.Attrs(tpl)
+		}
 	}
 	id := fmt.Sprintf("workload/%s/%s", ns, wname)
 	attrs := map[string]any{"replicas": replicas, "type": kind}
@@ -223,15 +228,29 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	if attrsMu != "" {
 		attrs["maxUnavailable"] = attrsMu
 	}
+	for k, v := range tplAttrs {
+		attrs[k] = v
+	}
+	desireImages, _ := attrs["containerImages"].(string)
+	desireEnv, _ := attrs["containerEnv"].(string)
 	if bn, ok := baseWL[key]; ok {
+		templateChanged := podtemplate.Changed(
+			bn.AttrString("containerImages"), bn.AttrString("containerEnv"),
+			desireImages, desireEnv,
+		)
 		changed := bn.WorkloadReplicas() != replicas ||
 			(maxSurge != "" && bn.AttrString("maxSurge") != maxSurge) ||
-			(attrsMu != "" && bn.AttrString("maxUnavailable") != attrsMu)
+			(attrsMu != "" && bn.AttrString("maxUnavailable") != attrsMu) ||
+			templateChanged
+		if templateChanged {
+			attrs["podTemplateChanged"] = true
+		}
 		if changed {
 			ch.PatchNodes = append(ch.PatchNodes, graph.Node{ID: id, Attributes: attrs})
 			ch.Seeds = append(ch.Seeds, id)
 		}
 	} else {
+		attrs["podTemplateChanged"] = true
 		ch.AddedNodes = append(ch.AddedNodes, graph.Node{
 			ID: id, Kind: graph.KindWorkload, Name: wname, Namespace: ns, Attributes: attrs,
 		})

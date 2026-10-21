@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gate
-          image: ghcr.io/justrunme/architecture-rehearsal-presync:1.7.1
+          image: ghcr.io/justrunme/architecture-rehearsal-presync:1.8.0
           imagePullPolicy: IfNotPresent
           args:
             - argo-presync

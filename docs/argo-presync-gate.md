@@ -60,7 +60,7 @@ helm template r deploy/helm/architecture-rehearsal \
 ### Image
 
 ```bash
-docker build -f Dockerfile.presync -t ghcr.io/justrunme/architecture-rehearsal-presync:1.7.1 .
+docker build -f Dockerfile.presync -t ghcr.io/justrunme/architecture-rehearsal-presync:1.8.0 .
 ```
 
 Binary entrypoint:

@@ -42,6 +42,7 @@
       "attributes": {
         "type": "Deployment",
         "replicas": 3,
+        "containerImages": "api=nginxinc/nginx-unprivileged:1.27-alpine",
         "podLabels": {
           "app": "api"
         }

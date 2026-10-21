@@ -2,15 +2,27 @@
 
 ## Unreleased
 
-### Fixed
+## [1.8.0] - 2026-10-21
+
+Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
+
+### Fixed (#52)
 - Live snapshot now captures Node `metadata.labels` and `spec.taints`; `scheduling-capacity` BLOCKs nodeSelector only when no node matches, and returns UNKNOWN (not BLOCK) when node label data is absent (fixes false BLOCK on `kubernetes.io/os: linux`)
 - `pdb-rollout`: Kubernetes RollingUpdate rounding — percent `maxUnavailable` floors, percent `maxSurge` ceils, defaults 25%/25% (so 25% of 3 replicas → 0 unavailable)
 - `pdb-rollout`: BLOCK when a rollout can leave 0 available pods even without a PDB (`maxUnavailable` ≥ replicas / 100% with `maxSurge` 0)
 - `pdb-rollout` messages state plainly that PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)
 
+### Fixed (rollout gate semantics)
+- `pdb-rollout` only BLOCKs when this sync will actually roll pods (pod template change: image, env, …). If `spec.template` is unchanged versus live, a dangerous strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
+- Env-only and image-only template diffs are recognized in `change.FromManifestsDiff` (no more false `empty change` / missed rollout)
+- When remaining available pods are > 0 but below PDB `minAvailable` (e.g. 99% → 1 left vs minAvailable=2), message reads `rollout can drop available pods to N, below the minAvailable=M your PDB declares (PDBs do not enforce this during rollouts)` and stays BLOCK when the sync triggers a rollout
+
 ### Tests
-- Positive/negative nodeSelector tests (matching linux PASS, `node-pool: high-mem` BLOCK, missing labels UNKNOWN)
-- Rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixture scenarios in `e2e_argo_impact`
+- Positive/negative nodeSelector tests; rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixtures
+- Unchanged template → WARN; env change → BLOCK; image change → BLOCK; below-minAvailable wording test
+
+### Changed
+- Version strings (binary, API, operator, Helm chart, image tags, CI checks) bumped to **1.8.0**
 
 ## [1.7.1] - 2026-10-20
 
