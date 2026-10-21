@@ -562,24 +562,56 @@ if kubectl kustomize "$ROOT/deploy/argo-presync" >/dev/null 2>&1; then
 fi
 
 echo "==> G: template change counts surge; H: plain scale does not"
-kubectl apply -f "$SAME_DIR/app.yaml"
-# Live: 3×200m, maxSurge 1, maxUnavailable 0
-kubectl -n shop patch deploy api --type=json -p='[
-  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxSurge","value":1},
-  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxUnavailable","value":0},
-  {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"200m"}
-]'
-kubectl -n shop rollout status deploy/api --timeout=180s
-ALLOC_CPU_RAW=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.cpu}')
-if [[ "$ALLOC_CPU_RAW" == *m ]]; then ALLOC_CPU_M=${ALLOC_CPU_RAW%m}; else
-  ALLOC_CPU_M=$(python3 -c "print(int(float('$ALLOC_CPU_RAW')*1000))"); fi
-# Free ≈ 100m after hog + 3×200m api.
-USED=$((3 * 200))
-HOG_G=$((ALLOC_CPU_M - USED - 100))
-if [[ "$HOG_G" -lt 100 ]]; then HOG_G=100; fi
-kubectl create namespace other --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n other delete deploy hog filler --wait=false 2>/dev/null || true
-kubectl -n other apply -f - <<EOF
+# free_cpu_millis: allocatable − Σ requests of non-terminal pods (init=max, containers=sum).
+free_cpu_millis() {
+  python3 - <<'PY'
+import json, subprocess
+def cpu_m(v):
+    if v is None: return 0
+    s=str(v).strip()
+    if s.endswith("m"): return int(s[:-1] or 0)
+    try: return int(float(s)*1000)
+    except: return 0
+def eff(spec):
+    inits=spec.get("initContainers") or []
+    cons=spec.get("containers") or []
+    max_i=0
+    for c in inits:
+        max_i=max(max_i, cpu_m(((c.get("resources") or {}).get("requests") or {}).get("cpu")))
+    sm=sum(cpu_m(((c.get("resources") or {}).get("requests") or {}).get("cpu")) for c in cons)
+    oh=cpu_m(((spec.get("overhead") or {}).get("cpu")))
+    return max(max_i, sm)+oh
+nodes=json.loads(subprocess.check_output(["kubectl","get","nodes","-o","json"]))
+pods=json.loads(subprocess.check_output(["kubectl","get","pods","-A","-o","json"]))
+alloc=sum(cpu_m(n["status"]["allocatable"].get("cpu")) for n in nodes["items"])
+used=0
+for p in pods["items"]:
+    if p.get("status",{}).get("phase") in ("Succeeded","Failed"): continue
+    used += eff(p.get("spec") or {})
+print(max(0, alloc-used))
+PY
+}
+size_hog_for_free() {
+  local target="$1"
+  kubectl create namespace other --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n other delete deploy --all --wait=true --timeout=60s 2>/dev/null || true
+  # Wait until terminating pods release requests (free stops rising).
+  local free prev i hog now
+  free=$(free_cpu_millis)
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    prev=$free
+    free=$(free_cpu_millis)
+    if [[ "$free" -le "$prev" ]]; then break; fi
+  done
+  hog=$((free - target))
+  if [[ "$hog" -lt 1 ]]; then
+    echo "FAIL: not enough free CPU to leave target=${target}m (free=${free}m)"
+    kubectl get pods -A -o wide | head -40 || true
+    exit 1
+  fi
+  echo "sizing hog=${hog}m to leave ~${target}m free (currently ${free}m)"
+  kubectl -n other apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: hog}
@@ -593,9 +625,34 @@ spec:
       containers:
         - name: pause
           image: registry.k8s.io/pause:3.9
-          resources: {requests: {cpu: ${HOG_G}m, memory: 8Mi}}
+          resources: {requests: {cpu: ${hog}m, memory: 8Mi}}
 EOF
-kubectl -n other rollout status deploy/hog --timeout=120s || true
+  kubectl -n other rollout status deploy/hog --timeout=120s
+  now=$(free_cpu_millis)
+  echo "free after hog: ${now}m (target ${target}m)"
+  # Must leave at least target (H needs an exact fit); allow a little slack above.
+  if [[ "$now" -lt "$target" ]]; then
+    echo "FAIL: free ${now}m < target ${target}m after hog"
+    kubectl -n other describe deploy hog || true
+    kubectl get pods -A -o wide | head -40 || true
+    exit 1
+  fi
+  if [[ "$now" -gt $((target + 80)) ]]; then
+    echo "FAIL: free ${now}m too far above target ${target}m (hog under-consumed)"
+    exit 1
+  fi
+}
+
+kubectl apply -f "$SAME_DIR/app.yaml"
+kubectl -n shop patch deploy api --type=json -p='[
+  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxSurge","value":1},
+  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxUnavailable","value":0},
+  {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"200m"}
+]'
+kubectl -n shop rollout status deploy/api --timeout=180s
+# Clean prior capacity tests so free_cpu is predictable.
+kubectl -n other delete deploy --all --wait=true --timeout=60s 2>/dev/null || true
+size_hog_for_free 100
 G_DIR="$OUT_ROOT/v9-g-env"
 mkdir -p "$G_DIR"
 python3 - "$SAME_DIR/app.yaml" "$G_DIR/app.yaml" <<'PY'
@@ -604,7 +661,6 @@ text = open(sys.argv[1]).read()
 text = re.sub(r"(maxSurge:\s*)0\b", r"\g<1>1", text, count=1)
 text = re.sub(r"(maxUnavailable:\s*)100%", r"\g<1>0", text, count=1)
 text = re.sub(r"(cpu:\s*)50m\b", r"\g<1>200m", text, count=1)
-# env change
 text = text.replace(
     "image: nginxinc/nginx-unprivileged:1.27-alpine",
     "image: nginxinc/nginx-unprivileged:1.27-alpine\n          env:\n            - name: VERIFY9\n              value: g",
@@ -627,32 +683,11 @@ for det in d.get("detectors",[]):
 print("MISSING")
 PY
 )
-echo "G scheduling-capacity=$g_st"
+echo "G scheduling-capacity=$g_st free=$(free_cpu_millis)m"
 test "$g_st" = "BLOCK"
 
-# H: restore live with maxSurge 1 still ok; free exactly 200m; scale 3→4 unchanged template → PASS
-kubectl -n other delete deploy hog --wait=false 2>/dev/null || true
-sleep 2
-# Recompute hog for exactly ~200m free with 3×200m api
-HOG_H=$((ALLOC_CPU_M - USED - 200))
-if [[ "$HOG_H" -lt 50 ]]; then HOG_H=50; fi
-kubectl -n other apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata: {name: hog}
-spec:
-  replicas: 1
-  selector: {matchLabels: {app: hog}}
-  template:
-    metadata: {labels: {app: hog}}
-    spec:
-      terminationGracePeriodSeconds: 0
-      containers:
-        - name: pause
-          image: registry.k8s.io/pause:3.9
-          resources: {requests: {cpu: ${HOG_H}m, memory: 8Mi}}
-EOF
-kubectl -n other rollout status deploy/hog --timeout=120s || true
+# H: free exactly ~200m; scale 3→4 unchanged template → PASS (one 200m pod).
+size_hog_for_free 200
 H_DIR="$OUT_ROOT/v9-h-scale"
 mkdir -p "$H_DIR"
 python3 - "$SAME_DIR/app.yaml" "$H_DIR/app.yaml" <<'PY'
@@ -664,14 +699,12 @@ text = re.sub(r"(maxUnavailable:\s*)100%", r"\g<1>0", text, count=1)
 text = re.sub(r"(cpu:\s*)50m\b", r"\g<1>200m", text, count=1)
 open(sys.argv[2], "w").write(text)
 PY
-# Ensure live matches desired template (no env) so this is plain scale.
 kubectl -n shop patch deploy api --type=json -p='[
   {"op":"replace","path":"/spec/replicas","value":3},
   {"op":"replace","path":"/spec/strategy/rollingUpdate/maxSurge","value":1},
   {"op":"replace","path":"/spec/strategy/rollingUpdate/maxUnavailable","value":0},
   {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"200m"}
 ]'
-# Drop VERIFY9 env if present from G desired apply (we never applied G).
 kubectl -n shop rollout status deploy/api --timeout=180s
 H_OUT="$OUT_ROOT/h-scale-nosurge"
 mkdir -p "$H_OUT"
@@ -688,7 +721,7 @@ for det in d.get("detectors",[]):
 print("MISSING")
 PY
 )
-echo "H scheduling-capacity=$h_st"
+echo "H scheduling-capacity=$h_st free=$(free_cpu_millis)m"
 test "$h_st" = "PASS"
 kubectl -n other delete deploy hog --wait=false 2>/dev/null || true
 
