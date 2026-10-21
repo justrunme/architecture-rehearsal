@@ -36,12 +36,12 @@ e2e-argo-presync: build
 	bash scripts/kind-argo-presync-e2e.sh
 
 docker image:
-	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.8.0 -f Dockerfile .
-	docker build -t ghcr.io/justrunme/architecture-rehearsal-operator:1.8.0 -f Dockerfile.operator .
-	docker build -t ghcr.io/justrunme/architecture-rehearsal-presync:1.8.0 -f Dockerfile.presync .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal:1.8.2 -f Dockerfile .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal-operator:1.8.2 -f Dockerfile.operator .
+	docker build -t ghcr.io/justrunme/architecture-rehearsal-presync:1.8.2 -f Dockerfile.presync .
 
 release-assets:
-	bash scripts/release-assets.sh 1.8.0
+	bash scripts/release-assets.sh 1.8.2
 
 verify-example: build
 	@set +e; \

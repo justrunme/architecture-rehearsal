@@ -16,7 +16,7 @@ func TestWriteHTMLReport(t *testing.T) {
 	outPath := filepath.Join(dir, "report.html")
 
 	rep := &analyze.Report{
-		Version:     "1.8.0",
+		Version:     "1.8.2",
 		ChangeID:    "ch-100",
 		ChangeTitle: "Deploy Payments Service",
 		Risk:        "high",
