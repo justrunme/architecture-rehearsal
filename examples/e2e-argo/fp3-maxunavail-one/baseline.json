@@ -1,0 +1,70 @@
+{
+  "apiVersion": "rehearsal.io/v1beta1",
+  "kind": "ArchitectureSnapshot",
+  "id": "argo-e2e-fp3-baseline",
+  "name": "fp3 maxUnavailable 1 control",
+  "source": "fixture",
+  "phase": "baseline",
+  "createdAt": "2026-10-21T00:00:00Z",
+  "meta": {
+    "pod_scheduling_capacity_estimate": 50,
+    "pdbsCollected": true
+  },
+  "nodes": [
+    {
+      "id": "cluster/kind",
+      "kind": "Cluster",
+      "name": "kind"
+    },
+    {
+      "id": "ns/shop",
+      "kind": "Namespace",
+      "name": "shop"
+    },
+    {
+      "id": "node/worker-a",
+      "kind": "Node",
+      "name": "worker-a",
+      "attributes": {
+        "allocatablePods": 110,
+        "zone": "z1",
+        "labels": {
+          "kubernetes.io/os": "linux",
+          "topology.kubernetes.io/zone": "z1"
+        }
+      }
+    },
+    {
+      "id": "workload/shop/api",
+      "kind": "Workload",
+      "name": "api",
+      "namespace": "shop",
+      "attributes": {
+        "type": "Deployment",
+        "replicas": 3,
+        "podLabels": {
+          "app": "api"
+        }
+      }
+    },
+    {
+      "id": "pdb/shop/api",
+      "kind": "PDB",
+      "name": "api",
+      "namespace": "shop",
+      "attributes": {
+        "minAvailable": 2,
+        "matchLabels": {
+          "app": "api"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "workload/shop/api",
+      "to": "pdb/shop/api",
+      "rel": "PROTECTED_BY"
+    }
+  ]
+}

@@ -266,12 +266,22 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 				}
 			}
 		}
+		// Always record labels (even empty) so scheduling detectors can distinguish
+		// "no matching node" from "node label inventory not collected".
 		if labels, ok := meta["labels"].(map[string]any); ok {
+			attrs["labels"] = labels
 			if z, ok := labels["topology.kubernetes.io/zone"].(string); ok {
 				attrs["zone"] = z
 			}
 			if z, ok := labels["failure-domain.beta.kubernetes.io/zone"].(string); ok && attrs["zone"] == nil {
 				attrs["zone"] = z
+			}
+		} else {
+			attrs["labels"] = map[string]any{}
+		}
+		if spec, ok := obj["spec"].(map[string]any); ok {
+			if taints, ok := spec["taints"].([]any); ok && len(taints) > 0 {
+				attrs["taints"] = taints
 			}
 		}
 		addNode(snap, graph.Node{
@@ -301,6 +311,9 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 					if ms, ok := rs["maxSurge"]; ok {
 						attrs["maxSurge"] = fmt.Sprint(ms)
 					}
+					if mu, ok := rs["maxUnavailable"]; ok {
+						attrs["maxUnavailable"] = fmt.Sprint(mu)
+					}
 				}
 			}
 			if kind == "StatefulSet" {
@@ -320,11 +333,21 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 					attrs["matchLabels"] = ml
 				}
 			}
-			// service account
+			// service account / scheduling
 			if tpl, ok := spec["template"].(map[string]any); ok {
 				if tspec, ok := tpl["spec"].(map[string]any); ok {
 					if sa, ok := tspec["serviceAccountName"].(string); ok && sa != "" {
 						attrs["serviceAccountName"] = sa
+					}
+					if ns, ok := tspec["nodeSelector"].(map[string]any); ok && len(ns) > 0 {
+						attrs["nodeSelector"] = ns
+					}
+					if aff, ok := tspec["affinity"]; ok {
+						attrs["affinity"] = aff
+						attrs["hasAffinity"] = true
+					}
+					if tols, ok := tspec["tolerations"]; ok {
+						attrs["tolerations"] = tols
 					}
 					// volumes -> claim names
 					var claims []string

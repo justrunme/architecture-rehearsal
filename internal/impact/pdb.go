@@ -9,7 +9,12 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
 )
 
-// PDBRollout detects PodDisruptionBudget violations caused by a rolling sync/rollout.
+// PDBRollout detects rolling updates that can drive available replicas to zero,
+// and compares rollout maxUnavailable against PodDisruptionBudget constraints.
+//
+// Important: PodDisruptionBudgets do NOT limit Deployment rolling updates; they
+// only gate voluntary evictions (drain). A dangerous rollout must still BLOCK
+// even when no PDB exists.
 type PDBRollout struct{}
 
 func (PDBRollout) Name() string { return "pdb-rollout" }
@@ -24,11 +29,57 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 		return v
 	}
 
+	var findings []string
+	var affected []string
+	worst := Pass
+
 	pdbs := ctx.PropIdx.ByKind[graph.KindPDB]
 	if len(pdbs) == 0 {
 		pdbs = ctx.BaseIdx.ByKind[graph.KindPDB]
 	}
+
+	// Always evaluate proposed workloads for rollouts that can leave 0 available
+	// pods — with or without a PDB.
+	for _, w := range ctx.PropIdx.ByKind[graph.KindWorkload] {
+		if w == nil {
+			continue
+		}
+		rep := w.WorkloadReplicas()
+		if rep <= 0 {
+			continue
+		}
+		maxUnavailRollout := parseMaxUnavailable(w.AttrString("maxUnavailable"), rep)
+		remaining := rep - maxUnavailRollout
+		if remaining > 0 {
+			continue
+		}
+		pdb := matchingPDB(ctx, pdbs, w)
+		var msg string
+		if pdb != nil {
+			minA := effectiveMinAvailable(pdb, rep)
+			msg = fmt.Sprintf(
+				"rollout can take available pods to 0; note: PDB %s (minAvailable=%d) does not protect against rollouts",
+				pdb.Name, minA)
+			affected = append(affected, pdb.ID, w.ID)
+		} else {
+			msg = fmt.Sprintf(
+				"rollout can take available pods to 0 on %s (maxUnavailable=%d, replicas=%d); note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)",
+				display(ctx.PropIdx, w.ID), maxUnavailRollout, rep)
+			affected = append(affected, w.ID)
+		}
+		findings = append(findings, msg)
+		worst = Block
+	}
+
 	if len(pdbs) == 0 {
+		if len(findings) > 0 {
+			v.Status = Block
+			v.Explanation = "rollout can take available pods to 0; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
+			v.Evidence = findings
+			v.Affected = unique(affected)
+			v.Confidence = "high"
+			return v
+		}
 		if !ctx.PDBsCollected {
 			v.Status = Unknown
 			v.Explanation = "PDB inventory status unknown (baseline did not record PDB collection)"
@@ -57,16 +108,20 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 		}
 	}
 	if !hasLink {
+		if len(findings) > 0 {
+			v.Status = Block
+			v.Explanation = "rollout can take available pods to 0; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
+			v.Evidence = findings
+			v.Affected = unique(affected)
+			v.Confidence = "high"
+			return v
+		}
 		v.Status = Unknown
 		v.Explanation = "PDBs present but no PROTECTED_BY edges or matchLabels to bind workloads"
 		v.Missing = []string{"pdb-workload-link"}
 		v.Confidence = "low"
 		return v
 	}
-
-	var findings []string
-	var affected []string
-	worst := Pass
 
 	for _, pdb := range pdbs {
 		workloads := workloadsForPDB(ctx, pdb)
@@ -93,29 +148,28 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 			minA := effectiveMinAvailable(pdb, rep)
 			maxU := effectiveMaxUnavailable(pdb, rep)
 
-			// Rolling update surge/unavailable from workload strategy.
 			maxUnavailRollout := parseMaxUnavailable(w.AttrString("maxUnavailable"), rep)
-			if maxUnavailRollout == 0 {
-				// Default RollingUpdate maxUnavailable is 25%.
-				maxUnavailRollout = int(math.Max(1, math.Ceil(float64(rep)*0.25)))
+			remaining := rep - maxUnavailRollout
+
+			// Already reported as zero-available above; still ensure PDB note is present.
+			if remaining <= 0 {
+				continue
 			}
 
-			// Violation: rollout could drop below minAvailable.
-			if minA > 0 {
-				remaining := rep - maxUnavailRollout
-				if remaining < minA {
-					msg := fmt.Sprintf(
-						"PDB %s minAvailable=%d; rollout maxUnavailable=%d on %s leaves %d available",
-						pdb.Name, minA, maxUnavailRollout, display(ctx.PropIdx, wid), remaining)
-					findings = append(findings, msg)
-					affected = append(affected, pdb.ID, wid)
-					worst = Block
-				}
+			// Violation: rollout could drop below declared minAvailable.
+			// PDB does not actually stop the rollout — call that out plainly.
+			if minA > 0 && remaining < minA {
+				msg := fmt.Sprintf(
+					"PDB %s minAvailable=%d; rollout maxUnavailable=%d on %s leaves %d available; note: PodDisruptionBudgets do not protect against rollouts",
+					pdb.Name, minA, maxUnavailRollout, display(ctx.PropIdx, wid), remaining)
+				findings = append(findings, msg)
+				affected = append(affected, pdb.ID, wid)
+				worst = Block
 			}
-			// PDB maxUnavailable stricter than rollout — warn when equal-tight or conflicting.
+			// PDB maxUnavailable stricter than rollout — warn when conflicting.
 			if maxU > 0 && maxUnavailRollout > maxU {
 				msg := fmt.Sprintf(
-					"PDB %s maxUnavailable=%d tighter than rollout maxUnavailable=%d on %s",
+					"PDB %s maxUnavailable=%d tighter than rollout maxUnavailable=%d on %s; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)",
 					pdb.Name, maxU, maxUnavailRollout, display(ctx.PropIdx, wid))
 				findings = append(findings, msg)
 				affected = append(affected, pdb.ID, wid)
@@ -123,10 +177,10 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 					worst = Warn
 				}
 			}
-			// Single replica with minAvailable=1 blocks any disruption.
+			// Single replica with minAvailable=1 blocks any disruption (eviction), not rollouts.
 			if rep == 1 && minA >= 1 {
 				msg := fmt.Sprintf(
-					"PDB %s minAvailable=%d with single-replica workload %s blocks rollout disruption",
+					"PDB %s minAvailable=%d with single-replica workload %s blocks eviction disruption (not rollouts)",
 					pdb.Name, minA, display(ctx.PropIdx, wid))
 				findings = append(findings, msg)
 				affected = append(affected, pdb.ID, wid)
@@ -139,20 +193,47 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 
 	if len(findings) == 0 {
 		v.Status = Pass
-		v.Explanation = "rollout respects PodDisruptionBudget constraints"
+		v.Explanation = "rollout respects availability constraints (PDB noted for eviction only)"
 		v.Confidence = "high"
 		return v
 	}
 	v.Status = worst
 	if worst == Block {
-		v.Explanation = "rollout would violate PodDisruptionBudget (maxUnavailable vs minAvailable)"
+		if hasZeroAvailabilityFinding(findings) {
+			v.Explanation = "rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts"
+		} else {
+			v.Explanation = "rollout can drop available pods below PDB minAvailable; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
+		}
 	} else {
-		v.Explanation = "rollout may conflict with PodDisruptionBudget constraints"
+		v.Explanation = "rollout may conflict with PodDisruptionBudget constraints; note: PDBs only gate evictions"
 	}
 	v.Evidence = findings
 	v.Affected = unique(affected)
 	v.Confidence = "high"
 	return v
+}
+
+func hasZeroAvailabilityFinding(findings []string) bool {
+	for _, f := range findings {
+		if strings.Contains(f, "take available pods to 0") {
+			return true
+		}
+	}
+	return false
+}
+
+func matchingPDB(ctx Context, pdbs []*graph.Node, w *graph.Node) *graph.Node {
+	if w == nil {
+		return nil
+	}
+	for _, pdb := range pdbs {
+		for _, wid := range workloadsForPDB(ctx, pdb) {
+			if wid == w.ID {
+				return pdb
+			}
+		}
+	}
+	return nil
 }
 
 func edgesOf(s *graph.Snapshot) []graph.Edge {
@@ -223,9 +304,11 @@ func effectiveMaxUnavailable(pdb *graph.Node, replicas int) int {
 	return 0
 }
 
+// parseMaxUnavailable follows Kubernetes RollingUpdate semantics: percentage
+// values round DOWN; the default when unset is 25% (so 25% of 3 replicas → 0).
 func parseMaxUnavailable(ms string, replicas int) int {
 	if ms == "" {
-		return 0
+		return int(math.Floor(float64(replicas) * 0.25))
 	}
 	if strings.HasSuffix(ms, "%") {
 		p, _ := strconv.Atoi(strings.TrimSuffix(ms, "%"))

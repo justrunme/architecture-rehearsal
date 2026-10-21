@@ -35,6 +35,10 @@ run netpol-cut 3
 run pdb-violation 3
 run unknown-pdb-inventory 4
 run benign 0
+# C5 / controls from FEASIBILITY: dangerous maxUnavailable BLOCK; maxUnavailable:1 PASS; no-PDB zero-avail BLOCK
+run c5-rollout-maxunavail 3
+run fp3-maxunavail-one 0
+run fp4-zero-avail-no-pdb 3
 
 echo "OK e2e_argo_impact"
 cat "$OUT/results.txt"

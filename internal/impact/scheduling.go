@@ -108,6 +108,13 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 				v.Confidence = "low"
 				return v
 			}
+			if !nodesHaveLabelData(nodes) {
+				v.Status = Unknown
+				v.Explanation = "nodeSelector present but node label data is absent from the snapshot"
+				v.Missing = []string{"node.labels"}
+				v.Confidence = "low"
+				return v
+			}
 			match := 0
 			for _, n := range nodes {
 				if nodeMatchesSelector(n, ns) {
@@ -190,13 +197,15 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 	return v
 }
 
+// parseMaxSurge follows Kubernetes RollingUpdate semantics: percentage values
+// round UP; the default when unset is 25%.
 func parseMaxSurge(ms string, replicas int) int {
 	if ms == "" {
-		return int(math.Max(1, math.Ceil(float64(replicas)*0.25)))
+		return int(math.Ceil(float64(replicas) * 0.25))
 	}
 	if strings.HasSuffix(ms, "%") {
 		p, _ := strconv.Atoi(strings.TrimSuffix(ms, "%"))
-		return int(math.Max(1, math.Ceil(float64(replicas)*float64(p)/100.0)))
+		return int(math.Ceil(float64(replicas) * float64(p) / 100.0))
 	}
 	v, _ := strconv.Atoi(ms)
 	if v < 0 {
@@ -218,11 +227,28 @@ func hardAntiAffinity(w *graph.Node) bool {
 	return has
 }
 
+// nodesHaveLabelData reports whether the snapshot captured node metadata.labels.
+// Zone-only attributes are not enough: selectors like kubernetes.io/os must not
+// be treated as "matches zero nodes" when labels were never collected.
+func nodesHaveLabelData(nodes []*graph.Node) bool {
+	for _, n := range nodes {
+		if n == nil || n.Attributes == nil {
+			continue
+		}
+		if _, ok := n.Attributes["labels"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func nodeMatchesSelector(n *graph.Node, sel map[string]any) bool {
 	labels, _ := n.Attributes["labels"].(map[string]any)
 	if labels == nil {
-		// zone is commonly stored flat
 		labels = map[string]any{}
+	}
+	// Merge flat zone attribute when present (collector still stores it).
+	if _, ok := labels["topology.kubernetes.io/zone"]; !ok {
 		if z := n.AttrString("zone"); z != "" {
 			labels["topology.kubernetes.io/zone"] = z
 		}
