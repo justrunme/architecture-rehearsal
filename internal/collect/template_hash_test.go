@@ -10,9 +10,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 )
 
-func TestCollect_LiveDefaultsHashMatchesDesired(t *testing.T) {
-	// Simulate a live Node/Deployment dump with API-populated defaults (as kubectl
-	// get -o yaml would show) versus a lean desired manifest template.
+func TestCollect_StoresPodTemplate_SubsetIgnoresDefaults(t *testing.T) {
 	dir := t.TempDir()
 	live := `
 apiVersion: apps/v1
@@ -33,16 +31,15 @@ spec:
     spec:
       restartPolicy: Always
       dnsPolicy: ClusterFirst
-      schedulerName: default-scheduler
-      terminationGracePeriodSeconds: 30
-      securityContext: {}
       containers:
         - name: api
           image: nginx:1.27
           imagePullPolicy: IfNotPresent
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
-          resources: {}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
 `
 	if err := os.WriteFile(filepath.Join(dir, "live.yaml"), []byte(live), 0o644); err != nil {
 		t.Fatal(err)
@@ -61,23 +58,25 @@ spec:
 	if wl == nil {
 		t.Fatal("workload missing")
 	}
-	liveHash := wl.AttrString("podTemplateHash")
-	if liveHash == "" {
-		t.Fatal("collector must set podTemplateHash")
+	liveTpl, _ := wl.Attributes["podTemplate"].(map[string]any)
+	if liveTpl == nil {
+		t.Fatal("collector must store podTemplate")
 	}
-	desiredTpl := map[string]any{
+	desired := map[string]any{
 		"metadata": map[string]any{"labels": map[string]any{"app": "api"}},
 		"spec": map[string]any{
 			"containers": []any{
-				map[string]any{"name": "api", "image": "nginx:1.27"},
+				map[string]any{
+					"name":  "api",
+					"image": "nginx:1.27",
+					"readinessProbe": map[string]any{
+						"httpGet": map[string]any{"path": "/", "port": "http"},
+					},
+				},
 			},
 		},
 	}
-	desireHash := podtemplate.Hash(desiredTpl)
-	if liveHash != desireHash {
-		t.Fatalf("live collector hash %s != desired hash %s", liveHash, desireHash)
-	}
-	if podtemplate.HashChanged(liveHash, desireHash) {
-		t.Fatal("HashChanged must be false for live defaults vs desired")
+	if podtemplate.SubsetChanged(desired, liveTpl) {
+		t.Fatal("desired without server defaults must subset-equal live template")
 	}
 }

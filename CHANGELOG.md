@@ -13,10 +13,10 @@ Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
 - `pdb-rollout` messages state plainly that PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)
 
 ### Fixed (rollout gate semantics)
-- `pdb-rollout` only BLOCKs when this sync will actually roll pods. Decision key is a stable hash of the full normalized `spec.template` (resources, probes, volumes, labels/annotations, serviceAccount, securityContext, initContainers, image, env, …). If the template is unchanged versus live, a dangerous strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
-- Missing `podTemplateHash` on either side fails closed (treated as a triggered rollout). `containerImages` / `containerEnv` remain evidence-only
-- Normalization strips common API defaults so a live object with server defaults hashes equal to the same desired manifest
+- `pdb-rollout` only BLOCKs when this sync will actually roll pods. With `--live`, template change is decided by **server-side dry-run apply** (`kubectl apply --server-side --dry-run=server`) comparing the returned `spec.template` to the live object (API defaults on both sides; dry-run failure fails closed). Offline/fixtures use **subset compare**: every desired field must match live; live-only server defaults are ignored (no hand-maintained default strip list)
+- If the template is unchanged versus live, a dangerous strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
 - When remaining available pods are > 0 but below PDB `minAvailable` (e.g. 99% → 1 left vs minAvailable=2), message reads `rollout can drop available pods to N, below the minAvailable=M your PDB declares (PDBs do not enforce this during rollouts)` and stays BLOCK when the sync triggers a rollout
+- CI kind job `argo-rollout-template-kind-e2e` (`scripts/kind-rollout-template-e2e.sh`): identical desired with probes/configMap/resources → WARN/PASS; env change → BLOCK
 
 ### Tests
 - Positive/negative nodeSelector tests; rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixtures

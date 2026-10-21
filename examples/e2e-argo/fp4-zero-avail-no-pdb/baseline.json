@@ -43,9 +43,23 @@
         "maxUnavailable": "100%",
         "maxSurge": "0",
         "containerImages": "api=nginxinc/nginx-unprivileged:1.27-alpine",
-        "podTemplateHash": "8b617af90e6b7c3379d15a0ee81b60bf5b3edadf88df91bb7a2e2297f459c412",
         "podLabels": {
           "app": "api"
+        },
+        "podTemplate": {
+          "metadata": {
+            "labels": {
+              "app": "api"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "api",
+                "image": "nginxinc/nginx-unprivileged:1.27-alpine"
+              }
+            ]
+          }
         }
       }
     }

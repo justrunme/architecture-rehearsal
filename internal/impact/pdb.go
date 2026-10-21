@@ -288,34 +288,49 @@ func hasExistingStrategyFinding(findings []string) bool {
 	return false
 }
 
-// syncTriggersRollout is true when this sync will roll pods for workload w —
-// i.e. the pod template hash changed versus the live baseline, the hash is
-// missing on either side (fail-closed), or the workload is newly added.
+// syncTriggersRollout is true when this sync will roll pods for workload w.
+// Preference order:
+//  1. Explicit podTemplateChanged on an Added/Patch node for this workload
+//  2. Subset compare of desired vs live podTemplate attrs (fail-closed if live missing)
+//  3. Workload not touched by the change → false (no rollout from this sync)
 func syncTriggersRollout(ctx Context, w *graph.Node) bool {
 	if w == nil {
 		return false
 	}
-	if w.AttrBool("podTemplateChanged") {
-		return true
-	}
 	if ctx.Change != nil {
 		for _, a := range ctx.Change.AddedNodes {
 			if a.ID == w.ID {
+				if v, ok := a.Attributes["podTemplateChanged"].(bool); ok {
+					return v
+				}
 				return true
 			}
 		}
+		for _, p := range ctx.Change.PatchNodes {
+			if p.ID != w.ID {
+				continue
+			}
+			if v, ok := p.Attributes["podTemplateChanged"].(bool); ok {
+				return v
+			}
+			// Patch without explicit flag: subset-compare templates if present.
+			desiredTpl, _ := p.Attributes["podTemplate"].(map[string]any)
+			if desiredTpl == nil {
+				desiredTpl, _ = w.Attributes["podTemplate"].(map[string]any)
+			}
+			var liveTpl map[string]any
+			if ctx.BaseIdx != nil {
+				if base := ctx.BaseIdx.ByID[w.ID]; base != nil {
+					liveTpl, _ = base.Attributes["podTemplate"].(map[string]any)
+				}
+			}
+			return podtemplate.SubsetChanged(desiredTpl, liveTpl)
+		}
+		// Not part of this sync → strategy may be dangerous but pods will not roll.
+		return false
 	}
-	if ctx.BaseIdx == nil {
-		return true
-	}
-	base := ctx.BaseIdx.ByID[w.ID]
-	if base == nil {
-		return true
-	}
-	return podtemplate.HashChanged(
-		base.AttrString("podTemplateHash"),
-		w.AttrString("podTemplateHash"),
-	)
+	// No change envelope: fail closed.
+	return true
 }
 
 func matchingPDB(ctx Context, pdbs []*graph.Node, w *graph.Node) *graph.Node {

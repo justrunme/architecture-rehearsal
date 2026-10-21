@@ -334,9 +334,10 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 					attrs["matchLabels"] = ml
 				}
 			}
-			// service account / scheduling / pod template fingerprint
+			// service account / scheduling / full pod template (for subset compare)
 			if tpl, ok := spec["template"].(map[string]any); ok {
-				for k, v := range podTemplateFingerprint(tpl) {
+				attrs["podTemplate"] = podtemplate.CloneMap(tpl)
+				for k, v := range podtemplate.EvidenceAttrs(tpl) {
 					attrs[k] = v
 				}
 				if tspec, ok := tpl["spec"].(map[string]any); ok {
@@ -1024,10 +1025,6 @@ func zoneFromNodeAffinity(nsel map[string]any) string {
 		}
 	}
 	return ""
-}
-
-func podTemplateFingerprint(tpl map[string]any) map[string]any {
-	return podtemplate.Attrs(tpl)
 }
 
 func addNode(snap *graph.Snapshot, n graph.Node) {

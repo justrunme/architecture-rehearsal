@@ -16,6 +16,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/collect"
 	"github.com/justrunme/architecture-rehearsal/internal/impact"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 	"github.com/justrunme/architecture-rehearsal/internal/presync"
 	"github.com/justrunme/architecture-rehearsal/internal/rbac"
 )
@@ -183,6 +184,17 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 	}
 	if err != nil {
 		return fail("argo compile: " + err.Error())
+	}
+	if a.live {
+		desiredForCompare := a.desiredDir
+		if desiredForCompare == "" {
+			desiredForCompare = filepath.Join(a.outDir, "work", "desired")
+		}
+		if desiredForCompare != "" {
+			if err := argo.ApplyLiveTemplateCompare(nil, ch, desiredForCompare, podtemplate.KubectlOptions{}); err != nil {
+				return fail("live template compare: " + err.Error())
+			}
+		}
 	}
 
 	imp := impact.Run(base, ch, nil)

@@ -203,6 +203,31 @@ jobs:
           path: out/argo-presync-e2e/
           if-no-files-found: ignore
 
+  # Live template compare: server-side dry-run must not false-BLOCK identical desired
+  # (httpGet.scheme / configMap defaultMode / resources) and must BLOCK on env change.
+  argo-rollout-template-kind-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Kind rollout template compare E2E
+        run: bash scripts/kind-rollout-template-e2e.sh
+      - name: Upload kind rollout-template artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kind-rollout-template-e2e
+          path: out/rollout-template-e2e/
+          if-no-files-found: ignore
+
   postgres:
     runs-on: ubuntu-latest
     services:

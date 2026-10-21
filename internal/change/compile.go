@@ -217,7 +217,10 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 			}
 		}
 		if tpl, ok := spec["template"].(map[string]any); ok {
-			tplAttrs = podtemplate.Attrs(tpl)
+			tplAttrs = map[string]any{"podTemplate": podtemplate.CloneMap(tpl)}
+			for k, v := range podtemplate.EvidenceAttrs(tpl) {
+				tplAttrs[k] = v
+			}
 		}
 	}
 	id := fmt.Sprintf("workload/%s/%s", ns, wname)
@@ -231,16 +234,17 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	for k, v := range tplAttrs {
 		attrs[k] = v
 	}
-	desireHash, _ := attrs["podTemplateHash"].(string)
+	desiredTpl, _ := attrs["podTemplate"].(map[string]any)
 	if bn, ok := baseWL[key]; ok {
-		templateChanged := podtemplate.HashChanged(bn.AttrString("podTemplateHash"), desireHash)
+		liveTpl, _ := bn.Attributes["podTemplate"].(map[string]any)
+		// Fallback subset compare (fixtures / no live dry-run). Fail-closed when
+		// live template is missing but desired sets one.
+		templateChanged := podtemplate.SubsetChanged(desiredTpl, liveTpl)
+		attrs["podTemplateChanged"] = templateChanged
 		changed := bn.WorkloadReplicas() != replicas ||
 			(maxSurge != "" && bn.AttrString("maxSurge") != maxSurge) ||
 			(attrsMu != "" && bn.AttrString("maxUnavailable") != attrsMu) ||
 			templateChanged
-		if templateChanged {
-			attrs["podTemplateChanged"] = true
-		}
 		if changed {
 			ch.PatchNodes = append(ch.PatchNodes, graph.Node{ID: id, Attributes: attrs})
 			ch.Seeds = append(ch.Seeds, id)
