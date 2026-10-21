@@ -50,7 +50,7 @@ func cmdArgoPresync(args []string) int {
 	baseline := fs.String("baseline", "", "baseline snapshot JSON")
 	live := fs.Bool("live", false, "collect live baseline via kubectl; template compare uses apply --dry-run=server (needs patch)")
 	cluster := fs.String("cluster", "cluster", "cluster name for live snapshot")
-	namespace := fs.String("namespace", "", "limit manifest scope to namespace(s), comma-separated")
+	namespace := fs.String("namespace", envOr("REHEARSAL_LIVE_NAMESPACE", ""), "limit manifest scope / live collect namespace (default REHEARSAL_LIVE_NAMESPACE)")
 	allowRemove := fs.Bool("allow-remove", false, "allow removals within scope")
 	changeID := fs.String("id", "", "change id")
 	outDir := fs.String("out", "/tmp/argo-presync", "scratch output directory (emptyDir when read-only rootfs)")
@@ -141,7 +141,17 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 	basePath := a.baseline
 	if basePath == "" {
 		basePath = filepath.Join(a.outDir, "baseline.json")
-		snap, err := collect.K8sFromLive(nil, collect.LiveOptions{Cluster: a.cluster})
+		liveOpts := collect.LiveOptions{Cluster: a.cluster}
+		if a.namespace != "" {
+			for _, p := range strings.Split(a.namespace, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					liveOpts.Namespace = p
+					break
+				}
+			}
+		}
+		snap, err := collect.K8sFromLive(nil, liveOpts)
 		if err != nil {
 			return fail("live baseline: " + err.Error())
 		}

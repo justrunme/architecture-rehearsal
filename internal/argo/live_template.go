@@ -45,6 +45,9 @@ func ApplyLiveTemplateCompare(ctx context.Context, ch *loader.ChangeEnvelope, de
 		if r.Detail != "" {
 			ch.PatchNodes[i].Attributes["podTemplateCompareDetail"] = r.Detail
 		}
+		if r.Uncertain {
+			ch.PatchNodes[i].Attributes["podTemplateUncertain"] = true
+		}
 		seen[id] = true
 	}
 	for i := range ch.AddedNodes {
@@ -61,6 +64,9 @@ func ApplyLiveTemplateCompare(ctx context.Context, ch *loader.ChangeEnvelope, de
 		if r.Detail != "" {
 			ch.AddedNodes[i].Attributes["podTemplateCompareDetail"] = r.Detail
 		}
+		if r.Uncertain {
+			ch.AddedNodes[i].Attributes["podTemplateUncertain"] = true
+		}
 		seen[id] = true
 	}
 	for id, r := range byID {
@@ -70,14 +76,15 @@ func ApplyLiveTemplateCompare(ctx context.Context, ch *loader.ChangeEnvelope, de
 		if !r.Changed {
 			continue
 		}
-		ch.PatchNodes = append(ch.PatchNodes, graph.Node{
-			ID: id,
-			Attributes: map[string]any{
-				"podTemplateChanged":       true,
-				"podTemplateCompare":       r.Method,
-				"podTemplateCompareDetail": r.Detail,
-			},
-		})
+		attrs := map[string]any{
+			"podTemplateChanged":       true,
+			"podTemplateCompare":       r.Method,
+			"podTemplateCompareDetail": r.Detail,
+		}
+		if r.Uncertain {
+			attrs["podTemplateUncertain"] = true
+		}
+		ch.PatchNodes = append(ch.PatchNodes, graph.Node{ID: id, Attributes: attrs})
 		ch.Seeds = appendUnique(ch.Seeds, id)
 	}
 	return nil

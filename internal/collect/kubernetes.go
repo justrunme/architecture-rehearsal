@@ -308,6 +308,9 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 				replicas = asInt(v)
 			}
 			if strat, ok := spec["strategy"].(map[string]any); ok {
+				if t, ok := strat["type"].(string); ok && t != "" {
+					attrs["strategyType"] = t
+				}
 				if rs, ok := strat["rollingUpdate"].(map[string]any); ok {
 					if ms, ok := rs["maxSurge"]; ok {
 						attrs["maxSurge"] = fmt.Sprint(ms)

@@ -1,0 +1,43 @@
+# Optional cluster-scoped RBAC for the PreSync gate.
+# Enable when the gate must list Nodes / Namespaces / PVs or read Argo Applications
+# outside the destination namespace (Helm: argoPresync.clusterRBAC=true).
+# Default installs use namespaced Role only (rbac.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-2"
+  name: rehearsal-argo-presync-cluster
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  # Break-glass annotations on the Argo CD Application (often in argocd ns).
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-2"
+  name: rehearsal-argo-presync-cluster
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync-cluster
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: default # set to Application destination namespace

@@ -18,6 +18,9 @@ type LiveOptions struct {
 	Kubeconfig string
 	Context    string
 	Cluster    string
+	// Namespace limits collection to one namespace (namespaced Role RBAC).
+	// When set, cluster-scoped resources (nodes, PVs, …) are omitted unless Resources overrides.
+	Namespace string
 	// Resources is a kubectl resource list (comma-separated). Empty → default set.
 	Resources string
 	// Kubectl binary (default "kubectl").
@@ -33,6 +36,10 @@ type LiveOptions struct {
 // Events included for causal verify (FailedCreatePodSandBox, FailedAttachVolume, …).
 const DefaultLiveResources = "node,ns,deploy,sts,ds,rs,po,svc,pvc,pv,pdb,hpa,sa,ing,networkpolicies,endpointslices,events"
 
+// NamespacedLiveResources is the default set when LiveOptions.Namespace is set
+// (works with a namespaced Role that cannot list cluster-scoped objects).
+const NamespacedLiveResources = "deploy,sts,ds,rs,po,svc,pvc,pdb,hpa,sa,ing,networkpolicies,endpointslices,events"
+
 // K8sFromLive runs kubectl get -A -o yaml (read-only) into a temp dir and reuses the offline collector.
 func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error) {
 	if opts.Cluster == "" {
@@ -42,7 +49,11 @@ func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error)
 		opts.Kubectl = "kubectl"
 	}
 	if opts.Resources == "" {
-		opts.Resources = DefaultLiveResources
+		if opts.Namespace != "" {
+			opts.Resources = NamespacedLiveResources
+		} else {
+			opts.Resources = DefaultLiveResources
+		}
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 120 * time.Second
@@ -53,7 +64,12 @@ func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error)
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
-	args := []string{"get", opts.Resources, "-A", "-o", "yaml"}
+	args := []string{"get", opts.Resources, "-o", "yaml"}
+	if opts.Namespace != "" {
+		args = append(args, "-n", opts.Namespace)
+	} else {
+		args = append(args, "-A")
+	}
 	if opts.Kubeconfig != "" {
 		args = append([]string{"--kubeconfig", opts.Kubeconfig}, args...)
 	}

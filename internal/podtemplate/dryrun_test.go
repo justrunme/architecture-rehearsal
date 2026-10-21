@@ -249,19 +249,9 @@ case "$1" in
 EOF
     exit 0
     ;;
-  apply)
-    # Two-way merge keeps live env
-    cat <<'EOF'
-{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api"},"spec":{"template":{"metadata":{"labels":{"app":"api"}},"spec":{"containers":[{"name":"api","image":"nginx","env":[{"name":"FEATURE_FLAGS","value":"on"}]}]}}}}
-EOF
-    exit 0
-    ;;
-  create)
-    # create dry-run = desired + defaults (no FEATURE_FLAGS)
-    cat <<'EOF'
-{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api"},"spec":{"template":{"metadata":{"labels":{"app":"api"}},"spec":{"containers":[{"name":"api","image":"nginx"}]}}}}
-EOF
-    exit 0
+  apply|create)
+    echo "must not call apply/create without last-applied" >&2
+    exit 1
     ;;
 esac
 exit 1
@@ -296,8 +286,31 @@ spec:
 	if len(results) != 1 {
 		t.Fatalf("got %+v", results)
 	}
-	if !results[0].Changed || results[0].Method != "fail-closed" {
-		t.Fatalf("without last-applied, env removal must fail-closed: %+v", results[0])
+	r := results[0]
+	if !r.Changed || r.Method != "fail-closed" || !r.Uncertain {
+		t.Fatalf("without last-applied must fail-closed uncertain: %+v", r)
+	}
+	if r.Detail != podtemplate.NoLastAppliedDetail {
+		t.Fatalf("detail=%q", r.Detail)
+	}
+}
+
+func TestHasArgoServerSideApply_AutoDetect(t *testing.T) {
+	obj := map[string]any{
+		"metadata": map[string]any{
+			"managedFields": []any{
+				map[string]any{"manager": "argocd-controller", "operation": "Apply"},
+			},
+		},
+	}
+	if !podtemplate.HasArgoServerSideApply(obj) {
+		t.Fatal("expected SSA detect")
+	}
+	if got := podtemplate.ResolveApplyMode(obj, ""); got != podtemplate.ApplyServerSide {
+		t.Fatalf("auto mode=%s", got)
+	}
+	if got := podtemplate.ResolveApplyMode(obj, podtemplate.ApplyClientSide); got != podtemplate.ApplyClientSide {
+		t.Fatalf("force client override=%s", got)
 	}
 }
 

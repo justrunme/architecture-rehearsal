@@ -16,6 +16,9 @@ import (
 type ApplyMode string
 
 const (
+	// ApplyAuto picks SSA when live managedFields show argocd-controller Apply,
+	// otherwise client-side three-way apply. Used when Mode is empty.
+	ApplyAuto ApplyMode = "auto"
 	// ApplyClientSide is Argo CD's default sync: client-side three-way merge
 	// using kubectl.kubernetes.io/last-applied-configuration.
 	ApplyClientSide ApplyMode = "client"
@@ -28,13 +31,16 @@ const DefaultArgoFieldManager = "argocd-controller"
 
 const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
 
+// NoLastAppliedDetail is the fail-closed reason when three-way merge is impossible.
+const NoLastAppliedDetail = "cannot predict removals: live object has no last-applied-configuration (created with kubectl create or SSA); treating as rollout"
+
 // KubectlOptions controls dry-run apply via kubectl.
 type KubectlOptions struct {
 	Kubectl    string
 	Kubeconfig string
 	Context    string
 	Timeout    time.Duration
-	// Mode defaults to ApplyClientSide (kubectl apply --dry-run=server).
+	// Mode: empty/ApplyAuto → per-object auto-detect; ApplyClientSide / ApplyServerSide force.
 	Mode ApplyMode
 	// FieldManager is used only for ApplyServerSide (default argocd-controller).
 	FieldManager string
@@ -47,12 +53,50 @@ func (o *KubectlOptions) normalize() {
 	if o.Timeout <= 0 {
 		o.Timeout = 60 * time.Second
 	}
-	if o.Mode == "" {
-		o.Mode = ApplyClientSide
-	}
 	if o.FieldManager == "" {
 		o.FieldManager = DefaultArgoFieldManager
 	}
+}
+
+// ResolveApplyMode returns the effective apply mode for a live object.
+// Forced Mode (client/ssa) wins; otherwise SSA when managedFields show
+// argocd-controller with operation Apply.
+func ResolveApplyMode(liveObj map[string]any, mode ApplyMode) ApplyMode {
+	switch mode {
+	case ApplyClientSide, ApplyServerSide:
+		return mode
+	}
+	if HasArgoServerSideApply(liveObj) {
+		return ApplyServerSide
+	}
+	return ApplyClientSide
+}
+
+// HasArgoServerSideApply reports whether managedFields include Argo's SSA manager.
+func HasArgoServerSideApply(obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	meta, _ := obj["metadata"].(map[string]any)
+	if meta == nil {
+		return false
+	}
+	mfs, ok := meta["managedFields"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range mfs {
+		mf, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		mgr := fmt.Sprint(mf["manager"])
+		op := fmt.Sprint(mf["operation"])
+		if mgr == DefaultArgoFieldManager && op == "Apply" {
+			return true
+		}
+	}
+	return false
 }
 
 // DryRunTemplate applies obj the same way the sync will, with --dry-run=server,
@@ -62,6 +106,9 @@ func DryRunTemplate(ctx context.Context, obj map[string]any, opts KubectlOptions
 		return nil, fmt.Errorf("podtemplate: nil object for dry-run")
 	}
 	opts.normalize()
+	if opts.Mode == "" || opts.Mode == ApplyAuto {
+		opts.Mode = ApplyClientSide
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -72,7 +119,7 @@ func DryRunTemplate(ctx context.Context, obj map[string]any, opts KubectlOptions
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"apply", "--dry-run=server", "-o", "json", "-f", "-"}
+	var args []string
 	switch opts.Mode {
 	case ApplyServerSide:
 		args = []string{
@@ -85,7 +132,7 @@ func DryRunTemplate(ctx context.Context, obj map[string]any, opts KubectlOptions
 			"-f", "-",
 		}
 	case ApplyClientSide:
-		// default args above: client-side three-way when last-applied is present
+		args = []string{"apply", "--dry-run=server", "-o", "json", "-f", "-"}
 	default:
 		return nil, fmt.Errorf("podtemplate: unknown apply mode %q", opts.Mode)
 	}

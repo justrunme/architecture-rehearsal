@@ -330,3 +330,119 @@ func TestPDBRollout_Default25PercentOf3_DoesNotFalseBlock(t *testing.T) {
 		t.Fatalf("default 25pct want PASS, got %s: %s evidence=%v", v.Status, v.Explanation, v.Evidence)
 	}
 }
+
+func TestPDBRollout_RecreateWithTemplateChange_Blocks(t *testing.T) {
+	base := shopAPIBase(true, tpl(nil))
+	delete(base.Nodes[1].Attributes, "maxUnavailable")
+	delete(base.Nodes[1].Attributes, "maxSurge")
+	desired := tpl(func(t map[string]any) {
+		t["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"] = []any{
+			map[string]any{"name": "FEATURE_FLAGS", "value": "on"},
+		}
+	})
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "recreate-env", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas": 3, "strategyType": "Recreate",
+				"podTemplate": desired, "podTemplateChanged": true,
+			},
+		}},
+	}
+	v := impact.PDBRollout{}.Evaluate(pdbCtx(base, ch))
+	if v.Status != impact.Block {
+		t.Fatalf("Recreate+env want BLOCK, got %s: %s", v.Status, v.Explanation)
+	}
+	want := "Recreate strategy terminates all pods before starting new ones; availability drops to 0 during rollout"
+	blob := v.Explanation + " " + strings.Join(v.Evidence, " ")
+	if !strings.Contains(blob, want) {
+		t.Fatalf("want %q, got %q", want, blob)
+	}
+}
+
+func TestPDBRollout_RecreateSwitchAlone_Warns(t *testing.T) {
+	base := shopAPIBase(true, tpl(nil))
+	delete(base.Nodes[1].Attributes, "maxUnavailable")
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "recreate-only", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas": 3, "strategyType": "Recreate",
+				"podTemplate": tpl(nil), "podTemplateChanged": false,
+			},
+		}},
+	}
+	v := impact.PDBRollout{}.Evaluate(pdbCtx(base, ch))
+	if v.Status != impact.Warn {
+		t.Fatalf("Recreate switch alone want WARN, got %s: %s", v.Status, v.Explanation)
+	}
+}
+
+func TestPDBRollout_ExistingRecreateUnchanged_Warns(t *testing.T) {
+	base := shopAPIBase(true, tpl(nil))
+	delete(base.Nodes[1].Attributes, "maxUnavailable")
+	base.Nodes[1].Attributes["strategyType"] = "Recreate"
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "noop", Facts: map[string]any{"scenario": "argo-impact"},
+	}
+	v := impact.PDBRollout{}.Evaluate(pdbCtx(base, ch))
+	if v.Status != impact.Warn {
+		t.Fatalf("existing Recreate want WARN, got %s: %s", v.Status, v.Explanation)
+	}
+}
+
+func TestPDBRollout_NoLastAppliedSafeStrategy_Unknown(t *testing.T) {
+	base := shopAPIBase(true, tpl(nil))
+	base.Nodes[1].Attributes["maxUnavailable"] = "1"
+	base.Nodes[1].Attributes["maxSurge"] = "1"
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "uncertain", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas": 3, "maxUnavailable": "1", "maxSurge": "1",
+				"podTemplateChanged": true, "podTemplateUncertain": true,
+				"podTemplateCompareDetail": podtemplate.NoLastAppliedDetail,
+			},
+		}},
+	}
+	v := impact.PDBRollout{}.Evaluate(pdbCtx(base, ch))
+	if v.Status != impact.Unknown {
+		t.Fatalf("safe strategy + uncertain want UNKNOWN, got %s: %s", v.Status, v.Explanation)
+	}
+	if !strings.Contains(v.Explanation+" "+strings.Join(v.Evidence, " "), "no last-applied-configuration") {
+		t.Fatalf("want last-applied reason, got %q %v", v.Explanation, v.Evidence)
+	}
+}
+
+func TestPDBRollout_NoLastAppliedDangerous_BlocksWithReason(t *testing.T) {
+	base := shopAPIBase(true, tpl(nil))
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "uncertain-c5", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas": 3, "maxUnavailable": "100%", "maxSurge": "0",
+				"podTemplateChanged": true, "podTemplateUncertain": true,
+				"podTemplateCompareDetail": podtemplate.NoLastAppliedDetail,
+			},
+		}},
+	}
+	v := impact.PDBRollout{}.Evaluate(pdbCtx(base, ch))
+	if v.Status != impact.Block {
+		t.Fatalf("dangerous + uncertain want BLOCK, got %s: %s", v.Status, v.Explanation)
+	}
+	blob := v.Explanation + " " + strings.Join(v.Evidence, " ")
+	if !strings.Contains(blob, "no last-applied-configuration") {
+		t.Fatalf("want last-applied reason, not pods-to-0 only: %q", blob)
+	}
+	if strings.Contains(v.Explanation, "take available pods to 0") {
+		t.Fatalf("explanation must not reuse pods-to-0 wording: %q", v.Explanation)
+	}
+}

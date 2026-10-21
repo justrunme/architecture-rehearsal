@@ -4,5 +4,6 @@ resources:
   - serviceaccount.yaml
   - rbac.yaml
   - job.yaml
+# Optional cluster-scoped reads (nodes, Applications): add rbac-cluster.yaml
 # Consumers must provide ConfigMap rehearsal-argo-presync-desired with desired manifests
-# and set the ServiceAccount namespace on the ClusterRoleBinding subject.
+# and set the ServiceAccount / RoleBinding namespace to the Application destination.

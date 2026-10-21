@@ -90,9 +90,20 @@ func cmdArgoImpact(args []string) int {
 				return 5
 			}
 		} else if *live {
-			snap, err := collect.K8sFromLive(nil, collect.LiveOptions{
+			liveOpts := collect.LiveOptions{
 				Cluster: *cluster, Kubeconfig: *kubeconfig, Context: *kubeContext,
-			})
+			}
+			if *namespace != "" {
+				// First scoped namespace → namespaced collect (works with Role RBAC).
+				for _, p := range strings.Split(*namespace, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						liveOpts.Namespace = p
+						break
+					}
+				}
+			}
+			snap, err := collect.K8sFromLive(nil, liveOpts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "baseline live: %v\n", err)
 				return 5

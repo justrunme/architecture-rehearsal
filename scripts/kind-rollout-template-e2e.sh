@@ -4,8 +4,8 @@
 #   - identical desired vs live → WARN/PASS (not BLOCK)
 #   - env add → BLOCK
 #   - env remove → BLOCK (three-way merge must see removals)
-#   - Recreate strategy switch + template annotation → BLOCK via client-side-dry-run (not fail-closed)
-#   - shipped PreSync RBAC (with patch) allows the dry-run gate
+#   - Recreate + env → BLOCK by Recreate availability detection (client-side-dry-run)
+#   - shipped namespaced Role (with patch) allows the dry-run gate
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -140,7 +140,7 @@ case "$meth" in
     ;;
 esac
 
-echo "==> restore baseline, then Recreate + annotation (expect BLOCK via client-side-dry-run, not fail-closed)"
+echo "==> restore baseline, then Recreate + env (expect BLOCK by Recreate availability detection)"
 kubectl apply -f "$SAME_DIR/app.yaml"
 kubectl -n shop rollout status deploy/api --timeout=180s
 
@@ -158,36 +158,37 @@ test "$st" = "BLOCK"
 test "$code" -eq 3
 case "$meth" in
   fail-closed)
-    echo "FAIL: Recreate switch must not fail-closed on dry-run (stale rollingUpdate); got method=$meth"
+    echo "FAIL: Recreate+env must not fail-closed on dry-run; got method=$meth"
     cat "$RECREATE_OUT/change.json" || true
     exit 1
     ;;
   client-side-dry-run) ;;
   *)
-    echo "FAIL: expected client-side-dry-run for Recreate (got $meth)"
+    echo "FAIL: expected client-side-dry-run for Recreate+env (got $meth)"
     exit 1
     ;;
 esac
+grep -q 'Recreate strategy terminates all pods' "$RECREATE_OUT/argo-impact.md" \
+  || grep -q 'Recreate strategy terminates all pods' "$RECREATE_OUT/argo-impact.json"
 
-echo "==> shipped PreSync RBAC: SA with patch can run dry-run gate (identical → WARN/PASS)"
+echo "==> shipped PreSync namespaced Role: SA with patch can run dry-run gate (identical → WARN/PASS)"
 kubectl apply -f "$SAME_DIR/app.yaml"
 kubectl -n shop rollout status deploy/api --timeout=180s
-# Bind shipped ClusterRole to a dedicated SA in shop (simulate PreSync Job identity).
 kubectl -n shop create serviceaccount rehearsal-argo-presync --dry-run=client -o yaml | kubectl apply -f -
-# Apply ClusterRole from shipped rbac, then bind subject to shop.
-# Apply shipped rbac.yaml (ClusterRole includes patch on workload kinds).
-kubectl apply -f "$RBAC_FILE"
+# Apply Role into shop (rewrite default namespace in RoleBinding subject).
+grep -q 'kind: Role' "$RBAC_FILE"
 grep -A3 'resources: \["deployments"' "$RBAC_FILE" | grep -q patch
-kubectl delete clusterrolebinding rehearsal-argo-presync-e2e 2>/dev/null || true
-# Bind shipped ClusterRole to the shop PreSync SA (rbac.yaml binds default NS).
-kubectl apply -f - <<EOF
+kubectl -n shop apply -f "$RBAC_FILE"
+# Fix RoleBinding subject namespace to shop.
+kubectl -n shop apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
-  name: rehearsal-argo-presync-e2e
+  name: rehearsal-argo-presync
+  namespace: shop
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: rehearsal-argo-presync
 subjects:
   - kind: ServiceAccount

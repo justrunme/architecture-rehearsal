@@ -41,7 +41,7 @@ metadata:
 
 The Job logs `BREAK-GLASS OVERRIDE reason=...` and emits `override` in the JSON line. Missing reason → fail closed.
 
-The PreSync Job must know the Application name (`--app` / `ARGOCD_APP_NAME`) so it can read these annotations (RBAC: `get`/`list` on `applications`).
+The PreSync Job must know the Application name (`--app` / `ARGOCD_APP_NAME`) so it can read these annotations (RBAC: `get`/`list` on `applications` via optional cluster RBAC).
 
 ## RBAC and live template compare
 
@@ -49,20 +49,25 @@ With `--live`, the gate dry-runs desired workloads the same way the sync will ap
 
 | Sync mode | Dry-run |
 | --------- | ------- |
-| Argo default (client-side apply) | `kubectl apply --dry-run=server` (three-way merge via `last-applied-configuration`) |
-| Argo `ServerSideApply=true` (`--server-side-apply` / `REHEARSAL_SERVER_SIDE_APPLY=true`) | SSA with field manager `argocd-controller` and `--force-conflicts` |
+| Auto (default) | SSA when live `managedFields` include manager `argocd-controller` with operation `Apply`; otherwise client-side three-way `kubectl apply --dry-run=server` |
+| Force SSA (`--server-side-apply` / `REHEARSAL_SERVER_SIDE_APPLY=true`) | SSA with field manager `argocd-controller` and `--force-conflicts` |
+| Force client (`REHEARSAL_SERVER_SIDE_APPLY=false`) | Client-side three-way even if Argo SSA managers are present |
 
-`kubectl apply --dry-run=server` issues a **patch** with `dryRun=All`. The shipped ClusterRole therefore grants `patch` on `deployments`, `statefulsets`, and `daemonsets` (in addition to get/list/watch). ReplicaSets stay get/list/watch only.
+`kubectl apply --dry-run=server` issues a **patch** with `dryRun=All`. The shipped Role therefore grants `patch` on `deployments`, `statefulsets`, and `daemonsets` in the Application destination namespace. Dry-run does **not** mutate cluster objects: on kind verification, Deployment `resourceVersion` / `generation` were unchanged after every `--live` run.
 
-**Safety:** dry-run does not mutate cluster objects. On kind verification (`VERIFY-4`), Deployment `resourceVersion` and `generation` were unchanged after every `--live` run, and no `rehearsal` field manager appeared on the live object.
+**Default RBAC** (`deploy/argo-presync/rbac.yaml`): namespaced `Role` + `RoleBinding` (inventory get/list/watch + workload `patch`). Live collect uses `--namespace` / `REHEARSAL_LIVE_NAMESPACE` (set from the Job pod namespace).
 
-Without `last-applied-configuration` and without SSA mode, field removals cannot be predicted — the gate fails closed (treats the sync as a template rollout) unless a two-way equality check proves no change.
+**Opt-in cluster RBAC** (`deploy/argo-presync/rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): `ClusterRole` for Nodes / Namespaces / PVs and Argo `applications` (needed for nodeSelector capacity checks and break-glass annotation lookup outside the destination namespace).
+
+Without `last-applied-configuration` in client mode, removals cannot be predicted. The gate fails closed with a distinct reason (`cannot predict removals: live object has no last-applied-configuration …`). If the rollout strategy itself is safe, `pdb-rollout` reports **UNKNOWN** (not a false “pods to 0” BLOCK). Objects applied with Argo SSA are auto-detected via `managedFields` so client mode is not required.
+
+`strategy.type: Recreate` is treated as availability 0: template change → BLOCK; unchanged template (or Recreate-only switch) → WARN, with message `Recreate strategy terminates all pods before starting new ones; availability drops to 0 during rollout`.
 
 ## Install
 
 ### Kustomize / raw manifests
 
-See [`deploy/argo-presync/`](../deploy/argo-presync/). Provide ConfigMap `rehearsal-argo-presync-desired` and patch the ClusterRoleBinding subject namespace to the Application destination.
+See [`deploy/argo-presync/`](../deploy/argo-presync/). Provide ConfigMap `rehearsal-argo-presync-desired` and set the RoleBinding / ServiceAccount namespace to the Application destination. Optionally include `rbac-cluster.yaml`.
 
 ### Helm
 
@@ -70,6 +75,8 @@ See [`deploy/argo-presync/`](../deploy/argo-presync/). Provide ConfigMap `rehear
 helm template r deploy/helm/architecture-rehearsal \
   --set api.token=dev \
   --set argoPresync.enabled=true
+# Optional cluster reads / break-glass Applications:
+# --set argoPresync.clusterRBAC=true
 ```
 
 ### Image

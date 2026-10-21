@@ -196,6 +196,7 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	replicas := 1
 	maxSurge := ""
 	attrsMu := ""
+	strategyType := ""
 	var tplAttrs map[string]any
 	if spec, ok := obj["spec"].(map[string]any); ok {
 		if v, ok := spec["replicas"]; ok {
@@ -207,6 +208,9 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 			}
 		}
 		if strat, ok := spec["strategy"].(map[string]any); ok {
+			if t, ok := strat["type"].(string); ok {
+				strategyType = t
+			}
 			if ru, ok := strat["rollingUpdate"].(map[string]any); ok {
 				if ms, ok := ru["maxSurge"]; ok {
 					maxSurge = fmt.Sprint(ms)
@@ -225,6 +229,9 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	}
 	id := fmt.Sprintf("workload/%s/%s", ns, wname)
 	attrs := map[string]any{"replicas": replicas, "type": kind}
+	if strategyType != "" {
+		attrs["strategyType"] = strategyType
+	}
 	if maxSurge != "" {
 		attrs["maxSurge"] = maxSurge
 	}
@@ -241,9 +248,18 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 		// live template is missing but desired sets one.
 		templateChanged := podtemplate.SubsetChanged(desiredTpl, liveTpl)
 		attrs["podTemplateChanged"] = templateChanged
+		baseStrat := bn.AttrString("strategyType")
+		if baseStrat == "" {
+			baseStrat = "RollingUpdate" // Deployment default
+		}
+		desiredStrat := strategyType
+		if desiredStrat == "" {
+			desiredStrat = "RollingUpdate"
+		}
 		changed := bn.WorkloadReplicas() != replicas ||
 			(maxSurge != "" && bn.AttrString("maxSurge") != maxSurge) ||
 			(attrsMu != "" && bn.AttrString("maxUnavailable") != attrsMu) ||
+			desiredStrat != baseStrat ||
 			templateChanged
 		if changed {
 			ch.PatchNodes = append(ch.PatchNodes, graph.Node{ID: id, Attributes: attrs})

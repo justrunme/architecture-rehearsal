@@ -9,7 +9,7 @@ metadata:
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
   labels:
@@ -17,13 +17,12 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "namespaces", "pods", "services", "persistentvolumeclaims", "persistentvolumes", "events", "endpoints", "serviceaccounts"]
+    resources: ["pods", "services", "persistentvolumeclaims", "events", "endpoints", "serviceaccounts", "configmaps"]
     verbs: ["get", "list", "watch"]
   # patch is required for apply --dry-run=server (dryRun=All); objects are not mutated.
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
     verbs: ["get", "list", "watch", "patch"]
-
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch"]
@@ -36,12 +35,9 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["argoproj.io"]
-    resources: ["applications"]
-    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
   labels:
@@ -49,12 +45,45 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
 subjects:
   - kind: ServiceAccount
     name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
     namespace: {{ .Release.Namespace }}
+{{- if .Values.argoPresync.clusterRBAC }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster
+  labels:
+    app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster
+  labels:
+    app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.argoPresync.includeHookJob }}
 ---
 apiVersion: batch/v1
@@ -97,6 +126,10 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            - name: REHEARSAL_LIVE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: ARGOCD_APP_NAME
               value: {{ .Values.argoPresync.appName | default "" | quote }}
             - name: ARGOCD_APP_NAMESPACE

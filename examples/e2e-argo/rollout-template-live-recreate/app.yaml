@@ -28,12 +28,13 @@ spec:
     metadata:
       labels:
         app: api
-      annotations:
-        rehearsal.io/e2e: recreate-switch
     spec:
       containers:
         - name: api
           image: nginxinc/nginx-unprivileged:1.27-alpine
+          env:
+            - name: FEATURE_FLAGS
+              value: "fast-checkout=on"
           ports:
             - name: http
               containerPort: 8080
