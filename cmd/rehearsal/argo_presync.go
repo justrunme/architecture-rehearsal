@@ -103,6 +103,12 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 		_ = presync.WriteJSONLine(os.Stdout, r)
 		code := presync.HookExitCode(r.Decision)
 		fmt.Fprintf(os.Stderr, "presync decision=%s exit=%d durationMs=%d\n", r.Decision, code, r.DurationMs)
+		for _, reason := range r.Reasons {
+			if strings.Contains(reason, "no Node") || strings.Contains(reason, "nodes collect") ||
+				strings.Contains(reason, "does not need capacity") {
+				fmt.Fprintf(os.Stderr, "presync note: %s\n", reason)
+			}
+		}
 		if r.Override != nil && r.Override.Enabled {
 			fmt.Fprintf(os.Stderr, "BREAK-GLASS OVERRIDE reason=%q\n", r.Override.Reason)
 		}

@@ -1242,7 +1242,7 @@ func nodeToleratedByWorkload(n, w *graph.Node) bool {
 		if tm == nil {
 			continue
 		}
-		effect := fmt.Sprint(tm["effect"])
+		effect := mapStr(tm, "effect")
 		if effect == "" {
 			effect = "NoSchedule"
 		}
@@ -1256,24 +1256,35 @@ func nodeToleratedByWorkload(n, w *graph.Node) bool {
 	return true
 }
 
+// mapStr reads a string field; missing or non-string → "" (never fmt.Sprint's "<nil>").
+func mapStr(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return s
+}
+
+// tolerationAllows implements Kubernetes Toleration matching against one taint:
+// empty effect matches all effects; empty key + Exists matches all taints;
+// operator defaults to Equal; Exists ignores value.
 func tolerationAllows(tols []any, taint map[string]any, effect string) bool {
-	tKey := fmt.Sprint(taint["key"])
-	tVal := fmt.Sprint(taint["value"])
+	tKey := mapStr(taint, "key")
+	tVal := mapStr(taint, "value")
 	for _, tol := range tols {
 		tolm, _ := tol.(map[string]any)
 		if tolm == nil {
 			continue
 		}
-		tolEffect := fmt.Sprint(tolm["effect"])
+		tolEffect := mapStr(tolm, "effect")
 		if tolEffect != "" && tolEffect != effect {
 			continue
 		}
-		op := fmt.Sprint(tolm["operator"])
+		op := mapStr(tolm, "operator")
 		if op == "" {
 			op = "Equal"
 		}
-		tolKey := fmt.Sprint(tolm["key"])
-		// Empty key + Exists → tolerate everything.
+		tolKey := mapStr(tolm, "key")
 		if tolKey == "" && strings.EqualFold(op, "Exists") {
 			return true
 		}
@@ -1283,7 +1294,7 @@ func tolerationAllows(tols []any, taint map[string]any, effect string) bool {
 		if strings.EqualFold(op, "Exists") {
 			return true
 		}
-		if fmt.Sprint(tolm["value"]) == tVal {
+		if strings.EqualFold(op, "equal") && mapStr(tolm, "value") == tVal {
 			return true
 		}
 	}
