@@ -1071,27 +1071,59 @@ func capacityRunningCount(snap *graph.Snapshot) (running int, model string) {
 	return running, "node_allocatable_pods_minus_desired_replicas"
 }
 
+// sumContainerRequests uses kube-scheduler semantics:
+// max(max(init container requests), sum(app container requests)) + overhead.
 func sumContainerRequests(spec map[string]any) (cpuMillis int, memBytes int) {
-	for _, key := range []string{"containers", "initContainers"} {
-		list, _ := spec[key].([]any)
+	var maxInitCPU, maxInitMem int
+	if list, _ := spec["initContainers"].([]any); len(list) > 0 {
 		for _, c := range list {
 			cm, _ := c.(map[string]any)
-			if cm == nil {
-				continue
+			cpu, mem := containerRequestPair(cm)
+			if cpu > maxInitCPU {
+				maxInitCPU = cpu
 			}
-			res, _ := cm["resources"].(map[string]any)
-			if res == nil {
-				continue
+			if mem > maxInitMem {
+				maxInitMem = mem
 			}
-			req, _ := res["requests"].(map[string]any)
-			if req == nil {
-				continue
-			}
-			cpuMillis += parseCPUMillis(req["cpu"])
-			memBytes += parseMemoryBytes(req["memory"])
 		}
 	}
+	var sumCPU, sumMem int
+	if list, _ := spec["containers"].([]any); len(list) > 0 {
+		for _, c := range list {
+			cm, _ := c.(map[string]any)
+			cpu, mem := containerRequestPair(cm)
+			sumCPU += cpu
+			sumMem += mem
+		}
+	}
+	cpuMillis = sumCPU
+	if maxInitCPU > cpuMillis {
+		cpuMillis = maxInitCPU
+	}
+	memBytes = sumMem
+	if maxInitMem > memBytes {
+		memBytes = maxInitMem
+	}
+	if oh, ok := spec["overhead"].(map[string]any); ok {
+		cpuMillis += parseCPUMillis(oh["cpu"])
+		memBytes += parseMemoryBytes(oh["memory"])
+	}
 	return cpuMillis, memBytes
+}
+
+func containerRequestPair(cm map[string]any) (cpu, mem int) {
+	if cm == nil {
+		return 0, 0
+	}
+	res, _ := cm["resources"].(map[string]any)
+	if res == nil {
+		return 0, 0
+	}
+	req, _ := res["requests"].(map[string]any)
+	if req == nil {
+		return 0, 0
+	}
+	return parseCPUMillis(req["cpu"]), parseMemoryBytes(req["memory"])
 }
 
 func parseCPUMillis(v any) int {
@@ -1126,8 +1158,18 @@ func parseMemoryBytes(v any) int {
 		s string
 		m int
 	}{
-		{"Ki", 1024}, {"Mi", 1024 * 1024}, {"Gi", 1024 * 1024 * 1024},
-		{"K", 1000}, {"M", 1000 * 1000}, {"G", 1000 * 1000 * 1000},
+		{"Ei", 1024 * 1024 * 1024 * 1024 * 1024 * 1024},
+		{"Pi", 1024 * 1024 * 1024 * 1024 * 1024},
+		{"Ti", 1024 * 1024 * 1024 * 1024},
+		{"Gi", 1024 * 1024 * 1024},
+		{"Mi", 1024 * 1024},
+		{"Ki", 1024},
+		{"E", 1000 * 1000 * 1000 * 1000 * 1000 * 1000},
+		{"P", 1000 * 1000 * 1000 * 1000 * 1000},
+		{"T", 1000 * 1000 * 1000 * 1000},
+		{"G", 1000 * 1000 * 1000},
+		{"M", 1000 * 1000},
+		{"K", 1000},
 		{"k", 1000},
 	} {
 		if strings.HasSuffix(s, suf.s) {

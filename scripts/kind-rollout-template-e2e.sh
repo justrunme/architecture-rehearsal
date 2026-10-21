@@ -8,7 +8,10 @@
 #   - shipped Role + Nodes/Pods ClusterRole allows the dry-run gate
 #   - SSA object (argocd-controller managedFields), no flag, identical → WARN (auto-detect)
 #   - cross-namespace pod pressure BLOCKs scale under --namespace/--live-namespace
-#   - two-namespace installs keep distinct ClusterRoleBindings / node+pod access
+#   - CPU hog in other ns BLOCKs scale (missing requests do not skip CPU check)
+#   - G: template change counts surge → BLOCK; H: plain scale no surge → PASS
+#   - two README-style overlays keep distinct per-ns ClusterRole + Binding
+#   - components/rbac-cluster builds; root kustomize path fails
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -193,11 +196,15 @@ kubectl apply -k "$SHOP_OVERLAY"
 rm -rf "$SHOP_OVERLAY"
 # RoleBinding subject is set by overlay namespace; Role comes from base.
 kubectl auth can-i patch deployments -n shop --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
-kubectl auth can-i get nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i list nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
 kubectl auth can-i list pods --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
-# get on pods must NOT be granted (list only)
+# get/watch must NOT be granted (list only)
 if kubectl auth can-i get pods --as=system:serviceaccount:shop:rehearsal-argo-presync 2>/dev/null | grep -q yes; then
   echo "FAIL: pods get must not be granted (list only)"
+  exit 1
+fi
+if kubectl auth can-i get nodes --as=system:serviceaccount:shop:rehearsal-argo-presync 2>/dev/null | grep -q yes; then
+  echo "FAIL: nodes get must not be granted (list only)"
   exit 1
 fi
 test "$(kubectl get clusterrolebinding rehearsal-argo-presync-nodes-in-shop -o jsonpath='{.roleRef.name}')" = "rehearsal-argo-presync-nodes-in-shop"
@@ -500,10 +507,190 @@ test "$shop_role" = "rehearsal-argo-presync-nodes-in-shop"
 test "$shop2_role" = "rehearsal-argo-presync-nodes-in-shop2"
 kubectl get clusterrole rehearsal-argo-presync-nodes-in-shop >/dev/null
 kubectl get clusterrole rehearsal-argo-presync-nodes-in-shop2 >/dev/null
-kubectl auth can-i get nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
-kubectl auth can-i get nodes --as=system:serviceaccount:shop2:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i list nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i list nodes --as=system:serviceaccount:shop2:rehearsal-argo-presync | grep -q yes
 kubectl auth can-i list pods --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
 kubectl auth can-i list pods --as=system:serviceaccount:shop2:rehearsal-argo-presync | grep -q yes
+
+echo "==> I: README opt-in components/rbac-cluster builds from overlay"
+CLUSTER_OV="$ROOT/deploy/argo-presync/overlays/cluster-e2e"
+mkdir -p "$CLUSTER_OV"
+cat > "$CLUSTER_OV/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: shop
+resources:
+  - ../../base
+components:
+  - ../../components/rbac-cluster
+replacements:
+  - source:
+      kind: ServiceAccount
+      name: rehearsal-argo-presync
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: ClusterRole
+          name: rehearsal-argo-presync-nodes-in-default
+        fieldPaths: [metadata.name]
+        options: {delimiter: "-", index: 5}
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-nodes-in-default
+        fieldPaths: [metadata.name, roleRef.name]
+        options: {delimiter: "-", index: 5}
+      - select:
+          kind: ClusterRole
+          name: rehearsal-argo-presync-cluster-in-default
+        fieldPaths: [metadata.name]
+        options: {delimiter: "-", index: 5}
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-cluster-in-default
+        fieldPaths: [metadata.name, roleRef.name]
+        options: {delimiter: "-", index: 5}
+EOF
+cluster_built=$(kubectl kustomize "$CLUSTER_OV")
+echo "$cluster_built" | grep -q 'rehearsal-argo-presync-cluster-in-shop'
+echo "$cluster_built" | grep -q 'rehearsal-argo-presync-nodes-in-shop'
+kubectl apply -k "$CLUSTER_OV"
+rm -rf "$CLUSTER_OV"
+# Root path must fail loudly (migration).
+if kubectl kustomize "$ROOT/deploy/argo-presync" >/dev/null 2>&1; then
+  echo "FAIL: root deploy/argo-presync must not build (use overlays/example)"
+  exit 1
+fi
+
+echo "==> G: template change counts surge; H: plain scale does not"
+kubectl apply -f "$SAME_DIR/app.yaml"
+# Live: 3×200m, maxSurge 1, maxUnavailable 0
+kubectl -n shop patch deploy api --type=json -p='[
+  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxSurge","value":1},
+  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxUnavailable","value":0},
+  {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"200m"}
+]'
+kubectl -n shop rollout status deploy/api --timeout=180s
+ALLOC_CPU_RAW=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.cpu}')
+if [[ "$ALLOC_CPU_RAW" == *m ]]; then ALLOC_CPU_M=${ALLOC_CPU_RAW%m}; else
+  ALLOC_CPU_M=$(python3 -c "print(int(float('$ALLOC_CPU_RAW')*1000))"); fi
+# Free ≈ 100m after hog + 3×200m api.
+USED=$((3 * 200))
+HOG_G=$((ALLOC_CPU_M - USED - 100))
+if [[ "$HOG_G" -lt 100 ]]; then HOG_G=100; fi
+kubectl create namespace other --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n other delete deploy hog filler --wait=false 2>/dev/null || true
+kubectl -n other apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: hog}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: hog}}
+  template:
+    metadata: {labels: {app: hog}}
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources: {requests: {cpu: ${HOG_G}m, memory: 8Mi}}
+EOF
+kubectl -n other rollout status deploy/hog --timeout=120s || true
+G_DIR="$OUT_ROOT/v9-g-env"
+mkdir -p "$G_DIR"
+python3 - "$SAME_DIR/app.yaml" "$G_DIR/app.yaml" <<'PY'
+import sys, re
+text = open(sys.argv[1]).read()
+text = re.sub(r"(maxSurge:\s*)0\b", r"\g<1>1", text, count=1)
+text = re.sub(r"(maxUnavailable:\s*)100%", r"\g<1>0", text, count=1)
+text = re.sub(r"(cpu:\s*)50m\b", r"\g<1>200m", text, count=1)
+# env change
+text = text.replace(
+    "image: nginxinc/nginx-unprivileged:1.27-alpine",
+    "image: nginxinc/nginx-unprivileged:1.27-alpine\n          env:\n            - name: VERIFY9\n              value: g",
+    1,
+)
+open(sys.argv[2], "w").write(text)
+PY
+G_OUT="$OUT_ROOT/g-env-surge"
+mkdir -p "$G_OUT"
+set +e
+"$BIN" argo-impact --live --desired-dir "$G_DIR" --namespace shop --live-namespace shop --app shop \
+  --out "$G_OUT" --quiet | tee "$G_OUT/cli.txt"
+set -e
+g_st=$(python3 - "$G_OUT/argo-impact.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for det in d.get("detectors",[]):
+  if det.get("detector")=="scheduling-capacity":
+    print(det.get("status","")); raise SystemExit
+print("MISSING")
+PY
+)
+echo "G scheduling-capacity=$g_st"
+test "$g_st" = "BLOCK"
+
+# H: restore live with maxSurge 1 still ok; free exactly 200m; scale 3→4 unchanged template → PASS
+kubectl -n other delete deploy hog --wait=false 2>/dev/null || true
+sleep 2
+# Recompute hog for exactly ~200m free with 3×200m api
+HOG_H=$((ALLOC_CPU_M - USED - 200))
+if [[ "$HOG_H" -lt 50 ]]; then HOG_H=50; fi
+kubectl -n other apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: hog}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: hog}}
+  template:
+    metadata: {labels: {app: hog}}
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources: {requests: {cpu: ${HOG_H}m, memory: 8Mi}}
+EOF
+kubectl -n other rollout status deploy/hog --timeout=120s || true
+H_DIR="$OUT_ROOT/v9-h-scale"
+mkdir -p "$H_DIR"
+python3 - "$SAME_DIR/app.yaml" "$H_DIR/app.yaml" <<'PY'
+import sys, re
+text = open(sys.argv[1]).read()
+text = re.sub(r"(replicas:\s*)3\b", r"\g<1>4", text, count=1)
+text = re.sub(r"(maxSurge:\s*)0\b", r"\g<1>1", text, count=1)
+text = re.sub(r"(maxUnavailable:\s*)100%", r"\g<1>0", text, count=1)
+text = re.sub(r"(cpu:\s*)50m\b", r"\g<1>200m", text, count=1)
+open(sys.argv[2], "w").write(text)
+PY
+# Ensure live matches desired template (no env) so this is plain scale.
+kubectl -n shop patch deploy api --type=json -p='[
+  {"op":"replace","path":"/spec/replicas","value":3},
+  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxSurge","value":1},
+  {"op":"replace","path":"/spec/strategy/rollingUpdate/maxUnavailable","value":0},
+  {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"200m"}
+]'
+# Drop VERIFY9 env if present from G desired apply (we never applied G).
+kubectl -n shop rollout status deploy/api --timeout=180s
+H_OUT="$OUT_ROOT/h-scale-nosurge"
+mkdir -p "$H_OUT"
+set +e
+"$BIN" argo-impact --live --desired-dir "$H_DIR" --namespace shop --live-namespace shop --app shop \
+  --out "$H_OUT" --quiet | tee "$H_OUT/cli.txt"
+set -e
+h_st=$(python3 - "$H_OUT/argo-impact.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for det in d.get("detectors",[]):
+  if det.get("detector")=="scheduling-capacity":
+    print(det.get("status","")); raise SystemExit
+print("MISSING")
+PY
+)
+echo "H scheduling-capacity=$h_st"
+test "$h_st" = "PASS"
+kubectl -n other delete deploy hog --wait=false 2>/dev/null || true
 
 echo "OK kind-rollout-template-e2e"
 echo "identical=$SAME_OUT env=$ENV_OUT env-removed=$ENV_RM_OUT recreate=$RECREATE_OUT rbac=$RBAC_OUT ssa=$SSA_OUT xns=$XNS_OUT cpu=$CPU_OUT" | tee "$OUT_ROOT/results.txt"

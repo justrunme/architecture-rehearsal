@@ -57,13 +57,15 @@ With `--live`, the gate dry-runs desired workloads the same way the sync will ap
 
 **Change scope vs live collect:** `--namespace` scopes the change envelope only (it does **not** narrow inventory). Live namespaced inventory is limited only by `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE` (PreSync sets this to the Job namespace). **Nodes and Pods are always fetched cluster-wide** (best-effort) so scheduling-capacity sees cross-namespace pressure. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
 
-**Default RBAC** — install via an **overlay** that sets `namespace:` (see `deploy/argo-presync/overlays/example`); do not rely on editing only the base:
-- namespaced `Role` + `RoleBinding` as PreSync hooks (`rbac.yaml`)
-- per-namespace `ClusterRole` + `ClusterRoleBinding` (`…-nodes-in-<ns>`) as normal resources (`rbac-nodes.yaml`) — Nodes get/list/watch, Pods **list** only
+**Default RBAC** — install via an **overlay** that sets `namespace:` (see `deploy/argo-presync/overlays/example`). The root `deploy/argo-presync` path **fails to build** (migration: copy the example overlay).
+- namespaced `Role` + `RoleBinding` as PreSync hooks
+- per-namespace `ClusterRole` + `ClusterRoleBinding` (`…-nodes-in-<ns>`) — Nodes + Pods **list** only
 
-**Opt-in cluster RBAC** (`rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): Namespaces / PVs and Argo `applications`; also per-namespace `…-cluster-in-<ns>`.
+**Opt-in cluster RBAC:** kustomize Component `components/rbac-cluster` (not a raw `base/rbac-cluster.yaml` path). Helm: `argoPresync.clusterRBAC=true`.
 
-**Cluster-wide pod list trade-off:** `pods/list` returns full specs (including literal env). Snapshots keep only name/namespace/phase/node/requests for foreign pods, but the SA can still list specs via the API. Remove the pods rule to disable; capacity then fails closed as **UNKNOWN** when slots/requests are needed.
+**Cluster-wide list trade-off:** `pods/list` (and `nodes/list`) return API objects; pod specs include literal env. Snapshots keep only name/namespace/phase/node/requests for foreign pods. Remove the pods rule to disable; capacity then **UNKNOWN** when slots/requests/surge are needed.
+
+**Surge vs scale:** RollingUpdate surge is counted only when the pod template changes; plain replica scale counts only the delta (Recreate never uses surge).
 
 **AppProject whitelist** (cluster-scoped objects are synced as normal resources, not hooks):
 
@@ -85,7 +87,7 @@ Without `last-applied-configuration` in client mode, removals cannot be predicte
 
 ### Kustomize / raw manifests
 
-See [`deploy/argo-presync/`](../deploy/argo-presync/). Provide ConfigMap `rehearsal-argo-presync-desired` and set the RoleBinding / ServiceAccount namespace to the Application destination. Optionally include `rbac-cluster.yaml`.
+See [`deploy/argo-presync/`](../deploy/argo-presync/) and `overlays/example`: copy the overlay, set `namespace:` to the Application destination, apply with `kubectl apply -k`. Provide ConfigMap `rehearsal-argo-presync-desired`. Optionally include `base/rbac-cluster.yaml` in the overlay.
 
 ### Helm
 

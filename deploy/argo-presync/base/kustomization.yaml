@@ -7,4 +7,4 @@ resources:
   - rbac.yaml
   - rbac-nodes.yaml
   - job.yaml
-# Optional: add rbac-cluster.yaml in the overlay and extend replacements.
+# Optional cluster RBAC: components/rbac-cluster from an overlay (see README).

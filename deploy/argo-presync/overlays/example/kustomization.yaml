@@ -6,6 +6,9 @@ kind: Kustomization
 namespace: default # ← change to destination namespace (e.g. shop)
 resources:
   - ../../base
+# Optional cluster reads (namespaces/PVs/Applications) — use the Component (not a file path):
+# components:
+#   - ../../components/rbac-cluster
 replacements:
   - source:
       kind: ServiceAccount
@@ -29,7 +32,21 @@ replacements:
         options:
           delimiter: "-"
           index: 5
-# To also install opt-in cluster RBAC, add under resources:
-#   - ../../base/rbac-cluster.yaml
-# and append the same replacement targets for
-# rehearsal-argo-presync-cluster-in-default (ClusterRole + Binding + roleRef).
+      # When components/rbac-cluster is enabled, also rename:
+      - select:
+          kind: ClusterRole
+          name: rehearsal-argo-presync-cluster-in-default
+        fieldPaths:
+          - metadata.name
+        options:
+          delimiter: "-"
+          index: 5
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-cluster-in-default
+        fieldPaths:
+          - metadata.name
+          - roleRef.name
+        options:
+          delimiter: "-"
+          index: 5

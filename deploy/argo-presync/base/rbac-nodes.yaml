@@ -19,7 +19,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["list"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]

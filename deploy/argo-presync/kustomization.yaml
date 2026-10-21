@@ -1,5 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Convenience alias: prefer overlays/example (set namespace: there).
+# Intentionally broken: do not `kubectl apply -k deploy/argo-presync`.
+# Copy overlays/example, set namespace:, and apply that directory instead.
+# See README.md (migration from the pre-1.8.0 root path).
 resources:
-  - base
+  - USE-overlays-example-NOT-this-root-SEE-README
