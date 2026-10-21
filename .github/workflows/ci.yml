@@ -90,7 +90,7 @@ jobs:
           curl -sf http://127.0.0.1:18080/readyz
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
           test "$code" = "401"
-          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.8.1
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.8.2
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/metrics | grep -q rehearsal_queue_depth
           # create run + job list + audit
           curl -sf -X POST -H "Authorization: Bearer $REHEARSAL_API_TOKEN" -H "Content-Type: application/json" \
