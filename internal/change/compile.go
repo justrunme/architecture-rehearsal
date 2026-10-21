@@ -231,13 +231,9 @@ func handleWorkloadObj(obj map[string]any, baseWL map[string]graph.Node, seen ma
 	for k, v := range tplAttrs {
 		attrs[k] = v
 	}
-	desireImages, _ := attrs["containerImages"].(string)
-	desireEnv, _ := attrs["containerEnv"].(string)
+	desireHash, _ := attrs["podTemplateHash"].(string)
 	if bn, ok := baseWL[key]; ok {
-		templateChanged := podtemplate.Changed(
-			bn.AttrString("containerImages"), bn.AttrString("containerEnv"),
-			desireImages, desireEnv,
-		)
+		templateChanged := podtemplate.HashChanged(bn.AttrString("podTemplateHash"), desireHash)
 		changed := bn.WorkloadReplicas() != replicas ||
 			(maxSurge != "" && bn.AttrString("maxSurge") != maxSurge) ||
 			(attrsMu != "" && bn.AttrString("maxUnavailable") != attrsMu) ||

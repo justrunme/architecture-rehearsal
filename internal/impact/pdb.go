@@ -289,8 +289,8 @@ func hasExistingStrategyFinding(findings []string) bool {
 }
 
 // syncTriggersRollout is true when this sync will roll pods for workload w —
-// i.e. the pod template (images/env) changed versus the live baseline, or the
-// workload is newly added.
+// i.e. the pod template hash changed versus the live baseline, the hash is
+// missing on either side (fail-closed), or the workload is newly added.
 func syncTriggersRollout(ctx Context, w *graph.Node) bool {
 	if w == nil {
 		return false
@@ -312,9 +312,9 @@ func syncTriggersRollout(ctx Context, w *graph.Node) bool {
 	if base == nil {
 		return true
 	}
-	return podtemplate.Changed(
-		base.AttrString("containerImages"), base.AttrString("containerEnv"),
-		w.AttrString("containerImages"), w.AttrString("containerEnv"),
+	return podtemplate.HashChanged(
+		base.AttrString("podTemplateHash"),
+		w.AttrString("podTemplateHash"),
 	)
 }
 

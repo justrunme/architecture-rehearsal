@@ -40,6 +40,7 @@
         "replicas": 3,
         "maxUnavailable": "2",
         "containerImages": "api=ghcr.io/example/api:v1",
+        "podTemplateHash": "35eabf8c958b5109dbf118197555401445ce5c81c0cc3804230b3b97c7ea62a8",
         "podLabels": {
           "app": "api"
         }

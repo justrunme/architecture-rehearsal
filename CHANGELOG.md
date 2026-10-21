@@ -13,8 +13,9 @@ Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
 - `pdb-rollout` messages state plainly that PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)
 
 ### Fixed (rollout gate semantics)
-- `pdb-rollout` only BLOCKs when this sync will actually roll pods (pod template change: image, env, …). If `spec.template` is unchanged versus live, a dangerous strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
-- Env-only and image-only template diffs are recognized in `change.FromManifestsDiff` (no more false `empty change` / missed rollout)
+- `pdb-rollout` only BLOCKs when this sync will actually roll pods. Decision key is a stable hash of the full normalized `spec.template` (resources, probes, volumes, labels/annotations, serviceAccount, securityContext, initContainers, image, env, …). If the template is unchanged versus live, a dangerous strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
+- Missing `podTemplateHash` on either side fails closed (treated as a triggered rollout). `containerImages` / `containerEnv` remain evidence-only
+- Normalization strips common API defaults so a live object with server defaults hashes equal to the same desired manifest
 - When remaining available pods are > 0 but below PDB `minAvailable` (e.g. 99% → 1 left vs minAvailable=2), message reads `rollout can drop available pods to N, below the minAvailable=M your PDB declares (PDBs do not enforce this during rollouts)` and stays BLOCK when the sync triggers a rollout
 
 ### Tests

@@ -104,6 +104,9 @@ items:
 	if wl.AttrString("containerImages") != "api=nginx" {
 		t.Fatalf("containerImages=%q", wl.AttrString("containerImages"))
 	}
+	if wl.AttrString("podTemplateHash") == "" {
+		t.Fatal("expected podTemplateHash from live collect")
+	}
 	ns, _ := wl.Attributes["nodeSelector"].(map[string]any)
 	if ns["kubernetes.io/os"] != "linux" {
 		t.Fatalf("workload nodeSelector not captured: %#v", wl.Attributes["nodeSelector"])
