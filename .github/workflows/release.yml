@@ -41,6 +41,7 @@ jobs:
           echo "ver=${VER}" >> "$GITHUB_OUTPUT"
           echo "cp=ghcr.io/${OWNER}/architecture-rehearsal" >> "$GITHUB_OUTPUT"
           echo "op=ghcr.io/${OWNER}/architecture-rehearsal-operator" >> "$GITHUB_OUTPUT"
+          echo "ps=ghcr.io/${OWNER}/architecture-rehearsal-presync" >> "$GITHUB_OUTPUT"
       - name: Push control plane (linux/amd64,linux/arm64)
         id: build-cp
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -67,6 +68,19 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.op }}:${{ steps.meta.outputs.ver }}
             ${{ steps.meta.outputs.op }}:latest
+      - name: Push presync gate (linux/amd64,linux/arm64)
+        id: build-ps
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.presync
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ steps.meta.outputs.ps }}:${{ steps.meta.outputs.ver }}
+            ${{ steps.meta.outputs.ps }}:latest
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -132,12 +146,14 @@ jobs:
           set -euo pipefail
           cosign sign --yes --registry-referrers-mode=legacy "${{ steps.meta.outputs.cp }}@${{ steps.build-cp.outputs.digest }}"
           cosign sign --yes --registry-referrers-mode=legacy "${{ steps.meta.outputs.op }}@${{ steps.build-op.outputs.digest }}"
+          cosign sign --yes --registry-referrers-mode=legacy "${{ steps.meta.outputs.ps }}@${{ steps.build-ps.outputs.digest }}"
       - name: Verify signed images
         run: |
           set -euo pipefail
           for img in \
             "${{ steps.meta.outputs.cp }}@${{ steps.build-cp.outputs.digest }}" \
-            "${{ steps.meta.outputs.op }}@${{ steps.build-op.outputs.digest }}"
+            "${{ steps.meta.outputs.op }}@${{ steps.build-op.outputs.digest }}" \
+            "${{ steps.meta.outputs.ps }}@${{ steps.build-ps.outputs.digest }}"
           do
             cosign verify \
               --certificate-identity-regexp="^https://github.com/${{ github.repository }}/" \
