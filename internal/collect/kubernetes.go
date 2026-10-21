@@ -146,7 +146,8 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 	snap.Warnings = append(snap.Warnings, "Secret values are never collected (references only)")
 
 	// Scheduling capacity estimate from node allocatable pods (not real CNI IP pool).
-	// Kept under both keys for compatibility; prefer pod_scheduling_capacity_estimate.
+	// Prefer cluster-wide scheduled Pods when present so namespaced inventory still
+	// accounts for cross-namespace pressure; fall back to workload replicas.
 	alloc := 0
 	for _, n := range snap.Nodes {
 		if n.Kind == graph.KindNode {
@@ -154,12 +155,7 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		}
 	}
 	if alloc > 0 {
-		running := 0
-		for _, n := range snap.Nodes {
-			if n.Kind == graph.KindWorkload {
-				running += n.WorkloadReplicas()
-			}
-		}
+		running, model := capacityRunningCount(snap)
 		avail := alloc - running
 		if avail < 0 {
 			avail = 0
@@ -167,7 +163,8 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		snap.Meta["pod_scheduling_capacity_estimate"] = avail
 		snap.Meta["pod_ip_capacity_available"] = avail // compat alias until v0.6 CNI provider
 		snap.Meta["node_allocatable_pods_total"] = alloc
-		snap.Meta["capacity_model"] = "node_allocatable_pods_minus_desired_replicas"
+		snap.Meta["capacity_running_count"] = running
+		snap.Meta["capacity_model"] = model
 	}
 
 	// PDB list is part of the recommended kubectl dump; mark inventory complete.
@@ -504,6 +501,13 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			if nn, ok := spec["nodeName"].(string); ok {
 				nodeName = nn
 				attrs["nodeName"] = nn
+			}
+			cpuM, memB := sumContainerRequests(spec)
+			if cpuM > 0 {
+				attrs["cpuRequestMillis"] = cpuM
+			}
+			if memB > 0 {
+				attrs["memoryRequestBytes"] = memB
 			}
 		}
 		if st, ok := obj["status"].(map[string]any); ok {
@@ -1028,6 +1032,105 @@ func zoneFromNodeAffinity(nsel map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// capacityRunningCount returns occupied pod slots and the model label used.
+// When KindPod objects are present, counts non-terminal pods that occupy a slot
+// (Pending or scheduled Running/Unknown). Otherwise falls back to workload replicas.
+func capacityRunningCount(snap *graph.Snapshot) (running int, model string) {
+	pods := 0
+	for _, n := range snap.Nodes {
+		if n.Kind != graph.KindPod {
+			continue
+		}
+		phase := n.AttrString("phase")
+		if phase == "Succeeded" || phase == "Failed" {
+			continue
+		}
+		// Count pods that consume a node slot: scheduled, or Pending (queued).
+		pods++
+	}
+	if pods > 0 {
+		return pods, "node_allocatable_pods_minus_cluster_pods"
+	}
+	for _, n := range snap.Nodes {
+		if n.Kind == graph.KindWorkload {
+			running += n.WorkloadReplicas()
+		}
+	}
+	return running, "node_allocatable_pods_minus_desired_replicas"
+}
+
+func sumContainerRequests(spec map[string]any) (cpuMillis int, memBytes int) {
+	for _, key := range []string{"containers", "initContainers"} {
+		list, _ := spec[key].([]any)
+		for _, c := range list {
+			cm, _ := c.(map[string]any)
+			if cm == nil {
+				continue
+			}
+			res, _ := cm["resources"].(map[string]any)
+			if res == nil {
+				continue
+			}
+			req, _ := res["requests"].(map[string]any)
+			if req == nil {
+				continue
+			}
+			cpuMillis += parseCPUMillis(req["cpu"])
+			memBytes += parseMemoryBytes(req["memory"])
+		}
+	}
+	return cpuMillis, memBytes
+}
+
+func parseCPUMillis(v any) int {
+	if v == nil {
+		return 0
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return 0
+	}
+	if strings.HasSuffix(s, "m") {
+		n, _ := strconv.Atoi(strings.TrimSuffix(s, "m"))
+		return n
+	}
+	// cores as float or int
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return int(f * 1000)
+	}
+	return 0
+}
+
+func parseMemoryBytes(v any) int {
+	if v == nil {
+		return 0
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return 0
+	}
+	mult := 1
+	for _, suf := range []struct {
+		s string
+		m int
+	}{
+		{"Ki", 1024}, {"Mi", 1024 * 1024}, {"Gi", 1024 * 1024 * 1024},
+		{"K", 1000}, {"M", 1000 * 1000}, {"G", 1000 * 1000 * 1000},
+		{"k", 1000},
+	} {
+		if strings.HasSuffix(s, suf.s) {
+			s = strings.TrimSuffix(s, suf.s)
+			mult = suf.m
+			break
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int(f * float64(mult))
 }
 
 func addNode(snap *graph.Snapshot, n graph.Node) {

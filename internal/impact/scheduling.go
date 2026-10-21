@@ -8,6 +8,7 @@ import (
 
 	"github.com/justrunme/architecture-rehearsal/internal/capacity"
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 )
 
 // SchedulingCapacity checks new replicas vs node allocatable, topology spread,
@@ -66,7 +67,7 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 		}
 	}
 
-	// No Nodes in baseline: only fail closed when this sync touches scheduling-relevant fields.
+	// No Nodes in baseline: only fail closed when this sync changes scheduling-relevant fields.
 	if len(nodes) == 0 {
 		if changeTouchesScheduling(ctx) {
 			v.Status = Unknown
@@ -80,6 +81,16 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 		v.Explanation = "no Node objects in baseline; change does not touch scheduling-relevant fields"
 		v.Evidence = []string{nodesAbsentNote(ctx)}
 		v.Confidence = "medium"
+		return v
+	}
+
+	// Cluster-wide pods unread: never PASS a capacity check on incomplete occupancy.
+	if changeNeedsCapacity(ctx) && clusterPodsUnreadable(ctx) {
+		v.Status = Unknown
+		v.Explanation = "replica or request increase needs cluster-wide pod inventory for capacity, but pods could not be listed"
+		v.Missing = []string{"pods"}
+		v.Evidence = []string{podsAbsentNote(ctx), fmt.Sprintf("replica_delta=%d surge=%d requested=%d", delta, surge, requested)}
+		v.Confidence = "low"
 		return v
 	}
 
@@ -210,95 +221,140 @@ func parseMaxSurge(ms string, replicas int) int {
 	return v
 }
 
-// changeTouchesScheduling reports whether this sync changes fields that need
-// Node inventory to evaluate: nodeSelector, affinity, tolerations,
-// topologySpreadConstraints, container resource requests, or replica counts.
+// changeTouchesScheduling reports whether this sync CHANGES fields that need
+// Node inventory: nodeSelector, affinity, tolerations, topologySpreadConstraints,
+// container resource requests, or replica counts — compared desired vs live.
+// Presence alone (e.g. unchanged affinity on an env-only patch) does not count.
 func changeTouchesScheduling(ctx Context) bool {
+	return changeNeedsCapacity(ctx) || schedulingFieldsDiffer(ctx)
+}
+
+// changeNeedsCapacity is true when the sync needs new pod slots or higher requests.
+func changeNeedsCapacity(ctx Context) bool {
 	if ctx.Change == nil {
 		return false
 	}
-	check := func(id string, attrs map[string]any) bool {
-		if attrs == nil {
-			return false
-		}
-		if _, ok := attrs["nodeSelector"]; ok {
-			return true
-		}
-		if _, ok := attrs["affinity"]; ok {
-			return true
-		}
-		if attrs["hasAffinity"] == true {
-			return true
-		}
-		if _, ok := attrs["tolerations"]; ok {
-			return true
-		}
-		if attrs["hasTopologySpread"] == true {
-			return true
-		}
-		if _, ok := attrs["topologySpreadConstraints"]; ok {
-			return true
-		}
-		if tpl, ok := attrs["podTemplate"].(map[string]any); ok {
-			if podTemplateTouchesScheduling(tpl) {
-				return true
-			}
-		}
-		if _, ok := attrs["replicas"]; ok {
-			baseR := 0
-			if ctx.BaseIdx != nil {
-				if bn := ctx.BaseIdx.ByID[id]; bn != nil {
-					baseR = bn.WorkloadReplicas()
-				}
-			}
-			propR := 0
-			switch t := attrs["replicas"].(type) {
-			case int:
-				propR = t
-			case float64:
-				propR = int(t)
-			default:
-				propR = baseR
-			}
-			if propR != baseR {
-				return true
-			}
-		}
-		return false
-	}
 	for _, n := range ctx.Change.AddedNodes {
-		if check(n.ID, n.Attributes) {
-			return true
-		}
-		// New workload always implies replica demand.
 		if n.Kind == graph.KindWorkload || strings.HasPrefix(n.ID, "workload/") {
 			return true
 		}
 	}
 	for _, n := range ctx.Change.PatchNodes {
-		if check(n.ID, n.Attributes) {
+		baseR := 0
+		var base *graph.Node
+		if ctx.BaseIdx != nil {
+			base = ctx.BaseIdx.ByID[n.ID]
+			if base != nil {
+				baseR = base.WorkloadReplicas()
+			}
+		}
+		if propReplicas(n.Attributes, baseR) > baseR {
+			return true
+		}
+		if requestsIncreased(n.Attributes, base) {
+			return true
+		}
+	}
+	if ctx.BaseIdx != nil && ctx.PropIdx != nil {
+		if graph.TotalWorkloadReplicas(ctx.PropIdx) > graph.TotalWorkloadReplicas(ctx.BaseIdx) {
 			return true
 		}
 	}
 	return false
 }
 
-func podTemplateTouchesScheduling(tpl map[string]any) bool {
-	spec, _ := tpl["spec"].(map[string]any)
-	if spec == nil {
+func schedulingFieldsDiffer(ctx Context) bool {
+	if ctx.Change == nil {
 		return false
 	}
-	if _, ok := spec["nodeSelector"]; ok {
-		return true
+	for _, n := range ctx.Change.AddedNodes {
+		if n.Kind == graph.KindWorkload || strings.HasPrefix(n.ID, "workload/") {
+			fp := schedulingFingerprint(n.Attributes)
+			if len(fp) > 0 {
+				return true
+			}
+		}
 	}
-	if _, ok := spec["affinity"]; ok {
-		return true
+	for _, n := range ctx.Change.PatchNodes {
+		var baseAttrs map[string]any
+		if ctx.BaseIdx != nil {
+			if bn := ctx.BaseIdx.ByID[n.ID]; bn != nil {
+				baseAttrs = bn.Attributes
+			}
+		}
+		desired := schedulingFingerprint(n.Attributes)
+		live := schedulingFingerprint(baseAttrs)
+		// Only fields present in desired are compared (subset); live-only defaults ignored.
+		if schedulingFingerprintChanged(desired, live) {
+			return true
+		}
 	}
-	if _, ok := spec["tolerations"]; ok {
-		return true
+	return false
+}
+
+func propReplicas(attrs map[string]any, fallback int) int {
+	if attrs == nil {
+		return fallback
 	}
-	if _, ok := spec["topologySpreadConstraints"]; ok {
-		return true
+	switch t := attrs["replicas"].(type) {
+	case int:
+		return t
+	case float64:
+		return int(t)
+	case string:
+		v, err := strconv.Atoi(t)
+		if err == nil {
+			return v
+		}
+	}
+	return fallback
+}
+
+func schedulingFingerprint(attrs map[string]any) map[string]any {
+	if attrs == nil {
+		return nil
+	}
+	fp := map[string]any{}
+	spec := podTemplateSpec(attrs)
+	copySched := func(key string) {
+		if v, ok := attrs[key]; ok {
+			fp[key] = v
+			return
+		}
+		if spec != nil {
+			if v, ok := spec[key]; ok {
+				fp[key] = v
+			}
+		}
+	}
+	for _, key := range []string{"nodeSelector", "affinity", "tolerations", "topologySpreadConstraints"} {
+		copySched(key)
+	}
+	if reqs := containerRequestsFingerprint(attrs, spec); len(reqs) > 0 {
+		fp["requests"] = reqs
+	}
+	if len(fp) == 0 {
+		return nil
+	}
+	return fp
+}
+
+func podTemplateSpec(attrs map[string]any) map[string]any {
+	tpl, _ := attrs["podTemplate"].(map[string]any)
+	if tpl == nil {
+		return nil
+	}
+	spec, _ := tpl["spec"].(map[string]any)
+	return spec
+}
+
+func containerRequestsFingerprint(attrs map[string]any, spec map[string]any) map[string]any {
+	out := map[string]any{}
+	if spec == nil {
+		spec = podTemplateSpec(attrs)
+	}
+	if spec == nil {
+		return out
 	}
 	for _, key := range []string{"containers", "initContainers"} {
 		list, _ := spec[key].([]any)
@@ -307,14 +363,144 @@ func podTemplateTouchesScheduling(tpl map[string]any) bool {
 			if cm == nil {
 				continue
 			}
+			name := fmt.Sprint(cm["name"])
 			res, _ := cm["resources"].(map[string]any)
 			if res == nil {
 				continue
 			}
-			if req, ok := res["requests"].(map[string]any); ok && len(req) > 0 {
+			req, _ := res["requests"].(map[string]any)
+			if len(req) == 0 {
+				continue
+			}
+			out[key+"/"+name] = req
+		}
+	}
+	return out
+}
+
+func schedulingFingerprintChanged(desired, live map[string]any) bool {
+	if len(desired) == 0 {
+		return false
+	}
+	if live == nil {
+		live = map[string]any{}
+	}
+	for k, dv := range desired {
+		lv, ok := live[k]
+		if !ok {
+			return true
+		}
+		dm, dOK := dv.(map[string]any)
+		lm, lOK := lv.(map[string]any)
+		if dOK && lOK {
+			if !podtemplate.DeepEqual(dm, lm) {
 				return true
 			}
+			continue
 		}
+		// Lists (tolerations, topologySpread) — compare via wrapped maps.
+		if !podtemplate.DeepEqual(map[string]any{"v": dv}, map[string]any{"v": lv}) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestsIncreased(desiredAttrs map[string]any, base *graph.Node) bool {
+	var baseAttrs map[string]any
+	if base != nil {
+		baseAttrs = base.Attributes
+	}
+	dReq := containerRequestsFingerprint(desiredAttrs, nil)
+	if len(dReq) == 0 {
+		return false
+	}
+	lReq := containerRequestsFingerprint(baseAttrs, nil)
+	for k, dv := range dReq {
+		dm, _ := dv.(map[string]any)
+		lm, _ := lReq[k].(map[string]any)
+		if lm == nil {
+			return true
+		}
+		if requestMapIncreased(dm, lm) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestMapIncreased(desired, live map[string]any) bool {
+	for k, dv := range desired {
+		if quantityGreater(dv, live[k]) {
+			return true
+		}
+	}
+	return false
+}
+
+func quantityGreater(desired, live any) bool {
+	if live == nil {
+		return desired != nil && fmt.Sprint(desired) != "" && fmt.Sprint(desired) != "0"
+	}
+	// Compare as strings of resource quantities when possible; fall back to Sprint.
+	ds, ls := fmt.Sprint(desired), fmt.Sprint(live)
+	if ds == ls {
+		return false
+	}
+	di, dOK := parseRoughQuantity(ds)
+	li, lOK := parseRoughQuantity(ls)
+	if dOK && lOK {
+		return di > li
+	}
+	return ds != ls // treat any unresolved change as needing capacity check
+}
+
+func parseRoughQuantity(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, true
+	}
+	// CPU millicores
+	if strings.HasSuffix(s, "m") {
+		n, err := strconv.ParseInt(strings.TrimSuffix(s, "m"), 10, 64)
+		return n, err == nil
+	}
+	mult := int64(1)
+	isCPUCores := true
+	for _, suf := range []struct {
+		s string
+		m int64
+	}{
+		{"Ki", 1024}, {"Mi", 1024 * 1024}, {"Gi", 1024 * 1024 * 1024},
+		{"K", 1000}, {"M", 1000 * 1000}, {"G", 1000 * 1000 * 1000},
+		{"k", 1000},
+	} {
+		if strings.HasSuffix(s, suf.s) {
+			s = strings.TrimSuffix(s, suf.s)
+			mult = suf.m
+			isCPUCores = false
+			break
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	if isCPUCores {
+		return int64(f * 1000), true
+	}
+	return int64(f * float64(mult)), true
+}
+
+func clusterPodsUnreadable(ctx Context) bool {
+	if ctx.Baseline == nil || ctx.Baseline.Meta == nil {
+		return false
+	}
+	if err, ok := ctx.Baseline.Meta["pods_collect_error"].(string); ok && err != "" {
+		return true
+	}
+	if ok, exists := ctx.Baseline.Meta["pods_collect_ok"].(bool); exists && !ok {
+		return true
 	}
 	return false
 }
@@ -329,6 +515,18 @@ func nodesAbsentNote(ctx Context) string {
 		}
 	}
 	return "baseline has no Node objects"
+}
+
+func podsAbsentNote(ctx Context) string {
+	if ctx.Baseline != nil && ctx.Baseline.Meta != nil {
+		if err, ok := ctx.Baseline.Meta["pods_collect_error"].(string); ok && err != "" {
+			return "pods collect failed: " + err
+		}
+		if ok, _ := ctx.Baseline.Meta["pods_collect_ok"].(bool); ok == false {
+			return "pods collect skipped or failed"
+		}
+	}
+	return "cluster-wide pod inventory unavailable"
 }
 
 func hardAntiAffinity(w *graph.Node) bool {

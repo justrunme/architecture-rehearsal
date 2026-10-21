@@ -52,7 +52,9 @@ subjects:
     name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
     namespace: {{ .Release.Namespace }}
 ---
-# Default: minimal Nodes ClusterRole (scheduling-capacity). Always enabled.
+# Default: minimal Nodes+Pods ClusterRole (scheduling-capacity). Always enabled.
+# ClusterRole/Binding are normal chart resources (not PreSync hooks). Binding name
+# includes the release namespace so a second-namespace install does not steal it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -62,13 +64,13 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
+    resources: ["nodes", "pods"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes-in-{{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
     app.kubernetes.io/component: argo-presync-gate
@@ -100,7 +102,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster-in-{{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
     app.kubernetes.io/component: argo-presync-gate

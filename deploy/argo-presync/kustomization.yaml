@@ -1,9 +1,26 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+namespace: default
 resources:
   - serviceaccount.yaml
   - rbac.yaml
+  - rbac-nodes.yaml
   - job.yaml
-# Optional cluster-scoped reads (nodes, Applications): add rbac-cluster.yaml
-# Consumers must provide ConfigMap rehearsal-argo-presync-desired with desired manifests
-# and set the ServiceAccount / RoleBinding namespace to the Application destination.
+# Optional cluster-scoped reads (Applications / namespaces / PVs): add rbac-cluster.yaml
+# Consumers must provide ConfigMap rehearsal-argo-presync-desired with desired manifests.
+# Set `namespace:` to the Application destination; the ClusterRoleBinding name becomes
+# rehearsal-argo-presync-nodes-in-<namespace> so multi-tenant installs do not collide.
+replacements:
+  - source:
+      kind: ServiceAccount
+      name: rehearsal-argo-presync
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-nodes-in-default
+        fieldPaths:
+          - metadata.name
+        options:
+          delimiter: "-"
+          index: 5

@@ -55,15 +55,25 @@ With `--live`, the gate dry-runs desired workloads the same way the sync will ap
 
 `kubectl apply --dry-run=server` issues a **patch** with `dryRun=All`. The shipped Role therefore grants `patch` on `deployments`, `statefulsets`, and `daemonsets` in the Application destination namespace. Dry-run does **not** mutate cluster objects: on kind verification, Deployment `resourceVersion` / `generation` were unchanged after every `--live` run.
 
-**Change scope vs live collect:** `--namespace` scopes the change envelope. Live inventory for that namespace is collected with `-n` (plus optional `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE`), while **Nodes are always fetched cluster-wide** (best-effort) so scheduling-capacity can run. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
+**Change scope vs live collect:** `--namespace` scopes the change envelope only (it does **not** narrow inventory). Live namespaced inventory is limited only by `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE` (PreSync sets this to the Job namespace). **Nodes and Pods are always fetched cluster-wide** (best-effort) so scheduling-capacity sees cross-namespace pressure. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
 
-**Default RBAC** (`deploy/argo-presync/rbac.yaml`):
-- namespaced `Role` + `RoleBinding` (inventory get/list/watch + workload `patch` for `dryRun=All`)
-- minimal `ClusterRole` + binding for **Nodes** get/list/watch only
+**Default RBAC**:
+- namespaced `Role` + `RoleBinding` as PreSync hooks (`deploy/argo-presync/rbac.yaml`) — inventory get/list/watch + workload `patch` for `dryRun=All`
+- minimal `ClusterRole` + **namespace-unique** `ClusterRoleBinding` as normal Application resources (`deploy/argo-presync/rbac-nodes.yaml`) — **Nodes and Pods** get/list/watch (not PreSync hooks)
 
-**Opt-in cluster RBAC** (`deploy/argo-presync/rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): Namespaces / PVs and Argo `applications` (break-glass).
+**Opt-in cluster RBAC** (`deploy/argo-presync/rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): Namespaces / PVs and Argo `applications` (break-glass); also normal resources with a namespace-unique Binding.
 
-If Nodes cannot be read and the sync does **not** touch scheduling-relevant fields (nodeSelector, affinity, tolerations, topologySpreadConstraints, resource requests, replicas), `scheduling-capacity` returns **PASS** with a note; if it does touch them, **UNKNOWN** (fail closed).
+**AppProject whitelist** (cluster-scoped objects are synced as normal resources, not hooks):
+
+```yaml
+clusterResourceWhitelist:
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+```
+
+If Nodes cannot be read and the sync does **not** *change* scheduling-relevant fields versus live (nodeSelector, affinity, tolerations, topologySpreadConstraints, resource requests, or replica increases), `scheduling-capacity` returns **PASS** with a note; if it does change them, **UNKNOWN** (fail closed). Unchanged affinity/requests on an env-only patch do not count. If cluster-wide Pods cannot be listed and the change needs new pod slots or higher requests, the detector returns **UNKNOWN** (never a false PASS on incomplete occupancy).
 
 Without `last-applied-configuration` in client mode, removals cannot be predicted. The gate fails closed with a distinct reason (`cannot predict removals: live object has no last-applied-configuration …`). If the rollout strategy itself is safe, `pdb-rollout` reports **UNKNOWN** (not a false “pods to 0” BLOCK).
 

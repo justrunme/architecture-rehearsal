@@ -1,0 +1,36 @@
+# Cluster-scoped read for Nodes + Pods (scheduling-capacity).
+# Installed as NORMAL Application resources (not PreSync hooks) so:
+#   - AppProjects do not need ClusterRole/Binding in hook whitelists
+#   - ClusterRoleBinding name is namespace-unique (…-in-<ns>) and will not
+#     be stolen when the gate is installed in a second namespace
+# Shared ClusterRole name is intentional (identical rules); only the Binding
+# is per-destination-namespace. kustomization.yaml rewrites the Binding name
+# suffix from the ServiceAccount namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rehearsal-argo-presync-nodes
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  # Final segment is replaced with the destination namespace by kustomize.
+  name: rehearsal-argo-presync-nodes-in-default
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync-nodes
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: default # set to Application destination namespace

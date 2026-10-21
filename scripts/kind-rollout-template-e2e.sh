@@ -5,8 +5,10 @@
 #   - env add → BLOCK
 #   - env remove → BLOCK (three-way merge must see removals)
 #   - Recreate + env → BLOCK by Recreate availability detection (client-side-dry-run)
-#   - shipped Role + Nodes ClusterRole allows the dry-run gate
+#   - shipped Role + Nodes/Pods ClusterRole allows the dry-run gate
 #   - SSA object (argocd-controller managedFields), no flag, identical → WARN (auto-detect)
+#   - cross-namespace pod pressure BLOCKs scale under --namespace/--live-namespace
+#   - two-namespace installs keep distinct ClusterRoleBindings / node+pod access
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -172,16 +174,18 @@ esac
 grep -q 'Recreate strategy terminates all pods' "$RECREATE_OUT/argo-impact.md" \
   || grep -q 'Recreate strategy terminates all pods' "$RECREATE_OUT/argo-impact.json"
 
-echo "==> shipped PreSync Role + Nodes ClusterRole (identical → WARN/PASS)"
+echo "==> shipped PreSync Role + Nodes/Pods ClusterRole (identical → WARN/PASS)"
+RBAC_NODES_FILE="$ROOT/deploy/argo-presync/rbac-nodes.yaml"
 kubectl apply -f "$SAME_DIR/app.yaml"
 kubectl -n shop rollout status deploy/api --timeout=180s
 kubectl -n shop create serviceaccount rehearsal-argo-presync --dry-run=client -o yaml | kubectl apply -f -
 grep -q 'kind: Role' "$RBAC_FILE"
-grep -q 'rehearsal-argo-presync-nodes' "$RBAC_FILE"
+grep -q 'nodes' "$RBAC_NODES_FILE"
+grep -q 'pods' "$RBAC_NODES_FILE"
 grep -A3 'resources: \["deployments"' "$RBAC_FILE" | grep -q patch
-# Apply shipped rbac (Role is namespaced via -n; ClusterRole/Binding are cluster-scoped).
-kubectl apply -f "$RBAC_FILE"
+# Apply shipped rbac (Role is namespaced via -n; ClusterRole/Binding are cluster-scoped, not hooks).
 kubectl -n shop apply -f "$RBAC_FILE"
+kubectl apply -f "$RBAC_NODES_FILE"
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -200,7 +204,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: rehearsal-argo-presync-nodes
+  name: rehearsal-argo-presync-nodes-in-shop
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -212,6 +216,7 @@ subjects:
 EOF
 kubectl auth can-i patch deployments -n shop --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
 kubectl auth can-i get nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i list pods --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
 
 RBAC_OUT="$OUT_ROOT/rbac-identical"
 mkdir -p "$RBAC_OUT"
@@ -302,5 +307,162 @@ if [[ "$meth" != "MISSING" && -n "$meth" ]]; then
   test "$meth" = "server-side-dry-run"
 fi
 
+echo "==> C: cross-namespace pods fill node; scale under --namespace/--live-namespace → BLOCK"
+kubectl apply -f "$SAME_DIR/app.yaml"
+kubectl -n shop rollout status deploy/api --timeout=180s
+ALLOC=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.pods}')
+# Fill until ≤2 free slots. Live app uses maxSurge 0, so scale 3→6 needs 3 slots → BLOCK.
+# (VERIFY-7 used default 25% surge needing 5; either way namespaced inventory must not false-PASS.)
+FILLER=$((ALLOC - 8))
+if [[ "$FILLER" -lt 40 ]]; then FILLER=40; fi
+kubectl create namespace other --dry-run=client -o yaml | kubectl apply -f -
+# Prefer a local pause image already in kind; fall back to registry.k8s.io.
+PAUSE_IMG=registry.k8s.io/pause:3.9
+kubectl -n other apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filler
+spec:
+  replicas: ${FILLER}
+  selector:
+    matchLabels:
+      app: filler
+  template:
+    metadata:
+      labels:
+        app: filler
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: pause
+          image: ${PAUSE_IMG}
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+EOF
+for i in $(seq 1 90); do
+  running=$(kubectl get pods -A --field-selector=status.phase!=Succeeded,status.phase!=Failed --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  free=$((ALLOC - running))
+  echo "capacity wait: running=$running alloc=$ALLOC free=$free"
+  if [[ "$free" -le 2 ]]; then
+    break
+  fi
+  # Top up filler if the scheduler is still accepting pods.
+  if [[ "$i" -eq 30 || "$i" -eq 60 ]]; then
+    cur=$(kubectl -n other get deploy filler -o jsonpath='{.spec.replicas}')
+    kubectl -n other scale deploy/filler --replicas=$((cur + 20)) || true
+  fi
+  sleep 2
+done
+running=$(kubectl get pods -A --field-selector=status.phase!=Succeeded,status.phase!=Failed --no-headers 2>/dev/null | wc -l | tr -d ' ')
+free=$((ALLOC - running))
+if [[ "$free" -gt 2 ]]; then
+  echo "FAIL: could not fill node enough for capacity repro (free=$free alloc=$ALLOC)"
+  kubectl get pods -A | head -50 || true
+  exit 1
+fi
+SCALE_DIR="$OUT_ROOT/v7-xns-scale"
+mkdir -p "$SCALE_DIR"
+python3 - "$SAME_DIR/app.yaml" "$SCALE_DIR/app.yaml" <<'PY'
+import sys, re
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+# Bump Deployment replicas 3→6; keep maxSurge 0 from live (delta=3 slots needed).
+text2, n = re.subn(r"(replicas:\s*)3\b", r"\g<1>6", text, count=1)
+if n != 1:
+    raise SystemExit(f"expected to rewrite one replicas: 3, got {n}")
+open(dst, "w").write(text2)
+PY
+XNS_OUT="$OUT_ROOT/xns-scale"
+mkdir -p "$XNS_OUT"
+set +e
+"$BIN" argo-impact --live --desired-dir "$SCALE_DIR" --namespace shop --live-namespace shop --app shop \
+  --out "$XNS_OUT" --quiet | tee "$XNS_OUT/cli.txt"
+xns_code=$?
+set -e
+sched_status=$(python3 - "$XNS_OUT/argo-impact.json" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1]))
+for det in d.get("detectors", []):
+    if det.get("detector") == "scheduling-capacity":
+        print(det.get("status", ""))
+        sys.exit(0)
+print("MISSING")
+PY
+)
+echo "xns-scale scheduling-capacity=$sched_status exit=$xns_code free=$free"
+if [[ "$sched_status" != "BLOCK" ]]; then
+  echo "FAIL: cross-ns full node + scale under --namespace must BLOCK scheduling-capacity (got $sched_status)"
+  cat "$XNS_OUT/argo-impact.md" || true
+  cat "$XNS_OUT/argo-impact.json" || true
+  exit 1
+fi
+kubectl -n other delete deploy filler --wait=false 2>/dev/null || true
+
+echo "==> E: two-namespace kustomize installs keep distinct ClusterRoleBindings / node access"
+kubectl create namespace shop2 --dry-run=client -o yaml | kubectl apply -f -
+tmpk="$OUT_ROOT/kustomize-mt"
+mkdir -p "$tmpk/shop" "$tmpk/shop2"
+for ns in shop shop2; do
+  kubectl -n "$ns" create serviceaccount rehearsal-argo-presync --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "$ns" apply -f "$RBAC_FILE"
+  kubectl -n "$ns" apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rehearsal-argo-presync
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rehearsal-argo-presync
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: ${ns}
+EOF
+  cp "$RBAC_NODES_FILE" "$tmpk/$ns/rbac-nodes.yaml"
+  cat > "$tmpk/$ns/sa.yaml" <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rehearsal-argo-presync
+EOF
+  cat > "$tmpk/$ns/kustomization.yaml" <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ${ns}
+resources:
+  - sa.yaml
+  - rbac-nodes.yaml
+replacements:
+  - source:
+      kind: ServiceAccount
+      name: rehearsal-argo-presync
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-nodes-in-default
+        fieldPaths:
+          - metadata.name
+        options:
+          delimiter: "-"
+          index: 5
+EOF
+  kubectl apply -k "$tmpk/$ns"
+done
+shop_subj=$(kubectl get clusterrolebinding rehearsal-argo-presync-nodes-in-shop -o jsonpath='{.subjects[0].namespace}')
+shop2_subj=$(kubectl get clusterrolebinding rehearsal-argo-presync-nodes-in-shop2 -o jsonpath='{.subjects[0].namespace}')
+echo "CRB subjects: shop=$shop_subj shop2=$shop2_subj"
+test "$shop_subj" = "shop"
+test "$shop2_subj" = "shop2"
+kubectl auth can-i get nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i get nodes --as=system:serviceaccount:shop2:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i list pods --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i list pods --as=system:serviceaccount:shop2:rehearsal-argo-presync | grep -q yes
+
 echo "OK kind-rollout-template-e2e"
-echo "identical=$SAME_OUT env=$ENV_OUT env-removed=$ENV_RM_OUT recreate=$RECREATE_OUT rbac=$RBAC_OUT ssa=$SSA_OUT" | tee "$OUT_ROOT/results.txt"
+echo "identical=$SAME_OUT env=$ENV_OUT env-removed=$ENV_RM_OUT recreate=$RECREATE_OUT rbac=$RBAC_OUT ssa=$SSA_OUT xns=$XNS_OUT" | tee "$OUT_ROOT/results.txt"
