@@ -7,14 +7,23 @@ import (
 	"strings"
 
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 )
+
+// recreateAvailabilityMsg is the fixed wording for Deployment strategy.type=Recreate.
+const recreateAvailabilityMsg = "Recreate strategy terminates all pods before starting new ones; availability drops to 0 during rollout"
 
 // PDBRollout detects rolling updates that can drive available replicas to zero,
 // and compares rollout maxUnavailable against PodDisruptionBudget constraints.
 //
 // Important: PodDisruptionBudgets do NOT limit Deployment rolling updates; they
 // only gate voluntary evictions (drain). A dangerous rollout must still BLOCK
-// even when no PDB exists.
+// when this sync will actually roll pods (pod template change). If the template
+// is unchanged, a dangerous existing strategy is WARN so no-op Argo syncs do
+// not fail the gate.
+//
+// strategy.type=Recreate is treated as availability 0 (all pods terminate before
+// new ones start). Template change → BLOCK; unchanged template → WARN.
 type PDBRollout struct{}
 
 func (PDBRollout) Name() string { return "pdb-rollout" }
@@ -38,8 +47,7 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 		pdbs = ctx.BaseIdx.ByKind[graph.KindPDB]
 	}
 
-	// Always evaluate proposed workloads for rollouts that can leave 0 available
-	// pods — with or without a PDB.
+	// Evaluate proposed workloads for rollouts that can leave 0 available pods.
 	for _, w := range ctx.PropIdx.ByKind[graph.KindWorkload] {
 		if w == nil {
 			continue
@@ -48,33 +56,90 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 		if rep <= 0 {
 			continue
 		}
-		maxUnavailRollout := parseMaxUnavailable(w.AttrString("maxUnavailable"), rep)
+		maxUnavailRollout, recreate := rolloutMaxUnavailable(w, rep)
 		remaining := rep - maxUnavailRollout
+		uncertain := syncTemplateUncertain(ctx, w)
+		triggers := syncTriggersRollout(ctx, w)
+		pdb := matchingPDB(ctx, pdbs, w)
+
+		// Cannot predict template change (e.g. no last-applied): distinct reason.
+		// Safe strategy → UNKNOWN; dangerous / Recreate → BLOCK (not "pods to 0" wording).
+		if uncertain {
+			msg := syncTemplateUncertainDetail(ctx, w)
+			if msg == "" {
+				msg = podtemplate.NoLastAppliedDetail
+			}
+			findings = append(findings, msg)
+			affected = append(affected, w.ID)
+			if pdb != nil {
+				affected = append(affected, pdb.ID)
+			}
+			if remaining <= 0 || recreate {
+				worst = Block
+			} else if worst != Block {
+				worst = Unknown
+			}
+			continue
+		}
+
 		if remaining > 0 {
 			continue
 		}
-		pdb := matchingPDB(ctx, pdbs, w)
 		var msg string
+		if recreate {
+			msg = recreateAvailabilityMsg
+			affected = append(affected, w.ID)
+			if pdb != nil {
+				affected = append(affected, pdb.ID)
+			}
+			findings = append(findings, msg)
+			if triggers {
+				worst = Block
+			} else if worst != Block {
+				worst = Warn
+			}
+			continue
+		}
+		if triggers {
+			if pdb != nil {
+				minA := effectiveMinAvailable(pdb, rep)
+				msg = fmt.Sprintf(
+					"rollout can take available pods to 0; note: PDB %s (minAvailable=%d) does not protect against rollouts",
+					pdb.Name, minA)
+				affected = append(affected, pdb.ID, w.ID)
+			} else {
+				msg = fmt.Sprintf(
+					"rollout can take available pods to 0 on %s (maxUnavailable=%d, replicas=%d); note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)",
+					display(ctx.PropIdx, w.ID), maxUnavailRollout, rep)
+				affected = append(affected, w.ID)
+			}
+			findings = append(findings, msg)
+			worst = Block
+			continue
+		}
+		// Template unchanged: strategy is latent until the next real rollout.
 		if pdb != nil {
 			minA := effectiveMinAvailable(pdb, rep)
 			msg = fmt.Sprintf(
-				"rollout can take available pods to 0; note: PDB %s (minAvailable=%d) does not protect against rollouts",
+				"existing strategy can take pods to 0 on next rollout; note: PDB %s (minAvailable=%d) does not protect against rollouts",
 				pdb.Name, minA)
 			affected = append(affected, pdb.ID, w.ID)
 		} else {
 			msg = fmt.Sprintf(
-				"rollout can take available pods to 0 on %s (maxUnavailable=%d, replicas=%d); note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)",
+				"existing strategy can take pods to 0 on next rollout on %s (maxUnavailable=%d, replicas=%d)",
 				display(ctx.PropIdx, w.ID), maxUnavailRollout, rep)
 			affected = append(affected, w.ID)
 		}
 		findings = append(findings, msg)
-		worst = Block
+		if worst != Block {
+			worst = Warn
+		}
 	}
 
 	if len(pdbs) == 0 {
 		if len(findings) > 0 {
-			v.Status = Block
-			v.Explanation = "rollout can take available pods to 0; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
+			v.Status = worst
+			v.Explanation = pdbExplanation(worst, findings)
 			v.Evidence = findings
 			v.Affected = unique(affected)
 			v.Confidence = "high"
@@ -109,8 +174,8 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 	}
 	if !hasLink {
 		if len(findings) > 0 {
-			v.Status = Block
-			v.Explanation = "rollout can take available pods to 0; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
+			v.Status = worst
+			v.Explanation = pdbExplanation(worst, findings)
 			v.Evidence = findings
 			v.Affected = unique(affected)
 			v.Confidence = "high"
@@ -148,23 +213,37 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 			minA := effectiveMinAvailable(pdb, rep)
 			maxU := effectiveMaxUnavailable(pdb, rep)
 
-			maxUnavailRollout := parseMaxUnavailable(w.AttrString("maxUnavailable"), rep)
+			maxUnavailRollout, recreate := rolloutMaxUnavailable(w, rep)
 			remaining := rep - maxUnavailRollout
 
-			// Already reported as zero-available above; still ensure PDB note is present.
-			if remaining <= 0 {
+			// Zero-available / Recreate / uncertain already reported above.
+			if remaining <= 0 || recreate || syncTemplateUncertain(ctx, w) {
 				continue
 			}
 
-			// Violation: rollout could drop below declared minAvailable.
-			// PDB does not actually stop the rollout — call that out plainly.
+			triggers := syncTriggersRollout(ctx, w)
+
+			// Remaining > 0 but below declared minAvailable: PDB states availability
+			// intent — falling below it during a triggered rollout is BLOCK.
 			if minA > 0 && remaining < minA {
-				msg := fmt.Sprintf(
-					"PDB %s minAvailable=%d; rollout maxUnavailable=%d on %s leaves %d available; note: PodDisruptionBudgets do not protect against rollouts",
-					pdb.Name, minA, maxUnavailRollout, display(ctx.PropIdx, wid), remaining)
-				findings = append(findings, msg)
-				affected = append(affected, pdb.ID, wid)
-				worst = Block
+				var msg string
+				if triggers {
+					msg = fmt.Sprintf(
+						"rollout can drop available pods to %d, below the minAvailable=%d your PDB declares (PDBs do not enforce this during rollouts)",
+						remaining, minA)
+					findings = append(findings, msg)
+					affected = append(affected, pdb.ID, wid)
+					worst = Block
+				} else {
+					msg = fmt.Sprintf(
+						"existing strategy can drop available pods to %d, below the minAvailable=%d your PDB declares (PDBs do not enforce this during rollouts)",
+						remaining, minA)
+					findings = append(findings, msg)
+					affected = append(affected, pdb.ID, wid)
+					if worst != Block && worst != Unknown {
+						worst = Warn
+					}
+				}
 			}
 			// PDB maxUnavailable stricter than rollout — warn when conflicting.
 			if maxU > 0 && maxUnavailRollout > maxU {
@@ -173,7 +252,7 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 					pdb.Name, maxU, maxUnavailRollout, display(ctx.PropIdx, wid))
 				findings = append(findings, msg)
 				affected = append(affected, pdb.ID, wid)
-				if worst != Block {
+				if worst != Block && worst != Unknown {
 					worst = Warn
 				}
 			}
@@ -184,7 +263,7 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 					pdb.Name, minA, display(ctx.PropIdx, wid))
 				findings = append(findings, msg)
 				affected = append(affected, pdb.ID, wid)
-				if worst != Block {
+				if worst != Block && worst != Unknown {
 					worst = Warn
 				}
 			}
@@ -198,28 +277,167 @@ func (d PDBRollout) Evaluate(ctx Context) Verdict {
 		return v
 	}
 	v.Status = worst
-	if worst == Block {
-		if hasZeroAvailabilityFinding(findings) {
-			v.Explanation = "rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts"
-		} else {
-			v.Explanation = "rollout can drop available pods below PDB minAvailable; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
-		}
-	} else {
-		v.Explanation = "rollout may conflict with PodDisruptionBudget constraints; note: PDBs only gate evictions"
-	}
+	v.Explanation = pdbExplanation(worst, findings)
 	v.Evidence = findings
 	v.Affected = unique(affected)
 	v.Confidence = "high"
 	return v
 }
 
+func pdbExplanation(worst string, findings []string) string {
+	switch {
+	case hasRecreateFinding(findings):
+		return recreateAvailabilityMsg
+	case hasNoLastAppliedFinding(findings):
+		return podtemplate.NoLastAppliedDetail
+	case worst == Block && hasZeroAvailabilityFinding(findings):
+		return "rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts"
+	case worst == Block && hasBelowMinAvailableFinding(findings):
+		return "rollout can drop available pods below the minAvailable your PDB declares (PDBs do not enforce this during rollouts)"
+	case worst == Warn && hasExistingStrategyFinding(findings):
+		return "existing strategy can take pods to 0 on next rollout"
+	case worst == Unknown:
+		return podtemplate.NoLastAppliedDetail
+	case worst == Block:
+		return "rollout can drop available pods below PDB minAvailable; note: PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)"
+	default:
+		return "rollout may conflict with PodDisruptionBudget constraints; note: PDBs only gate evictions"
+	}
+}
+
 func hasZeroAvailabilityFinding(findings []string) bool {
 	for _, f := range findings {
-		if strings.Contains(f, "take available pods to 0") {
+		if strings.Contains(f, "take available pods to 0") || strings.Contains(f, "take pods to 0") {
 			return true
 		}
 	}
 	return false
+}
+
+func hasBelowMinAvailableFinding(findings []string) bool {
+	for _, f := range findings {
+		if strings.Contains(f, "below the minAvailable=") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExistingStrategyFinding(findings []string) bool {
+	for _, f := range findings {
+		if strings.Contains(f, "existing strategy") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRecreateFinding(findings []string) bool {
+	for _, f := range findings {
+		if strings.Contains(f, recreateAvailabilityMsg) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNoLastAppliedFinding(findings []string) bool {
+	for _, f := range findings {
+		if strings.Contains(f, "no last-applied-configuration") {
+			return true
+		}
+	}
+	return false
+}
+
+// rolloutMaxUnavailable returns how many pods can be unavailable during this
+// workload's update strategy. Recreate → all replicas (availability 0).
+func rolloutMaxUnavailable(w *graph.Node, replicas int) (maxUnavail int, recreate bool) {
+	if w != nil && strings.EqualFold(w.AttrString("strategyType"), "Recreate") {
+		return replicas, true
+	}
+	return parseMaxUnavailable(w.AttrString("maxUnavailable"), replicas), false
+}
+
+// syncTemplateUncertain is true when live compare could not predict removals
+// (no last-applied / SSA without SSA mode) and failed closed.
+func syncTemplateUncertain(ctx Context, w *graph.Node) bool {
+	if w == nil || ctx.Change == nil {
+		return false
+	}
+	for _, n := range append(ctx.Change.AddedNodes, ctx.Change.PatchNodes...) {
+		if n.ID != w.ID {
+			continue
+		}
+		if b, ok := n.Attributes["podTemplateUncertain"].(bool); ok && b {
+			return true
+		}
+		detail, _ := n.Attributes["podTemplateCompareDetail"].(string)
+		if strings.Contains(detail, "no last-applied-configuration") {
+			return true
+		}
+	}
+	return false
+}
+
+func syncTemplateUncertainDetail(ctx Context, w *graph.Node) string {
+	if w == nil || ctx.Change == nil {
+		return ""
+	}
+	for _, n := range append(ctx.Change.AddedNodes, ctx.Change.PatchNodes...) {
+		if n.ID != w.ID {
+			continue
+		}
+		if detail, ok := n.Attributes["podTemplateCompareDetail"].(string); ok && detail != "" {
+			return detail
+		}
+	}
+	return ""
+}
+
+// syncTriggersRollout is true when this sync will roll pods for workload w.
+// Preference order:
+//  1. Explicit podTemplateChanged on an Added/Patch node for this workload
+//  2. Subset compare of desired vs live podTemplate attrs (fail-closed if live missing)
+//  3. Workload not touched by the change → false (no rollout from this sync)
+func syncTriggersRollout(ctx Context, w *graph.Node) bool {
+	if w == nil {
+		return false
+	}
+	if ctx.Change != nil {
+		for _, a := range ctx.Change.AddedNodes {
+			if a.ID == w.ID {
+				if v, ok := a.Attributes["podTemplateChanged"].(bool); ok {
+					return v
+				}
+				return true
+			}
+		}
+		for _, p := range ctx.Change.PatchNodes {
+			if p.ID != w.ID {
+				continue
+			}
+			if v, ok := p.Attributes["podTemplateChanged"].(bool); ok {
+				return v
+			}
+			// Patch without explicit flag: subset-compare templates if present.
+			desiredTpl, _ := p.Attributes["podTemplate"].(map[string]any)
+			if desiredTpl == nil {
+				desiredTpl, _ = w.Attributes["podTemplate"].(map[string]any)
+			}
+			var liveTpl map[string]any
+			if ctx.BaseIdx != nil {
+				if base := ctx.BaseIdx.ByID[w.ID]; base != nil {
+					liveTpl, _ = base.Attributes["podTemplate"].(map[string]any)
+				}
+			}
+			return podtemplate.SubsetChanged(desiredTpl, liveTpl)
+		}
+		// Not part of this sync → strategy may be dangerous but pods will not roll.
+		return false
+	}
+	// No change envelope: fail closed.
+	return true
 }
 
 func matchingPDB(ctx Context, pdbs []*graph.Node, w *graph.Node) *graph.Node {

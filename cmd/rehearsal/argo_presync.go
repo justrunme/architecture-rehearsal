@@ -16,6 +16,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/collect"
 	"github.com/justrunme/architecture-rehearsal/internal/impact"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 	"github.com/justrunme/architecture-rehearsal/internal/presync"
 	"github.com/justrunme/architecture-rehearsal/internal/rbac"
 )
@@ -47,14 +48,15 @@ func cmdArgoPresync(args []string) int {
 	revision := fs.String("revision", envOr("ARGOCD_APP_REVISION", ""), "target revision")
 	desiredDir := fs.String("desired-dir", "", "pre-rendered desired manifests directory")
 	baseline := fs.String("baseline", "", "baseline snapshot JSON")
-	live := fs.Bool("live", false, "collect live baseline via kubectl (read-only)")
+	live := fs.Bool("live", false, "collect live baseline via kubectl; template compare uses apply --dry-run=server (needs patch)")
 	cluster := fs.String("cluster", "cluster", "cluster name for live snapshot")
-	namespace := fs.String("namespace", "", "limit manifest scope to namespace(s), comma-separated")
+	namespace := fs.String("namespace", envOr("REHEARSAL_LIVE_NAMESPACE", ""), "limit change scope to namespace(s); live inventory uses the same NS for namespaced objects but always fetches Nodes and Pods cluster-wide")
 	allowRemove := fs.Bool("allow-remove", false, "allow removals within scope")
 	changeID := fs.String("id", "", "change id")
 	outDir := fs.String("out", "/tmp/argo-presync", "scratch output directory (emptyDir when read-only rootfs)")
 	annotationsFile := fs.String("annotations-file", "", "Application annotations JSON object (tests / offline)")
 	skipAppAnnot := fs.Bool("skip-app-annotations", false, "do not fetch Application annotations from the API")
+	serverSideApply := fs.Bool("server-side-apply", false, "use SSA dry-run with field manager argocd-controller (Argo ServerSideApply=true)")
 	timeout := fs.Duration("timeout", 120*time.Second, "maximum gate runtime (fail closed on exceed)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -69,6 +71,7 @@ func cmdArgoPresync(args []string) int {
 			cluster: *cluster, namespace: *namespace, allowRemove: *allowRemove,
 			changeID: *changeID, outDir: *outDir,
 			annotationsFile: *annotationsFile, skipAppAnnot: *skipAppAnnot,
+			serverSideApply: *serverSideApply,
 		})
 	}()
 	select {
@@ -88,6 +91,7 @@ type presyncArgs struct {
 	changeID, outDir           string
 	annotationsFile            string
 	skipAppAnnot               bool
+	serverSideApply            bool
 }
 
 func runArgoPresync(start time.Time, a presyncArgs) int {
@@ -99,6 +103,12 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 		_ = presync.WriteJSONLine(os.Stdout, r)
 		code := presync.HookExitCode(r.Decision)
 		fmt.Fprintf(os.Stderr, "presync decision=%s exit=%d durationMs=%d\n", r.Decision, code, r.DurationMs)
+		for _, reason := range r.Reasons {
+			if strings.Contains(reason, "no Node") || strings.Contains(reason, "nodes collect") ||
+				strings.Contains(reason, "does not need capacity") {
+				fmt.Fprintf(os.Stderr, "presync note: %s\n", reason)
+			}
+		}
 		if r.Override != nil && r.Override.Enabled {
 			fmt.Fprintf(os.Stderr, "BREAK-GLASS OVERRIDE reason=%q\n", r.Override.Reason)
 		}
@@ -137,7 +147,18 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 	basePath := a.baseline
 	if basePath == "" {
 		basePath = filepath.Join(a.outDir, "baseline.json")
-		snap, err := collect.K8sFromLive(nil, collect.LiveOptions{Cluster: a.cluster})
+		// Namespaced Role: inventory in destination NS; Nodes always fetched cluster-wide.
+		liveOpts := collect.LiveOptions{Cluster: a.cluster}
+		if a.namespace != "" {
+			for _, p := range strings.Split(a.namespace, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					liveOpts.Namespace = p
+					break
+				}
+			}
+		}
+		snap, err := collect.K8sFromLive(nil, liveOpts)
 		if err != nil {
 			return fail("live baseline: " + err.Error())
 		}
@@ -183,6 +204,21 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 	}
 	if err != nil {
 		return fail("argo compile: " + err.Error())
+	}
+	if a.live {
+		desiredForCompare := a.desiredDir
+		if desiredForCompare == "" {
+			desiredForCompare = filepath.Join(a.outDir, "work", "desired")
+		}
+		if desiredForCompare != "" {
+			mode := podtemplate.ParseApplyModeFromEnv()
+			if a.serverSideApply {
+				mode = podtemplate.ApplyServerSide
+			}
+			if err := argo.ApplyLiveTemplateCompare(nil, ch, desiredForCompare, podtemplate.KubectlOptions{Mode: mode}); err != nil {
+				return fail("live template compare: " + err.Error())
+			}
+		}
 	}
 
 	imp := impact.Run(base, ch, nil)

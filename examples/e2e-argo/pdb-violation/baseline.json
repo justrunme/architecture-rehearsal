@@ -39,8 +39,24 @@
         "type": "Deployment",
         "replicas": 3,
         "maxUnavailable": "2",
+        "containerImages": "api=ghcr.io/example/api:v1",
         "podLabels": {
           "app": "api"
+        },
+        "podTemplate": {
+          "metadata": {
+            "labels": {
+              "app": "api"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "api",
+                "image": "ghcr.io/example/api:v1"
+              }
+            ]
+          }
         }
       }
     },

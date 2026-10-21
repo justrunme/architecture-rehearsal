@@ -1,0 +1,41 @@
+# Cluster-scoped read for Nodes + Pods (scheduling-capacity).
+# Installed as NORMAL Application resources (not PreSync hooks).
+#
+# Both ClusterRole and ClusterRoleBinding are per-destination-namespace
+# (…-in-<ns>) so a second install neither steals the Binding nor shares a
+# ClusterRole that another Argo app could prune. Overlays rewrite the
+# trailing segment via replacements (see overlays/ and README).
+#
+# Pods: verb "list" only (no get/watch). Cluster-wide pod list returns full
+# specs including literal env values — see README trade-off / how to disable.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # Trailing segment rewritten to the destination namespace by the overlay.
+  name: rehearsal-argo-presync-nodes-in-default
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rehearsal-argo-presync-nodes-in-default
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync-nodes-in-default
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: default # overlay namespace transformer + replacements update this

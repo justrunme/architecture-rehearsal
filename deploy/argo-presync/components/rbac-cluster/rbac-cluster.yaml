@@ -1,0 +1,35 @@
+# Optional extra cluster-scoped RBAC (beyond rbac-nodes.yaml).
+# Enable for Namespaces / PVs and Argo Applications (break-glass).
+# Helm: argoPresync.clusterRBAC=true
+# Per-namespace ClusterRole + Binding (same overlay rewrite as rbac-nodes).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rehearsal-argo-presync-cluster-in-default
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  # Break-glass annotations on the Argo CD Application (often in argocd ns).
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rehearsal-argo-presync-cluster-in-default
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync-cluster-in-default
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: default

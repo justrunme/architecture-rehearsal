@@ -70,7 +70,7 @@ jobs:
             --out out/verify.json
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.7.1'
+        run: ./bin/rehearsal version | grep -q '1.8.0'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null
@@ -90,7 +90,7 @@ jobs:
           curl -sf http://127.0.0.1:18080/readyz
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
           test "$code" = "401"
-          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.7.1
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.8.0
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/metrics | grep -q rehearsal_queue_depth
           # create run + job list + audit
           curl -sf -X POST -H "Authorization: Bearer $REHEARSAL_API_TOKEN" -H "Content-Type: application/json" \
@@ -201,6 +201,31 @@ jobs:
         with:
           name: kind-argo-presync-e2e
           path: out/argo-presync-e2e/
+          if-no-files-found: ignore
+
+  # Live template compare: apply dry-run must not false-BLOCK identical desired,
+  # must BLOCK on env add/remove and Recreate+env, and shipped namespaced Role (patch) works.
+  argo-rollout-template-kind-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Kind rollout template compare E2E
+        run: bash scripts/kind-rollout-template-e2e.sh
+      - name: Upload kind rollout-template artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kind-rollout-template-e2e
+          path: out/rollout-template-e2e/
           if-no-files-found: ignore
 
   postgres:

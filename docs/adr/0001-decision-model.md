@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Architecture Rehearsal v1.0+ (still current in v1.7.1).
+Accepted for Architecture Rehearsal v1.0+ (still current in v1.8.0).
 
 ## Context
 
