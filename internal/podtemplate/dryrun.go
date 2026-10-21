@@ -167,7 +167,9 @@ func LiveGetObject(ctx context.Context, kind, ns, name string, opts KubectlOptio
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	resource := resourceName(kind)
-	args := prependKubeArgs([]string{"get", resource, name, "-n", ns, "-o", "json"}, opts)
+	// --show-managed-fields is required for SSA auto-detect (kubectl omits
+	// managedFields from -o json unless this flag is set).
+	args := prependKubeArgs([]string{"get", resource, name, "-n", ns, "-o", "json", "--show-managed-fields"}, opts)
 	cmd := exec.CommandContext(cctx, opts.Kubectl, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

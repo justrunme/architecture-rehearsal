@@ -295,6 +295,27 @@ spec:
 	}
 }
 
+func TestLiveGetObject_ShowManagedFields(t *testing.T) {
+	script := `#!/bin/sh
+echo "$@" > "$(dirname "$0")/args.txt"
+cat <<'EOF'
+{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"shop","managedFields":[{"manager":"argocd-controller","operation":"Apply"}]},"spec":{"template":{"metadata":{},"spec":{"containers":[{"name":"api","image":"nginx"}]}}}}
+EOF
+`
+	kubectl := writeFakeKubectl(t, script)
+	obj, err := podtemplate.LiveGetObject(context.Background(), "Deployment", "shop", "api", podtemplate.KubectlOptions{Kubectl: kubectl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !podtemplate.HasArgoServerSideApply(obj) {
+		t.Fatal("expected managedFields from get")
+	}
+	args, _ := os.ReadFile(filepath.Join(filepath.Dir(kubectl), "args.txt"))
+	if !strings.Contains(string(args), "--show-managed-fields") {
+		t.Fatalf("LiveGetObject must pass --show-managed-fields: %s", args)
+	}
+}
+
 func TestHasArgoServerSideApply_AutoDetect(t *testing.T) {
 	obj := map[string]any{
 		"metadata": map[string]any{

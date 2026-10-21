@@ -1,7 +1,6 @@
-# Optional cluster-scoped RBAC for the PreSync gate.
-# Enable when the gate must list Nodes / Namespaces / PVs or read Argo Applications
-# outside the destination namespace (Helm: argoPresync.clusterRBAC=true).
-# Default installs use namespaced Role only (rbac.yaml).
+# Optional extra cluster-scoped RBAC (beyond the default Nodes ClusterRole in rbac.yaml).
+# Enable for Namespaces / PVs and Argo Applications (break-glass).
+# Helm: argoPresync.clusterRBAC=true
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -15,7 +14,7 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "namespaces", "persistentvolumes"]
+    resources: ["namespaces", "persistentvolumes"]
     verbs: ["get", "list", "watch"]
   # Break-glass annotations on the Argo CD Application (often in argocd ns).
   - apiGroups: ["argoproj.io"]

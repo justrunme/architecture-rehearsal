@@ -15,12 +15,14 @@ Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
 ### Fixed (rollout gate semantics)
 - `pdb-rollout` only BLOCKs when this sync will actually roll pods. With `--live`, template change is decided by **apply dry-run matching the sync tool**: default is client-side three-way `kubectl apply --dry-run=server` (uses `last-applied-configuration`); with `--server-side-apply` / `REHEARSAL_SERVER_SIDE_APPLY=true` uses SSA + field manager `argocd-controller` + force-conflicts. Comparing dry-run `spec.template` to live (API defaults on both sides; dry-run failure fails closed). Offline/fixtures use **subset compare**: every desired field must match live; live-only server defaults are ignored (no hand-maintained default strip list)
 - Field removals (e.g. deleted env var) are detected under client-side dry-run; SSA under a foreign field manager no longer false-WARNs. Without `last-applied-configuration`, fail closed with a distinct reason (no create dry-run); safe strategy → `pdb-rollout` UNKNOWN; dangerous → BLOCK without reusing “pods to 0” wording
-- Apply mode auto-detects Argo SSA from live `managedFields` (`argocd-controller` + `Apply`); `--server-side-apply` still forces SSA
+- Apply mode auto-detects Argo SSA from live `managedFields` (`argocd-controller` + `Apply`) via `kubectl get --show-managed-fields`; `--server-side-apply` still forces SSA
+- `--namespace` scopes the change only; live collect always fetches Nodes cluster-wide (namespaced inventory via `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE`)
+- `scheduling-capacity`: no Nodes + sync does not touch scheduling fields → PASS with note; touches them → UNKNOWN
 - `strategy.type: Recreate` treated as availability 0: template change → BLOCK; unchanged / Recreate-only → WARN (`Recreate strategy terminates all pods before starting new ones; availability drops to 0 during rollout`)
 - If the template is unchanged versus live, a dangerous RollingUpdate strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
 - When remaining available pods are > 0 but below PDB `minAvailable` (e.g. 99% → 1 left vs minAvailable=2), message reads `rollout can drop available pods to N, below the minAvailable=M your PDB declares (PDBs do not enforce this during rollouts)` and stays BLOCK when the sync triggers a rollout
-- PreSync default RBAC is namespaced Role/RoleBinding with `patch` for `dryRun=All` only; ClusterRole is Helm opt-in (`argoPresync.clusterRBAC`)
-- CI kind job `argo-rollout-template-kind-e2e`: identical → WARN/PASS; env add/remove → BLOCK; Recreate+env → BLOCK by detection; shipped Role `patch` works
+- PreSync default RBAC: namespaced Role (`patch` for `dryRun=All`) + minimal Nodes ClusterRole; Applications/namespaces/PVs remain Helm opt-in (`argoPresync.clusterRBAC`)
+- CI kind job `argo-rollout-template-kind-e2e`: identical → WARN/PASS; env add/remove → BLOCK; Recreate+env → BLOCK; SSA auto-detect identical → WARN; shipped Role+Nodes RBAC works
 
 ### Tests
 - Positive/negative nodeSelector tests; rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixtures

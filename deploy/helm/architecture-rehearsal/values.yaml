@@ -93,7 +93,7 @@ rbac:
 argoPresync:
   enabled: false
   includeHookJob: false
-  # Default: namespaced Role (patch for dryRun=All). Opt-in ClusterRole for nodes/Applications.
+  # Default ships namespaced Role + minimal Nodes ClusterRole. Opt-in for Applications/namespaces/PVs.
   clusterRBAC: false
   desiredConfigMap: rehearsal-argo-presync-desired
   # Application name/namespace for break-glass annotation lookup (PreSync Job).

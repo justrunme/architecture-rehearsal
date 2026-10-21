@@ -55,11 +55,17 @@ With `--live`, the gate dry-runs desired workloads the same way the sync will ap
 
 `kubectl apply --dry-run=server` issues a **patch** with `dryRun=All`. The shipped Role therefore grants `patch` on `deployments`, `statefulsets`, and `daemonsets` in the Application destination namespace. Dry-run does **not** mutate cluster objects: on kind verification, Deployment `resourceVersion` / `generation` were unchanged after every `--live` run.
 
-**Default RBAC** (`deploy/argo-presync/rbac.yaml`): namespaced `Role` + `RoleBinding` (inventory get/list/watch + workload `patch`). Live collect uses `--namespace` / `REHEARSAL_LIVE_NAMESPACE` (set from the Job pod namespace).
+**Change scope vs live collect:** `--namespace` / `REHEARSAL_LIVE_NAMESPACE` scopes the change envelope and namespaced inventory. Nodes are **always** fetched cluster-wide (best-effort) so scheduling-capacity can run. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
 
-**Opt-in cluster RBAC** (`deploy/argo-presync/rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): `ClusterRole` for Nodes / Namespaces / PVs and Argo `applications` (needed for nodeSelector capacity checks and break-glass annotation lookup outside the destination namespace).
+**Default RBAC** (`deploy/argo-presync/rbac.yaml`):
+- namespaced `Role` + `RoleBinding` (inventory get/list/watch + workload `patch` for `dryRun=All`)
+- minimal `ClusterRole` + binding for **Nodes** get/list/watch only
 
-Without `last-applied-configuration` in client mode, removals cannot be predicted. The gate fails closed with a distinct reason (`cannot predict removals: live object has no last-applied-configuration …`). If the rollout strategy itself is safe, `pdb-rollout` reports **UNKNOWN** (not a false “pods to 0” BLOCK). Objects applied with Argo SSA are auto-detected via `managedFields` so client mode is not required.
+**Opt-in cluster RBAC** (`deploy/argo-presync/rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): Namespaces / PVs and Argo `applications` (break-glass).
+
+If Nodes cannot be read and the sync does **not** touch scheduling-relevant fields (nodeSelector, affinity, tolerations, topologySpreadConstraints, resource requests, replicas), `scheduling-capacity` returns **PASS** with a note; if it does touch them, **UNKNOWN** (fail closed).
+
+Without `last-applied-configuration` in client mode, removals cannot be predicted. The gate fails closed with a distinct reason (`cannot predict removals: live object has no last-applied-configuration …`). If the rollout strategy itself is safe, `pdb-rollout` reports **UNKNOWN** (not a false “pods to 0” BLOCK).
 
 `strategy.type: Recreate` is treated as availability 0: template change → BLOCK; unchanged template (or Recreate-only switch) → WARN, with message `Recreate strategy terminates all pods before starting new ones; availability drops to 0 during rollout`.
 

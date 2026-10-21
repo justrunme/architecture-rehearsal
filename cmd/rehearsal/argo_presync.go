@@ -50,7 +50,7 @@ func cmdArgoPresync(args []string) int {
 	baseline := fs.String("baseline", "", "baseline snapshot JSON")
 	live := fs.Bool("live", false, "collect live baseline via kubectl; template compare uses apply --dry-run=server (needs patch)")
 	cluster := fs.String("cluster", "cluster", "cluster name for live snapshot")
-	namespace := fs.String("namespace", envOr("REHEARSAL_LIVE_NAMESPACE", ""), "limit manifest scope / live collect namespace (default REHEARSAL_LIVE_NAMESPACE)")
+	namespace := fs.String("namespace", envOr("REHEARSAL_LIVE_NAMESPACE", ""), "limit change scope to namespace(s); live inventory uses the same NS for namespaced objects but always fetches Nodes cluster-wide")
 	allowRemove := fs.Bool("allow-remove", false, "allow removals within scope")
 	changeID := fs.String("id", "", "change id")
 	outDir := fs.String("out", "/tmp/argo-presync", "scratch output directory (emptyDir when read-only rootfs)")
@@ -141,6 +141,7 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 	basePath := a.baseline
 	if basePath == "" {
 		basePath = filepath.Join(a.outDir, "baseline.json")
+		// Namespaced Role: inventory in destination NS; Nodes always fetched cluster-wide.
 		liveOpts := collect.LiveOptions{Cluster: a.cluster}
 		if a.namespace != "" {
 			for _, p := range strings.Split(a.namespace, ",") {

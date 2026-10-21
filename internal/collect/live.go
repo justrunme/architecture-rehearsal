@@ -18,8 +18,9 @@ type LiveOptions struct {
 	Kubeconfig string
 	Context    string
 	Cluster    string
-	// Namespace limits collection to one namespace (namespaced Role RBAC).
-	// When set, cluster-scoped resources (nodes, PVs, …) are omitted unless Resources overrides.
+	// Namespace, when set, scopes namespaced inventory to that namespace (Role RBAC).
+	// Nodes are ALWAYS collected cluster-wide (best-effort) separately — change
+	// scope (--namespace) must not omit Nodes.
 	Namespace string
 	// Resources is a kubectl resource list (comma-separated). Empty → default set.
 	Resources string
@@ -36,24 +37,19 @@ type LiveOptions struct {
 // Events included for causal verify (FailedCreatePodSandBox, FailedAttachVolume, …).
 const DefaultLiveResources = "node,ns,deploy,sts,ds,rs,po,svc,pvc,pv,pdb,hpa,sa,ing,networkpolicies,endpointslices,events"
 
-// NamespacedLiveResources is the default set when LiveOptions.Namespace is set
-// (works with a namespaced Role that cannot list cluster-scoped objects).
+// NamespacedLiveResources is collected with -n when LiveOptions.Namespace is set.
+// Nodes are fetched separately (cluster-wide) and merged.
 const NamespacedLiveResources = "deploy,sts,ds,rs,po,svc,pvc,pdb,hpa,sa,ing,networkpolicies,endpointslices,events"
 
-// K8sFromLive runs kubectl get -A -o yaml (read-only) into a temp dir and reuses the offline collector.
+// K8sFromLive runs kubectl get (read-only) into a temp dir and reuses the offline collector.
+// When Namespace is set, namespaced resources are listed in that namespace and Nodes
+// are always requested cluster-wide (best-effort; missing Nodes are recorded in Meta).
 func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error) {
 	if opts.Cluster == "" {
 		opts.Cluster = "live"
 	}
 	if opts.Kubectl == "" {
 		opts.Kubectl = "kubectl"
-	}
-	if opts.Resources == "" {
-		if opts.Namespace != "" {
-			opts.Resources = NamespacedLiveResources
-		} else {
-			opts.Resources = DefaultLiveResources
-		}
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 120 * time.Second
@@ -64,45 +60,58 @@ func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error)
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
-	args := []string{"get", opts.Resources, "-o", "yaml"}
-	if opts.Namespace != "" {
-		args = append(args, "-n", opts.Namespace)
-	} else {
-		args = append(args, "-A")
-	}
-	if opts.Kubeconfig != "" {
-		args = append([]string{"--kubeconfig", opts.Kubeconfig}, args...)
-	}
-	if opts.Context != "" {
-		args = append([]string{"--context", opts.Context}, args...)
-	}
-
-	cmd := exec.CommandContext(cctx, opts.Kubectl, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("kubectl live collect (read-only): %w: %s", err, stringsTrim(stderr.String()))
-	}
-	if stdout.Len() == 0 {
-		return nil, fmt.Errorf("kubectl returned empty YAML")
-	}
-
 	dir, err := os.MkdirTemp("", "rehearsal-live-*")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	dump := filepath.Join(dir, "live-dump.yaml")
-	if err := os.WriteFile(dump, stdout.Bytes(), 0o600); err != nil {
-		return nil, err
+
+	var nodesErr string
+	var resourcesUsed string
+
+	if opts.Namespace != "" {
+		res := opts.Resources
+		if res == "" {
+			res = NamespacedLiveResources
+		}
+		resourcesUsed = res + "+node(best-effort)"
+		nsDump := filepath.Join(dir, "live-ns.yaml")
+		if err := kubectlGetYAML(cctx, opts, []string{"get", res, "-n", opts.Namespace, "-o", "yaml"}, nsDump); err != nil {
+			return nil, err
+		}
+		nodesDump := filepath.Join(dir, "live-nodes.yaml")
+		if err := kubectlGetYAML(cctx, opts, []string{"get", "nodes", "-o", "yaml"}, nodesDump); err != nil {
+			nodesErr = err.Error()
+			_ = os.Remove(nodesDump) // allow collect without nodes
+		}
+	} else {
+		res := opts.Resources
+		if res == "" {
+			res = DefaultLiveResources
+		}
+		resourcesUsed = res
+		dump := filepath.Join(dir, "live-dump.yaml")
+		if err := kubectlGetYAML(cctx, opts, []string{"get", res, "-A", "-o", "yaml"}, dump); err != nil {
+			return nil, err
+		}
+	}
+
+	extra := map[string]any{}
+	for k, v := range opts.ExtraMeta {
+		extra[k] = v
+	}
+	if nodesErr != "" {
+		extra["nodes_collect_error"] = nodesErr
+		extra["nodes_collect_ok"] = false
+	} else if opts.Namespace != "" {
+		extra["nodes_collect_ok"] = true
 	}
 
 	snap, err := K8sFromManifests(cctx, dir, K8sOptions{
 		ClusterName:  opts.Cluster,
 		AllowPartial: opts.AllowPartial,
 		Phase:        opts.Phase,
-		ExtraMeta:    opts.ExtraMeta,
+		ExtraMeta:    extra,
 	})
 	if err != nil {
 		return nil, err
@@ -112,11 +121,35 @@ func K8sFromLive(ctx context.Context, opts LiveOptions) (*graph.Snapshot, error)
 		snap.Meta = map[string]any{}
 	}
 	snap.Meta["live_collect"] = true
-	snap.Meta["live_resources"] = opts.Resources
+	snap.Meta["live_resources"] = resourcesUsed
+	if opts.Namespace != "" {
+		snap.Meta["live_collect_namespace"] = opts.Namespace
+	}
 	if snap.Cluster != nil {
 		snap.Cluster.CollectorVersion = "0.6.0-live"
 	}
 	return snap, nil
+}
+
+func kubectlGetYAML(ctx context.Context, opts LiveOptions, baseArgs []string, outPath string) error {
+	args := append([]string{}, baseArgs...)
+	if opts.Kubeconfig != "" {
+		args = append([]string{"--kubeconfig", opts.Kubeconfig}, args...)
+	}
+	if opts.Context != "" {
+		args = append([]string{"--context", opts.Context}, args...)
+	}
+	cmd := exec.CommandContext(ctx, opts.Kubectl, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl live collect (read-only): %w: %s", err, stringsTrim(stderr.String()))
+	}
+	if stdout.Len() == 0 {
+		return fmt.Errorf("kubectl returned empty YAML")
+	}
+	return os.WriteFile(outPath, stdout.Bytes(), 0o600)
 }
 
 func stringsTrim(s string) string {

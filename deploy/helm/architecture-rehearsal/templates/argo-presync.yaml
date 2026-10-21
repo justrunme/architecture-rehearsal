@@ -51,6 +51,35 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
     namespace: {{ .Release.Namespace }}
+---
+# Default: minimal Nodes ClusterRole (scheduling-capacity). Always enabled.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes
+  labels:
+    app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes
+  labels:
+    app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
+    namespace: {{ .Release.Namespace }}
 {{- if .Values.argoPresync.clusterRBAC }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -62,7 +91,7 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "namespaces", "persistentvolumes"]
+    resources: ["namespaces", "persistentvolumes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]

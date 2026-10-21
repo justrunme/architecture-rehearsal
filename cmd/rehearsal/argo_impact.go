@@ -39,6 +39,7 @@ func cmdArgoImpact(args []string) int {
 	dumpDir := fs.String("dump-dir", "", "optional kubectl dump directory for baseline")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path for --live / apply dry-run")
 	kubeContext := fs.String("context", "", "kube context for --live / apply dry-run")
+	liveNamespace := fs.String("live-namespace", envOr("REHEARSAL_LIVE_NAMESPACE", ""), "limit live inventory to this namespace (Role RBAC); Nodes are still fetched cluster-wide. Distinct from --namespace (change scope)")
 	serverSideApply := fs.Bool("server-side-apply", false, "use SSA dry-run with field manager argocd-controller (Argo ServerSideApply=true); default is client-side three-way apply dry-run")
 	outDir := fs.String("out", "out/argo-impact", "output directory for report + evidence")
 	namespace := fs.String("namespace", "", "limit manifest scope to namespace(s), comma-separated")
@@ -90,20 +91,12 @@ func cmdArgoImpact(args []string) int {
 				return 5
 			}
 		} else if *live {
-			liveOpts := collect.LiveOptions{
+			// --namespace scopes the change envelope only.
+			// --live-namespace (optional) scopes namespaced inventory; Nodes always fetched.
+			snap, err := collect.K8sFromLive(nil, collect.LiveOptions{
 				Cluster: *cluster, Kubeconfig: *kubeconfig, Context: *kubeContext,
-			}
-			if *namespace != "" {
-				// First scoped namespace → namespaced collect (works with Role RBAC).
-				for _, p := range strings.Split(*namespace, ",") {
-					p = strings.TrimSpace(p)
-					if p != "" {
-						liveOpts.Namespace = p
-						break
-					}
-				}
-			}
-			snap, err := collect.K8sFromLive(nil, liveOpts)
+				Namespace: *liveNamespace,
+			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "baseline live: %v\n", err)
 				return 5

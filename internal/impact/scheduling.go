@@ -66,31 +66,34 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 		}
 	}
 
+	// No Nodes in baseline: only fail closed when this sync touches scheduling-relevant fields.
+	if len(nodes) == 0 {
+		if changeTouchesScheduling(ctx) {
+			v.Status = Unknown
+			v.Explanation = "scheduling-relevant change but no Node objects in baseline"
+			v.Missing = []string{"nodes"}
+			v.Evidence = []string{nodesAbsentNote(ctx)}
+			v.Confidence = "low"
+			return v
+		}
+		v.Status = Pass
+		v.Explanation = "no Node objects in baseline; change does not touch scheduling-relevant fields"
+		v.Evidence = []string{nodesAbsentNote(ctx)}
+		v.Confidence = "medium"
+		return v
+	}
+
 	// Topology / affinity checks on proposed workloads.
 	topoIssues := []string{}
 	affinityIssues := []string{}
 	taintIssues := []string{}
 	for _, w := range ctx.PropIdx.ByKind[graph.KindWorkload] {
 		if w.AttrBool("hasTopologySpread") {
-			if len(nodes) == 0 {
-				v.Status = Unknown
-				v.Explanation = "topologySpreadConstraints present but no Node objects in baseline"
-				v.Missing = []string{"nodes"}
-				v.Confidence = "low"
-				return v
-			}
 			if !hasZone {
 				topoIssues = append(topoIssues, fmt.Sprintf("%s: topology spread set but nodes lack zone labels", display(ctx.PropIdx, w.ID)))
 			}
 		}
 		if w.AttrBool("hasAffinity") {
-			if len(nodes) == 0 {
-				v.Status = Unknown
-				v.Explanation = "affinity present but no Node objects in baseline"
-				v.Missing = []string{"nodes"}
-				v.Confidence = "low"
-				return v
-			}
 			if anti := hardAntiAffinity(w); anti {
 				// Same-namespace workload anti-affinity with insufficient distinct nodes.
 				if len(nodes) < w.WorkloadReplicas() {
@@ -101,13 +104,6 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 			}
 		}
 		if ns, ok := w.Attributes["nodeSelector"].(map[string]any); ok && len(ns) > 0 {
-			if len(nodes) == 0 {
-				v.Status = Unknown
-				v.Explanation = "nodeSelector present but no Node objects to evaluate"
-				v.Missing = []string{"nodes"}
-				v.Confidence = "low"
-				return v
-			}
 			if !nodesHaveLabelData(nodes) {
 				v.Status = Unknown
 				v.Explanation = "nodeSelector present but node label data is absent from the snapshot"
@@ -212,6 +208,127 @@ func parseMaxSurge(ms string, replicas int) int {
 		return 0
 	}
 	return v
+}
+
+// changeTouchesScheduling reports whether this sync changes fields that need
+// Node inventory to evaluate: nodeSelector, affinity, tolerations,
+// topologySpreadConstraints, container resource requests, or replica counts.
+func changeTouchesScheduling(ctx Context) bool {
+	if ctx.Change == nil {
+		return false
+	}
+	check := func(id string, attrs map[string]any) bool {
+		if attrs == nil {
+			return false
+		}
+		if _, ok := attrs["nodeSelector"]; ok {
+			return true
+		}
+		if _, ok := attrs["affinity"]; ok {
+			return true
+		}
+		if attrs["hasAffinity"] == true {
+			return true
+		}
+		if _, ok := attrs["tolerations"]; ok {
+			return true
+		}
+		if attrs["hasTopologySpread"] == true {
+			return true
+		}
+		if _, ok := attrs["topologySpreadConstraints"]; ok {
+			return true
+		}
+		if tpl, ok := attrs["podTemplate"].(map[string]any); ok {
+			if podTemplateTouchesScheduling(tpl) {
+				return true
+			}
+		}
+		if _, ok := attrs["replicas"]; ok {
+			baseR := 0
+			if ctx.BaseIdx != nil {
+				if bn := ctx.BaseIdx.ByID[id]; bn != nil {
+					baseR = bn.WorkloadReplicas()
+				}
+			}
+			propR := 0
+			switch t := attrs["replicas"].(type) {
+			case int:
+				propR = t
+			case float64:
+				propR = int(t)
+			default:
+				propR = baseR
+			}
+			if propR != baseR {
+				return true
+			}
+		}
+		return false
+	}
+	for _, n := range ctx.Change.AddedNodes {
+		if check(n.ID, n.Attributes) {
+			return true
+		}
+		// New workload always implies replica demand.
+		if n.Kind == graph.KindWorkload || strings.HasPrefix(n.ID, "workload/") {
+			return true
+		}
+	}
+	for _, n := range ctx.Change.PatchNodes {
+		if check(n.ID, n.Attributes) {
+			return true
+		}
+	}
+	return false
+}
+
+func podTemplateTouchesScheduling(tpl map[string]any) bool {
+	spec, _ := tpl["spec"].(map[string]any)
+	if spec == nil {
+		return false
+	}
+	if _, ok := spec["nodeSelector"]; ok {
+		return true
+	}
+	if _, ok := spec["affinity"]; ok {
+		return true
+	}
+	if _, ok := spec["tolerations"]; ok {
+		return true
+	}
+	if _, ok := spec["topologySpreadConstraints"]; ok {
+		return true
+	}
+	for _, key := range []string{"containers", "initContainers"} {
+		list, _ := spec[key].([]any)
+		for _, c := range list {
+			cm, _ := c.(map[string]any)
+			if cm == nil {
+				continue
+			}
+			res, _ := cm["resources"].(map[string]any)
+			if res == nil {
+				continue
+			}
+			if req, ok := res["requests"].(map[string]any); ok && len(req) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodesAbsentNote(ctx Context) string {
+	if ctx.Baseline != nil && ctx.Baseline.Meta != nil {
+		if err, ok := ctx.Baseline.Meta["nodes_collect_error"].(string); ok && err != "" {
+			return "nodes collect failed: " + err
+		}
+		if ok, _ := ctx.Baseline.Meta["nodes_collect_ok"].(bool); ok == false {
+			return "nodes collect skipped or failed"
+		}
+	}
+	return "baseline has no Node objects"
 }
 
 func hardAntiAffinity(w *graph.Node) bool {

@@ -1,8 +1,8 @@
-# Default PreSync RBAC: namespaced Role + RoleBinding.
-# Workload kinds need patch for kubectl apply --dry-run=server (dryRun=All only;
-# dry-run does not mutate objects — resourceVersion unchanged; verified on kind).
-# Cluster-scoped reads (nodes, namespaces, PVs) and Applications require the
-# optional ClusterRole in rbac-cluster.yaml (Helm: argoPresync.clusterRBAC=true).
+# Default PreSync RBAC:
+#   1) namespaced Role + RoleBinding (inventory + patch for dryRun=All)
+#   2) minimal ClusterRole + Binding for Nodes get/list (scheduling-capacity)
+# Dry-run does not mutate objects (resourceVersion unchanged; verified on kind).
+# Optional Applications / namespaces / PVs: see rbac-cluster.yaml (Helm clusterRBAC).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -49,6 +49,44 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: rehearsal-argo-presync
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: default # set to Application destination namespace
+---
+# Minimal cluster read for Nodes — required so --namespace / Role inventory
+# still evaluates scheduling-capacity (always fetched cluster-wide).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-2"
+  name: rehearsal-argo-presync-nodes
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-2"
+  name: rehearsal-argo-presync-nodes
+  labels:
+    app.kubernetes.io/name: rehearsal-argo-presync
+    app.kubernetes.io/component: argo-presync-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync-nodes
 subjects:
   - kind: ServiceAccount
     name: rehearsal-argo-presync

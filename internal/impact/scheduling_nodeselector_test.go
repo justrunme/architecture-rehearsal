@@ -90,6 +90,59 @@ func TestNodeSelector_UnknownPoolBlocks(t *testing.T) {
 	}
 }
 
+func TestScheduling_NoNodesUnchanged_PassesWithNote(t *testing.T) {
+	base := &graph.Snapshot{
+		ID: "no-nodes", Phase: graph.PhaseBaseline,
+		Meta: map[string]any{"pod_scheduling_capacity_estimate": 50, "nodes_collect_error": "forbidden"},
+		Nodes: []graph.Node{
+			{ID: "cluster/c", Kind: graph.KindCluster, Name: "c"},
+			{ID: "workload/shop/api", Kind: graph.KindWorkload, Name: "api", Namespace: "shop",
+				Attributes: map[string]any{
+					"replicas": 3, "type": "Deployment",
+					"hasAffinity": true,
+					"affinity":    map[string]any{"nodeAffinity": map[string]any{}},
+				}},
+		},
+	}
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "noop", Facts: map[string]any{"scenario": "argo-impact"},
+	}
+	v := impact.SchedulingCapacity{}.Evaluate(schedulingCtx(base, ch))
+	if v.Status != impact.Pass {
+		t.Fatalf("unchanged + no nodes want PASS, got %s: %s", v.Status, v.Explanation)
+	}
+	if !strings.Contains(v.Explanation, "does not touch scheduling") {
+		t.Fatalf("want note about untouched scheduling, got %q", v.Explanation)
+	}
+}
+
+func TestScheduling_NoNodesNodeSelectorChange_Unknown(t *testing.T) {
+	base := &graph.Snapshot{
+		ID: "no-nodes-touch", Phase: graph.PhaseBaseline,
+		Meta: map[string]any{"pod_scheduling_capacity_estimate": 50},
+		Nodes: []graph.Node{
+			{ID: "cluster/c", Kind: graph.KindCluster, Name: "c"},
+			{ID: "workload/shop/api", Kind: graph.KindWorkload, Name: "api", Namespace: "shop",
+				Attributes: map[string]any{"replicas": 3, "type": "Deployment"}},
+		},
+	}
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "ns", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas":     3,
+				"nodeSelector": map[string]any{"node-pool": "high-mem"},
+			},
+		}},
+	}
+	v := impact.SchedulingCapacity{}.Evaluate(schedulingCtx(base, ch))
+	if v.Status != impact.Unknown {
+		t.Fatalf("nodeSelector change + no nodes want UNKNOWN, got %s: %s", v.Status, v.Explanation)
+	}
+}
+
 func TestNodeSelector_MissingLabelSnapshotUnknown(t *testing.T) {
 	base := &graph.Snapshot{
 		ID: "ns-unk", Phase: graph.PhaseBaseline,

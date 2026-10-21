@@ -5,7 +5,8 @@
 #   - env add → BLOCK
 #   - env remove → BLOCK (three-way merge must see removals)
 #   - Recreate + env → BLOCK by Recreate availability detection (client-side-dry-run)
-#   - shipped namespaced Role (with patch) allows the dry-run gate
+#   - shipped Role + Nodes ClusterRole allows the dry-run gate
+#   - SSA object (argocd-controller managedFields), no flag, identical → WARN (auto-detect)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -171,16 +172,17 @@ esac
 grep -q 'Recreate strategy terminates all pods' "$RECREATE_OUT/argo-impact.md" \
   || grep -q 'Recreate strategy terminates all pods' "$RECREATE_OUT/argo-impact.json"
 
-echo "==> shipped PreSync namespaced Role: SA with patch can run dry-run gate (identical → WARN/PASS)"
+echo "==> shipped PreSync Role + Nodes ClusterRole (identical → WARN/PASS)"
 kubectl apply -f "$SAME_DIR/app.yaml"
 kubectl -n shop rollout status deploy/api --timeout=180s
 kubectl -n shop create serviceaccount rehearsal-argo-presync --dry-run=client -o yaml | kubectl apply -f -
-# Apply Role into shop (rewrite default namespace in RoleBinding subject).
 grep -q 'kind: Role' "$RBAC_FILE"
+grep -q 'rehearsal-argo-presync-nodes' "$RBAC_FILE"
 grep -A3 'resources: \["deployments"' "$RBAC_FILE" | grep -q patch
+# Apply shipped rbac (Role is namespaced via -n; ClusterRole/Binding are cluster-scoped).
+kubectl apply -f "$RBAC_FILE"
 kubectl -n shop apply -f "$RBAC_FILE"
-# Fix RoleBinding subject namespace to shop.
-kubectl -n shop apply -f - <<EOF
+kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -194,20 +196,26 @@ subjects:
   - kind: ServiceAccount
     name: rehearsal-argo-presync
     namespace: shop
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rehearsal-argo-presync-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rehearsal-argo-presync-nodes
+subjects:
+  - kind: ServiceAccount
+    name: rehearsal-argo-presync
+    namespace: shop
 EOF
 kubectl auth can-i patch deployments -n shop --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
+kubectl auth can-i get nodes --as=system:serviceaccount:shop:rehearsal-argo-presync | grep -q yes
 
 RBAC_OUT="$OUT_ROOT/rbac-identical"
 mkdir -p "$RBAC_OUT"
-# Run under the PreSync SA token via impersonation is not enough for kubectl apply;
-# use a kubeconfig with the SA token.
-SA_SECRET=$(kubectl -n shop get sa rehearsal-argo-presync -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-if [[ -z "$SA_SECRET" ]]; then
-  # K8s 1.24+: create a token manually
-  TOKEN=$(kubectl -n shop create token rehearsal-argo-presync --duration=1h)
-else
-  TOKEN=$(kubectl -n shop get secret "$SA_SECRET" -o jsonpath='{.data.token}' | base64 -d)
-fi
+TOKEN=$(kubectl -n shop create token rehearsal-argo-presync --duration=1h)
 SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 CA=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
 KC="$RBAC_OUT/sa.kubeconfig"
@@ -231,7 +239,8 @@ users:
     token: ${TOKEN}
 EOF
 set +e
-"$BIN" argo-impact --live --kubeconfig "$KC" --desired-dir "$SAME_DIR" --namespace shop --app shop \
+"$BIN" argo-impact --live --kubeconfig "$KC" --live-namespace shop \
+  --desired-dir "$SAME_DIR" --namespace shop --app shop \
   --out "$RBAC_OUT" --quiet | tee "$RBAC_OUT/cli.txt"
 code=$?
 set -e
@@ -254,5 +263,44 @@ case "$meth" in
     ;;
 esac
 
+echo "==> SSA auto-detect: apply with argocd-controller, identical desired, no --server-side-apply → WARN"
+kubectl delete deploy -n shop api --wait=true --timeout=60s 2>/dev/null || true
+# Strip last-applied by using server-side apply with Argo's manager.
+kubectl apply --server-side --force-conflicts --field-manager=argocd-controller -f "$SAME_DIR/app.yaml"
+kubectl -n shop rollout status deploy/api --timeout=180s
+# Confirm managedFields visible only with --show-managed-fields (gate relies on this).
+kubectl -n shop get deploy api -o json --show-managed-fields | grep -q 'argocd-controller'
+
+SSA_OUT="$OUT_ROOT/ssa-identical"
+mkdir -p "$SSA_OUT"
+set +e
+"$BIN" argo-impact --live --desired-dir "$SAME_DIR" --namespace shop --app shop \
+  --out "$SSA_OUT" --quiet | tee "$SSA_OUT/cli.txt"
+code=$?
+set -e
+st=$(pdb_status "$SSA_OUT/argo-impact.json")
+meth=$(compare_method "$SSA_OUT/argo-impact.json" || true)
+echo "ssa-identical pdb-rollout status=$st method=$meth exit=$code"
+case "$st" in
+  WARN|PASS) ;;
+  *)
+    echo "FAIL: SSA auto-detect identical must WARN/PASS not BLOCK/UNKNOWN (got $st method=$meth)"
+    cat "$SSA_OUT/change.json" || true
+    cat "$SSA_OUT/argo-impact.md" || true
+    exit 1
+    ;;
+esac
+case "$meth" in
+  fail-closed)
+    echo "FAIL: SSA auto-detect must not fail-closed (no-last-applied); got method=$meth"
+    cat "$SSA_OUT/change.json" || true
+    exit 1
+    ;;
+esac
+# When dry-run compare attrs are present, they must show SSA (not client fail-closed).
+if [[ "$meth" != "MISSING" && -n "$meth" ]]; then
+  test "$meth" = "server-side-dry-run"
+fi
+
 echo "OK kind-rollout-template-e2e"
-echo "identical=$SAME_OUT env=$ENV_OUT env-removed=$ENV_RM_OUT recreate=$RECREATE_OUT rbac=$RBAC_OUT" | tee "$OUT_ROOT/results.txt"
+echo "identical=$SAME_OUT env=$ENV_OUT env-removed=$ENV_RM_OUT recreate=$RECREATE_OUT rbac=$RBAC_OUT ssa=$SSA_OUT" | tee "$OUT_ROOT/results.txt"
