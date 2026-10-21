@@ -174,14 +174,17 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 		return v
 	}
 
-	if requested == 0 {
+	needCPU, needMem := addedResourceDemand(ctx)
+	needsResources := needCPU > 0 || needMem > 0
+
+	if requested == 0 && !needsResources {
 		v.Status = Pass
-		v.Explanation = "no additional replica or surge demand vs baseline"
+		v.Explanation = "no additional replica, surge, or resource demand vs baseline"
 		v.Confidence = "high"
 		return v
 	}
 
-	if requested > capRes.Available {
+	if requested > 0 && requested > capRes.Available {
 		v.Status = Block
 		v.Explanation = fmt.Sprintf(
 			"unschedulable: need %d pods (delta %d + surge %d) but allocatable capacity is %d (%s)",
@@ -197,11 +200,213 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 		return v
 	}
 
+	// CPU/memory: missing pod requests count as 0 (scheduler semantics). Subtract
+	// demand for new/surge pods (and request increases) from free allocatable.
+	if needsResources {
+		if needCPU > 0 && !capRes.HaveCPU {
+			v.Status = Unknown
+			v.Explanation = "replica or request increase needs node allocatable CPU, but it is unreadable"
+			v.Missing = []string{"node.allocatable.cpu"}
+			v.Evidence = []string{capRes.Detail, fmt.Sprintf("needCPUMillis=%d", needCPU)}
+			v.Confidence = "low"
+			return v
+		}
+		if needMem > 0 && !capRes.HaveMemory {
+			v.Status = Unknown
+			v.Explanation = "replica or request increase needs node allocatable memory, but it is unreadable"
+			v.Missing = []string{"node.allocatable.memory"}
+			v.Evidence = []string{capRes.Detail, fmt.Sprintf("needMemoryBytes=%d", needMem)}
+			v.Confidence = "low"
+			return v
+		}
+		if needCPU > 0 && needCPU > capRes.AvailableCPUMillis {
+			v.Status = Block
+			v.Explanation = fmt.Sprintf(
+				"unschedulable: need %d CPU millicores for new/surge pods but only %d available",
+				needCPU, capRes.AvailableCPUMillis)
+			v.Evidence = []string{
+				fmt.Sprintf("needCPUMillis=%d availableCPUMillis=%d", needCPU, capRes.AvailableCPUMillis),
+				fmt.Sprintf("replica_delta=%d surge=%d", delta, surge),
+				capRes.Detail,
+			}
+			v.Affected = ctx.Change.Seeds
+			v.Confidence = "high"
+			return v
+		}
+		if needMem > 0 && needMem > capRes.AvailableMemoryBytes {
+			v.Status = Block
+			v.Explanation = fmt.Sprintf(
+				"unschedulable: need %d memory bytes for new/surge pods but only %d available",
+				needMem, capRes.AvailableMemoryBytes)
+			v.Evidence = []string{
+				fmt.Sprintf("needMemoryBytes=%d availableMemoryBytes=%d", needMem, capRes.AvailableMemoryBytes),
+				fmt.Sprintf("replica_delta=%d surge=%d", delta, surge),
+				capRes.Detail,
+			}
+			v.Affected = ctx.Change.Seeds
+			v.Confidence = "high"
+			return v
+		}
+	}
+
 	v.Status = Pass
-	v.Explanation = fmt.Sprintf("scheduling capacity sufficient (%d available for %d requested)", capRes.Available, requested)
+	if requested > 0 {
+		v.Explanation = fmt.Sprintf("scheduling capacity sufficient (%d available for %d requested)", capRes.Available, requested)
+	} else {
+		v.Explanation = "scheduling capacity sufficient for resource request increase"
+	}
 	v.Evidence = []string{capRes.Detail}
+	if needCPU > 0 {
+		v.Evidence = append(v.Evidence, fmt.Sprintf("needCPUMillis=%d availableCPUMillis=%d", needCPU, capRes.AvailableCPUMillis))
+	}
+	if needMem > 0 {
+		v.Evidence = append(v.Evidence, fmt.Sprintf("needMemoryBytes=%d availableMemoryBytes=%d", needMem, capRes.AvailableMemoryBytes))
+	}
 	v.Confidence = "high"
 	return v
+}
+
+// addedResourceDemand returns CPU/memory millicores/bytes required for new
+// replica+surge pods plus any per-replica request increase on unchanged counts.
+func addedResourceDemand(ctx Context) (cpuMillis, memBytes int64) {
+	if ctx.PropIdx == nil {
+		return 0, 0
+	}
+	for _, w := range ctx.PropIdx.ByKind[graph.KindWorkload] {
+		baseR := 0
+		var base *graph.Node
+		if ctx.BaseIdx != nil {
+			base = ctx.BaseIdx.ByID[w.ID]
+			if base != nil {
+				baseR = base.WorkloadReplicas()
+			}
+		}
+		rep := w.WorkloadReplicas()
+		pcpu, pmem := workloadPodRequests(w)
+		bcpu, bmem := 0, 0
+		if base != nil {
+			bcpu, bmem = workloadPodRequests(base)
+		}
+		extraPods := 0
+		if rep > baseR {
+			extraPods = (rep - baseR) + parseMaxSurge(w.AttrString("maxSurge"), rep)
+		}
+		if extraPods > 0 {
+			cpuMillis += int64(pcpu) * int64(extraPods)
+			memBytes += int64(pmem) * int64(extraPods)
+		}
+		// Same replica count (or remaining replicas) with higher requests.
+		stable := rep
+		if extraPods > 0 {
+			// Existing pods keep running during scale-up; their request delta also matters.
+			stable = baseR
+		}
+		if stable > 0 {
+			if pcpu > bcpu {
+				cpuMillis += int64(pcpu-bcpu) * int64(stable)
+			}
+			if pmem > bmem {
+				memBytes += int64(pmem-bmem) * int64(stable)
+			}
+		}
+	}
+	return cpuMillis, memBytes
+}
+
+func workloadPodRequests(w *graph.Node) (cpuMillis, memBytes int) {
+	if w == nil || w.Attributes == nil {
+		return 0, 0
+	}
+	if v := w.AttrInt("cpuRequestMillis"); v > 0 {
+		cpuMillis = v
+	}
+	if v := w.AttrInt("memoryRequestBytes"); v > 0 {
+		memBytes = v
+	}
+	spec := podTemplateSpec(w.Attributes)
+	if spec == nil {
+		return cpuMillis, memBytes
+	}
+	c, m := sumTemplateRequests(spec)
+	if c > cpuMillis {
+		cpuMillis = c
+	}
+	if m > memBytes {
+		memBytes = m
+	}
+	return cpuMillis, memBytes
+}
+
+func sumTemplateRequests(spec map[string]any) (cpuMillis, memBytes int) {
+	for _, key := range []string{"containers", "initContainers"} {
+		list, _ := spec[key].([]any)
+		for _, c := range list {
+			cm, _ := c.(map[string]any)
+			if cm == nil {
+				continue
+			}
+			res, _ := cm["resources"].(map[string]any)
+			if res == nil {
+				continue
+			}
+			req, _ := res["requests"].(map[string]any)
+			if req == nil {
+				continue
+			}
+			cpuMillis += parseCPUMillisAttr(req["cpu"])
+			memBytes += parseMemoryBytesAttr(req["memory"])
+		}
+	}
+	return cpuMillis, memBytes
+}
+
+func parseCPUMillisAttr(v any) int {
+	if v == nil {
+		return 0
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return 0
+	}
+	if strings.HasSuffix(s, "m") {
+		n, _ := strconv.Atoi(strings.TrimSuffix(s, "m"))
+		return n
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int(f * 1000)
+}
+
+func parseMemoryBytesAttr(v any) int {
+	if v == nil {
+		return 0
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return 0
+	}
+	mult := 1
+	for _, suf := range []struct {
+		s string
+		m int
+	}{
+		{"Ki", 1024}, {"Mi", 1024 * 1024}, {"Gi", 1024 * 1024 * 1024},
+		{"K", 1000}, {"M", 1000 * 1000}, {"G", 1000 * 1000 * 1000},
+		{"k", 1000},
+	} {
+		if strings.HasSuffix(s, suf.s) {
+			s = strings.TrimSuffix(s, suf.s)
+			mult = suf.m
+			break
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int(f * float64(mult))
 }
 
 // parseMaxSurge follows Kubernetes RollingUpdate semantics: percentage values

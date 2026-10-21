@@ -17,8 +17,16 @@ const (
 // Result is a capacity reading.
 type Result struct {
 	Available int
-	Source    string
-	Detail    string
+	// AvailableCPUMillis / AvailableMemoryBytes are free cluster resources after
+	// subtracting existing non-terminal pod requests (missing requests count as 0,
+	// matching the kube-scheduler). Negative means already overcommitted.
+	// Ok is false when node allocatable for that resource was not collected.
+	AvailableCPUMillis    int64
+	AvailableMemoryBytes  int64
+	HaveCPU               bool
+	HaveMemory            bool
+	Source                string
+	Detail                string
 }
 
 // Provider reads available pod/IP capacity from a snapshot.
@@ -26,7 +34,8 @@ type Provider interface {
 	Read(snap *graph.Snapshot) (Result, error)
 }
 
-// SchedulingEstimate uses node allocatablePods − occupied slots.
+// SchedulingEstimate uses node allocatablePods − occupied slots and
+// allocatable CPU/memory − sum of pod requests (missing requests = 0).
 // Prefers cluster-wide Pod counts when present (cross-namespace pressure);
 // otherwise falls back to desired workload replicas.
 // This is NOT real AWS VPC CNI free IP count.
@@ -57,7 +66,6 @@ func (SchedulingEstimate) Read(snap *graph.Snapshot) (Result, error) {
 	alloc, running := 0, 0
 	var allocCPU, allocMem, reqCPU, reqMem int64
 	haveCPU, haveMem := false, false
-	missingRequests := false
 	podCount := 0
 	for _, n := range snap.Nodes {
 		switch n.Kind {
@@ -77,20 +85,9 @@ func (SchedulingEstimate) Read(snap *graph.Snapshot) (Result, error) {
 				continue
 			}
 			podCount++
-			cpu := n.AttrInt("cpuRequestMillis")
-			mem := n.AttrInt("memoryRequestBytes")
-			if haveCPU && cpu <= 0 {
-				missingRequests = true
-			}
-			if haveMem && mem <= 0 {
-				missingRequests = true
-			}
-			if cpu > 0 {
-				reqCPU += int64(cpu)
-			}
-			if mem > 0 {
-				reqMem += int64(mem)
-			}
+			// Missing requests count as 0 — same as the kube-scheduler.
+			reqCPU += int64(n.AttrInt("cpuRequestMillis"))
+			reqMem += int64(n.AttrInt("memoryRequestBytes"))
 		case graph.KindWorkload:
 			if hasPods {
 				continue // pods already account for occupancy/requests
@@ -99,14 +96,6 @@ func (SchedulingEstimate) Read(snap *graph.Snapshot) (Result, error) {
 			running += reps
 			cpu := n.AttrInt("cpuRequestMillis")
 			mem := n.AttrInt("memoryRequestBytes")
-			if reps > 0 && (haveCPU || haveMem) {
-				if cpu <= 0 && haveCPU {
-					missingRequests = true
-				}
-				if mem <= 0 && haveMem {
-					missingRequests = true
-				}
-			}
 			if cpu > 0 {
 				reqCPU += int64(cpu) * int64(reps)
 			}
@@ -121,11 +110,6 @@ func (SchedulingEstimate) Read(snap *graph.Snapshot) (Result, error) {
 	if alloc == 0 && !haveCPU && !haveMem {
 		return Result{Source: SourceUnknown, Detail: "no node allocatablePods"}, fmt.Errorf("no capacity data")
 	}
-	if (haveCPU || haveMem) && missingRequests && !hasPods {
-		return Result{Source: SourceUnknown, Detail: "workloads missing cpu/memory requests while nodes expose allocatable resources"}, fmt.Errorf("missing resource requests")
-	}
-	// With cluster-wide pods, missing requests on some pods is common (pause); still
-	// use pod-slot occupancy. CPU/mem only tighten when we have complete request data.
 	avail := alloc - running
 	if avail < 0 {
 		avail = 0
@@ -136,29 +120,30 @@ func (SchedulingEstimate) Read(snap *graph.Snapshot) (Result, error) {
 	} else {
 		detail += " (workload replicas)"
 	}
-	if haveCPU && (!hasPods || !missingRequests) {
-		cpuAvail := allocCPU - reqCPU
-		if cpuAvail < 0 {
-			avail = 0
-			detail += fmt.Sprintf("; cpuMillis over by %d", -cpuAvail)
-		} else {
-			detail += fmt.Sprintf("; cpuMillis avail=%d", cpuAvail)
-		}
-	}
-	if haveMem && (!hasPods || !missingRequests) {
-		memAvail := allocMem - reqMem
-		if memAvail < 0 {
-			avail = 0
-			detail += fmt.Sprintf("; memoryBytes over by %d", -memAvail)
-		} else {
-			detail += fmt.Sprintf("; memoryBytes avail=%d", memAvail)
-		}
-	}
-	return Result{
+	r := Result{
 		Available: avail,
+		HaveCPU:   haveCPU,
+		HaveMemory: haveMem,
 		Source:    SourceSchedulingEstimate,
-		Detail:    detail,
-	}, nil
+	}
+	if haveCPU {
+		r.AvailableCPUMillis = allocCPU - reqCPU
+		if r.AvailableCPUMillis < 0 {
+			detail += fmt.Sprintf("; cpuMillis over by %d", -r.AvailableCPUMillis)
+		} else {
+			detail += fmt.Sprintf("; cpuMillis avail=%d", r.AvailableCPUMillis)
+		}
+	}
+	if haveMem {
+		r.AvailableMemoryBytes = allocMem - reqMem
+		if r.AvailableMemoryBytes < 0 {
+			detail += fmt.Sprintf("; memoryBytes over by %d", -r.AvailableMemoryBytes)
+		} else {
+			detail += fmt.Sprintf("; memoryBytes avail=%d", r.AvailableMemoryBytes)
+		}
+	}
+	r.Detail = detail
+	return r, nil
 }
 
 // CNIExplicit reads a real CNI capacity source injected into meta

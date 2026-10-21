@@ -262,6 +262,16 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 				if p, ok := cap["pods"]; ok {
 					attrs["allocatablePods"] = asInt(p)
 				}
+				if c, ok := cap["cpu"]; ok {
+					if m := parseCPUMillis(c); m > 0 {
+						attrs["allocatableCPUMillis"] = m
+					}
+				}
+				if m, ok := cap["memory"]; ok {
+					if b := parseMemoryBytes(m); b > 0 {
+						attrs["allocatableMemoryBytes"] = b
+					}
+				}
 			}
 		}
 		// Always record labels (even empty) so scheduling detectors can distinguish

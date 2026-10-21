@@ -6,14 +6,29 @@ Kubernetes manifests that run `rehearsal argo-presync` as an Argo CD **PreSync**
 
 | File | Role |
 | ---- | ---- |
-| `serviceaccount.yaml` | Non-root Job identity (PreSync hook) |
-| `rbac.yaml` | **Default** namespaced Role/RoleBinding (`patch` for dryRun=All) as PreSync hooks |
-| `rbac-nodes.yaml` | **Default** ClusterRole (Nodes + Pods get/list/watch) + **namespace-unique** ClusterRoleBinding — normal resources, **not** hooks |
-| `rbac-cluster.yaml` | **Opt-in** ClusterRole for namespaces/PVs + Applications (break-glass); Helm `argoPresync.clusterRBAC=true` |
-| `job.yaml` | `argocd.argoproj.io/hook: PreSync`, `hook-delete-policy: BeforeHookCreation` |
-| `kustomization.yaml` | Kustomize entrypoint; rewrites Binding name to `…-in-<namespace>` |
+| `base/` | ServiceAccount, Role/RoleBinding (hooks), per-ns ClusterRole/Binding (Nodes + Pods list), Job |
+| `base/rbac-cluster.yaml` | **Opt-in** per-namespace ClusterRole for namespaces/PVs + Applications; Helm `argoPresync.clusterRBAC=true` |
+| `overlays/example/` | Documented install: set `namespace:` + replacements → `…-in-<ns>` |
 
-Provide ConfigMap `rehearsal-argo-presync-desired` with the proposed app YAML (mounted at `/gate/desired`). Set `namespace:` in kustomization (or Helm release namespace) to the Application destination — the ClusterRoleBinding becomes `rehearsal-argo-presync-nodes-in-<ns>` so a second-namespace install does not overwrite the first.
+## Install (kustomize overlay)
+
+Do **not** only edit `namespace:` on a remote base that already ran replacements. Use an overlay so the rename runs with your destination namespace:
+
+```bash
+cp -r deploy/argo-presync/overlays/example deploy/argo-presync/overlays/shop
+# edit overlays/shop/kustomization.yaml → namespace: shop
+kubectl apply -k deploy/argo-presync/overlays/shop
+```
+
+That produces `rehearsal-argo-presync-nodes-in-shop` (ClusterRole **and** Binding). A second overlay with `namespace: shop2` keeps both installs' node/pod access.
+
+Provide ConfigMap `rehearsal-argo-presync-desired` with the proposed app YAML (mounted at `/gate/desired`).
+
+## Cluster-wide pod list (capacity) — security trade-off
+
+Default ClusterRole includes `pods` with verb **`list` only** (no `get`/`watch`) so scheduling-capacity can see cross-namespace pressure. A cluster-wide pod list returns **full pod specs**, including literal `env` values (credentials sometimes land there). This tool does not persist those values into snapshots (only name/namespace/phase/node/requests), but anyone who can run a pod as `rehearsal-argo-presync` in the app namespace can still list them via the API.
+
+**Keep the default** if you want capacity checks for CPU/memory/slots. To disable: remove the `pods` rule from the ClusterRole (or omit `rbac-nodes.yaml` pods access). Without cluster-wide pods, scale / request increases fail closed as **UNKNOWN** (never a false PASS).
 
 ## AppProject `clusterResourceWhitelist`
 
@@ -27,7 +42,7 @@ clusterResourceWhitelist:
     kind: ClusterRoleBinding
 ```
 
-Hook-only whitelists are no longer required for these objects.
+Each Application owns its own `…-in-<ns>` ClusterRole (not shared), so one app's prune/delete does not remove another's.
 
 ## Helm
 
@@ -36,6 +51,8 @@ helm template r deploy/helm/architecture-rehearsal \
   --set api.token=dev \
   --set argoPresync.enabled=true
 ```
+
+Helm names ClusterRole and Binding with `-in-{{ .Release.Namespace }}`.
 
 ## Image
 

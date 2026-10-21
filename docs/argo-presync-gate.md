@@ -57,11 +57,13 @@ With `--live`, the gate dry-runs desired workloads the same way the sync will ap
 
 **Change scope vs live collect:** `--namespace` scopes the change envelope only (it does **not** narrow inventory). Live namespaced inventory is limited only by `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE` (PreSync sets this to the Job namespace). **Nodes and Pods are always fetched cluster-wide** (best-effort) so scheduling-capacity sees cross-namespace pressure. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
 
-**Default RBAC**:
-- namespaced `Role` + `RoleBinding` as PreSync hooks (`deploy/argo-presync/rbac.yaml`) — inventory get/list/watch + workload `patch` for `dryRun=All`
-- minimal `ClusterRole` + **namespace-unique** `ClusterRoleBinding` as normal Application resources (`deploy/argo-presync/rbac-nodes.yaml`) — **Nodes and Pods** get/list/watch (not PreSync hooks)
+**Default RBAC** — install via an **overlay** that sets `namespace:` (see `deploy/argo-presync/overlays/example`); do not rely on editing only the base:
+- namespaced `Role` + `RoleBinding` as PreSync hooks (`rbac.yaml`)
+- per-namespace `ClusterRole` + `ClusterRoleBinding` (`…-nodes-in-<ns>`) as normal resources (`rbac-nodes.yaml`) — Nodes get/list/watch, Pods **list** only
 
-**Opt-in cluster RBAC** (`deploy/argo-presync/rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): Namespaces / PVs and Argo `applications` (break-glass); also normal resources with a namespace-unique Binding.
+**Opt-in cluster RBAC** (`rbac-cluster.yaml`, Helm `argoPresync.clusterRBAC=true`): Namespaces / PVs and Argo `applications`; also per-namespace `…-cluster-in-<ns>`.
+
+**Cluster-wide pod list trade-off:** `pods/list` returns full specs (including literal env). Snapshots keep only name/namespace/phase/node/requests for foreign pods, but the SA can still list specs via the API. Remove the pods rule to disable; capacity then fails closed as **UNKNOWN** when slots/requests are needed.
 
 **AppProject whitelist** (cluster-scoped objects are synced as normal resources, not hooks):
 
@@ -73,7 +75,7 @@ clusterResourceWhitelist:
     kind: ClusterRoleBinding
 ```
 
-If Nodes cannot be read and the sync does **not** *change* scheduling-relevant fields versus live (nodeSelector, affinity, tolerations, topologySpreadConstraints, resource requests, or replica increases), `scheduling-capacity` returns **PASS** with a note; if it does change them, **UNKNOWN** (fail closed). Unchanged affinity/requests on an env-only patch do not count. If cluster-wide Pods cannot be listed and the change needs new pod slots or higher requests, the detector returns **UNKNOWN** (never a false PASS on incomplete occupancy).
+If Nodes cannot be read and the sync does **not** *change* scheduling-relevant fields versus live (nodeSelector, affinity, tolerations, topologySpreadConstraints, resource requests, or replica increases), `scheduling-capacity` returns **PASS** with a note; if it does change them, **UNKNOWN** (fail closed). Unchanged affinity/requests on an env-only patch do not count. If cluster-wide Pods cannot be listed and the change needs new pod slots or higher requests, the detector returns **UNKNOWN** (never a false PASS on incomplete occupancy). Pods without requests count as **0** (scheduler semantics); new/surge pod requests are subtracted from free allocatable CPU/memory and **BLOCK** when they do not fit. **UNKNOWN** for resources only when node allocatable CPU/memory is unreadable.
 
 Without `last-applied-configuration` in client mode, removals cannot be predicted. The gate fails closed with a distinct reason (`cannot predict removals: live object has no last-applied-configuration …`). If the rollout strategy itself is safe, `pdb-rollout` reports **UNKNOWN** (not a false “pods to 0” BLOCK).
 

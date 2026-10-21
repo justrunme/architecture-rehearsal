@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No namespace here — set it in an overlay so ClusterRole/Binding renames run
+# with the destination namespace (see ../overlays/example).
+resources:
+  - serviceaccount.yaml
+  - rbac.yaml
+  - rbac-nodes.yaml
+  - job.yaml
+# Optional: add rbac-cluster.yaml in the overlay and extend replacements.

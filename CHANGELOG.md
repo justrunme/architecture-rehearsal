@@ -18,12 +18,13 @@ Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
 - Apply mode auto-detects Argo SSA from live `managedFields` (`argocd-controller` + `Apply`) via `kubectl get --show-managed-fields`; `--server-side-apply` still forces SSA
 - `--namespace` scopes the change only (does not narrow inventory); namespaced inventory via `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE`; live collect always fetches **Nodes and Pods** cluster-wide so capacity sees cross-namespace pressure
 - `scheduling-capacity`: occupancy prefers cluster Pod counts; if Pods cannot be listed and the change needs new slots/requests → UNKNOWN (never false PASS); no Nodes + sync does not *change* scheduling fields vs live → PASS with note; changed fields → UNKNOWN
+- `scheduling-capacity`: pods without requests count as 0; free CPU/memory = node allocatable − sum(requests); new/surge pod requests are subtracted and **BLOCK** when they do not fit (UNKNOWN only if node allocatable CPU/memory is unreadable)
 - Scheduling relevance is a **diff** of nodeSelector/affinity/tolerations/requests/replicas vs live (presence alone no longer forces UNKNOWN)
 - `strategy.type: Recreate` treated as availability 0: template change → BLOCK; unchanged / Recreate-only → WARN (`Recreate strategy terminates all pods before starting new ones; availability drops to 0 during rollout`)
 - If the template is unchanged versus live, a dangerous RollingUpdate strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
 - When remaining available pods are > 0 but below PDB `minAvailable` (e.g. 99% → 1 left vs minAvailable=2), message reads `rollout can drop available pods to N, below the minAvailable=M your PDB declares (PDBs do not enforce this during rollouts)` and stays BLOCK when the sync triggers a rollout
-- PreSync default RBAC: namespaced Role/Binding as hooks; ClusterRole (Nodes+Pods) + namespace-unique ClusterRoleBinding as **normal** resources (not hooks); Applications/namespaces/PVs remain Helm opt-in (`argoPresync.clusterRBAC`)
-- CI kind job `argo-rollout-template-kind-e2e`: identical → WARN/PASS; env add/remove → BLOCK; Recreate+env → BLOCK; SSA auto-detect identical → WARN; shipped Role+Nodes RBAC works; cross-namespace capacity BLOCK under `--namespace`; multi-tenant ClusterRoleBinding keeps both namespaces' node access
+- PreSync default RBAC: namespaced Role/Binding as hooks; **per-namespace** ClusterRole (Nodes get/list/watch, Pods **list** only) + Binding as normal resources via overlay (`overlays/example`); Applications/namespaces/PVs remain Helm opt-in (`argoPresync.clusterRBAC`)
+- CI kind job `argo-rollout-template-kind-e2e`: identical → WARN/PASS; env add/remove → BLOCK; Recreate+env → BLOCK; SSA auto-detect identical → WARN; cross-namespace pod-slot and CPU capacity BLOCK; two README-style overlays both keep node/pod access
 
 ### Tests
 - Positive/negative nodeSelector tests; rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixtures

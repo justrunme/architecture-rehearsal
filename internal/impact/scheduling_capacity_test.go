@@ -249,3 +249,120 @@ func TestScheduling_UnchangedNodeSelector_NoNodes_Passes(t *testing.T) {
 		t.Fatalf("unchanged nodeSelector + env + no nodes want PASS, got %s: %s", v.Status, v.Explanation)
 	}
 }
+
+func TestScheduling_CPUHogBlocksScale(t *testing.T) {
+	// VERIFY-8 F: hog uses most CPU; pods without requests must not skip the check.
+	// Scale 3→6 at 150m with maxSurge 25% needs 5*150=750m; free=550 → BLOCK.
+	base := &graph.Snapshot{
+		ID: "cpuhog", Phase: graph.PhaseBaseline,
+		Meta: map[string]any{"pods_collect_ok": true, "nodes_collect_ok": true, "pdbsCollected": true},
+		Nodes: []graph.Node{
+			{ID: "cluster/c", Kind: graph.KindCluster, Name: "c"},
+			{ID: "node/n1", Kind: graph.KindNode, Name: "n1", Attributes: map[string]any{
+				"allocatablePods":        110,
+				"allocatableCPUMillis":   8000,
+				"allocatableMemoryBytes": 16 * 1024 * 1024 * 1024,
+				"labels":                 map[string]any{"kubernetes.io/os": "linux"},
+			}},
+			{ID: "workload/shop/api", Kind: graph.KindWorkload, Name: "api", Namespace: "shop",
+				Attributes: map[string]any{
+					"replicas": 3, "type": "Deployment", "maxSurge": "25%",
+					"podTemplate": map[string]any{
+						"spec": map[string]any{
+							"containers": []any{
+								map[string]any{
+									"name": "api",
+									"resources": map[string]any{
+										"requests": map[string]any{"cpu": "150m", "memory": "64Mi"},
+									},
+								},
+							},
+						},
+					},
+				}},
+			{ID: "pod/kube-system/kube-proxy", Kind: graph.KindPod, Namespace: "kube-system", Name: "kube-proxy",
+				Attributes: map[string]any{"phase": "Running"}},
+			{ID: "pod/other/hog", Kind: graph.KindPod, Namespace: "other", Name: "hog",
+				Attributes: map[string]any{"phase": "Running", "cpuRequestMillis": 6900}},
+			{ID: "pod/shop/api-0", Kind: graph.KindPod, Namespace: "shop", Name: "api-0",
+				Attributes: map[string]any{"phase": "Running", "cpuRequestMillis": 150}},
+			{ID: "pod/shop/api-1", Kind: graph.KindPod, Namespace: "shop", Name: "api-1",
+				Attributes: map[string]any{"phase": "Running", "cpuRequestMillis": 150}},
+			{ID: "pod/shop/api-2", Kind: graph.KindPod, Namespace: "shop", Name: "api-2",
+				Attributes: map[string]any{"phase": "Running", "cpuRequestMillis": 150}},
+		},
+	}
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "scale-cpu", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas": 6, "maxSurge": "25%",
+				"podTemplate": map[string]any{
+					"spec": map[string]any{
+						"containers": []any{
+							map[string]any{
+								"name": "api",
+								"resources": map[string]any{
+									"requests": map[string]any{"cpu": "150m", "memory": "64Mi"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	v := impact.SchedulingCapacity{}.Evaluate(schedulingCtx(base, ch))
+	if v.Status != impact.Block {
+		t.Fatalf("CPU hog + scale want BLOCK, got %s: %s evidence=%v", v.Status, v.Explanation, v.Evidence)
+	}
+	if !strings.Contains(v.Explanation, "CPU") && !strings.Contains(strings.Join(v.Evidence, " "), "CPU") {
+		t.Fatalf("expected CPU in explanation/evidence, got %q %v", v.Explanation, v.Evidence)
+	}
+}
+
+func TestScheduling_CPUAllocUnreadable_Unknown(t *testing.T) {
+	base := &graph.Snapshot{
+		ID: "cpu-unk", Phase: graph.PhaseBaseline,
+		Meta: map[string]any{"pods_collect_ok": true, "pdbsCollected": true},
+		Nodes: []graph.Node{
+			{ID: "cluster/c", Kind: graph.KindCluster, Name: "c"},
+			{ID: "node/n1", Kind: graph.KindNode, Name: "n1", Attributes: map[string]any{
+				"allocatablePods": 110,
+				// no allocatableCPUMillis
+				"labels": map[string]any{"kubernetes.io/os": "linux"},
+			}},
+			{ID: "workload/shop/api", Kind: graph.KindWorkload, Name: "api", Namespace: "shop",
+				Attributes: map[string]any{"replicas": 3, "type": "Deployment", "maxSurge": "25%"}},
+			{ID: "pod/shop/api-0", Kind: graph.KindPod, Attributes: map[string]any{"phase": "Running"}},
+		},
+	}
+	ch := &loader.ChangeEnvelope{
+		Kind: "argo-sync", ID: "scale", Facts: map[string]any{"scenario": "argo-impact"},
+		Seeds: []string{"workload/shop/api"},
+		PatchNodes: []graph.Node{{
+			ID: "workload/shop/api",
+			Attributes: map[string]any{
+				"replicas": 6, "maxSurge": "25%",
+				"podTemplate": map[string]any{
+					"spec": map[string]any{
+						"containers": []any{
+							map[string]any{
+								"name": "api",
+								"resources": map[string]any{
+									"requests": map[string]any{"cpu": "150m"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	v := impact.SchedulingCapacity{}.Evaluate(schedulingCtx(base, ch))
+	if v.Status != impact.Unknown {
+		t.Fatalf("missing allocatable CPU + scale with requests want UNKNOWN, got %s: %s", v.Status, v.Explanation)
+	}
+}

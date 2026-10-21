@@ -52,20 +52,24 @@ subjects:
     name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
     namespace: {{ .Release.Namespace }}
 ---
-# Default: minimal Nodes+Pods ClusterRole (scheduling-capacity). Always enabled.
-# ClusterRole/Binding are normal chart resources (not PreSync hooks). Binding name
-# includes the release namespace so a second-namespace install does not steal it.
+# Default: per-namespace Nodes+Pods ClusterRole (scheduling-capacity). Always enabled.
+# ClusterRole/Binding are normal chart resources (not PreSync hooks), named with the
+# release namespace so installs neither collide nor share a pruneable ClusterRole.
+# Pods: list only (see docs — cluster-wide list exposes pod specs / env literals).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes-in-{{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
     app.kubernetes.io/component: argo-presync-gate
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "pods"]
+    resources: ["nodes"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -77,7 +81,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-nodes-in-{{ .Release.Namespace }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
@@ -87,7 +91,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster-in-{{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ include "architecture-rehearsal.fullname" . }}
     app.kubernetes.io/component: argo-presync-gate
@@ -109,7 +113,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster
+  name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync-cluster-in-{{ .Release.Namespace }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
