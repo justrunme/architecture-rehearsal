@@ -23,7 +23,7 @@ Each detector returns **PASS / WARN / BLOCK / UNKNOWN** with explanation and con
 | `scheduling-capacity` | New replicas vs node allocatable; topologySpreadConstraints; affinity/anti-affinity; taints |
 | `pvc-zone-conflict` | PVC vs node affinity / storage class zone conflicts |
 | `networkpolicy-cut` | NetworkPolicy change cutting a known `DEPENDS_ON` edge (e.g. app → postgres) |
-| `pdb-rollout` | PDB violation by the rollout (`maxUnavailable` vs `minAvailable`) |
+| `pdb-rollout` | Rollout that can leave 0 available pods, and/or drop below PDB `minAvailable` (note: PDBs do **not** limit Deployment rollouts — they only gate evictions) |
 | `blast-radius` | Other workloads affected via graph edges |
 
 **Rule:** missing data → **UNKNOWN**, never silent PASS (ADR-0001).
@@ -177,7 +177,7 @@ gate=BLOCK detectors: PASS=3 WARN=1 BLOCK=1 UNKNOWN=0
 |----------|--------|------------|-------------|
 | `blast-radius` | **WARN** | medium | blast radius includes 1 dependent workload |
 | `networkpolicy-cut` | **PASS** | high | no NetworkPolicy changes in the proposed sync |
-| `pdb-rollout` | **BLOCK** | high | rollout would violate PodDisruptionBudget (maxUnavailable vs minAvailable) |
+| `pdb-rollout` | **BLOCK** | high | rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts |
 | `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
 | `scheduling-capacity` | **PASS** | high | no additional replica or surge demand vs baseline |
 
@@ -189,7 +189,7 @@ gate=BLOCK detectors: PASS=3 WARN=1 BLOCK=1 UNKNOWN=0
 ## Predicted failures
 
 - [WARN] blast radius includes 1 dependent workload
-- [BLOCK] rollout would violate PodDisruptionBudget (maxUnavailable vs minAvailable)
+- [BLOCK] rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts
 
 ## Missing data
 
