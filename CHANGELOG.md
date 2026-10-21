@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- Live snapshot now captures Node `metadata.labels` and `spec.taints`; `scheduling-capacity` BLOCKs nodeSelector only when no node matches, and returns UNKNOWN (not BLOCK) when node label data is absent (fixes false BLOCK on `kubernetes.io/os: linux`)
+- `pdb-rollout`: Kubernetes RollingUpdate rounding — percent `maxUnavailable` floors, percent `maxSurge` ceils, defaults 25%/25% (so 25% of 3 replicas → 0 unavailable)
+- `pdb-rollout`: BLOCK when a rollout can leave 0 available pods even without a PDB (`maxUnavailable` ≥ replicas / 100% with `maxSurge` 0)
+- `pdb-rollout` messages state plainly that PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)
+
+### Tests
+- Positive/negative nodeSelector tests (matching linux PASS, `node-pool: high-mem` BLOCK, missing labels UNKNOWN)
+- Rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixture scenarios in `e2e_argo_impact`
+
 ## [1.7.1] - 2026-10-20
 
 ### Fixed
