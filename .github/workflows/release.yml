@@ -81,6 +81,13 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.ps }}:${{ steps.meta.outputs.ver }}
             ${{ steps.meta.outputs.ps }}:latest
+      - name: Smoke-test presync image per platform
+        run: |
+          set -euo pipefail
+          img="${{ steps.meta.outputs.ps }}@${{ steps.build-ps.outputs.digest }}"
+          for p in amd64 arm64; do
+            docker run --rm --platform "linux/${p}" --entrypoint sh "$img" -c 'rehearsal version && kubectl version --client'
+          done
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
