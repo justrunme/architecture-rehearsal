@@ -55,7 +55,7 @@ With `--live`, the gate dry-runs desired workloads the same way the sync will ap
 
 `kubectl apply --dry-run=server` issues a **patch** with `dryRun=All`. The shipped Role therefore grants `patch` on `deployments`, `statefulsets`, and `daemonsets` in the Application destination namespace. Dry-run does **not** mutate cluster objects: on kind verification, Deployment `resourceVersion` / `generation` were unchanged after every `--live` run.
 
-**Change scope vs live collect:** `--namespace` / `REHEARSAL_LIVE_NAMESPACE` scopes the change envelope and namespaced inventory. Nodes are **always** fetched cluster-wide (best-effort) so scheduling-capacity can run. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
+**Change scope vs live collect:** `--namespace` scopes the change envelope. Live inventory for that namespace is collected with `-n` (plus optional `--live-namespace` / `REHEARSAL_LIVE_NAMESPACE`), while **Nodes are always fetched cluster-wide** (best-effort) so scheduling-capacity can run. kubectl get for dry-run compare uses `--show-managed-fields` so Argo SSA (`argocd-controller` Apply) is auto-detected.
 
 **Default RBAC** (`deploy/argo-presync/rbac.yaml`):
 - namespaced `Role` + `RoleBinding` (inventory get/list/watch + workload `patch` for `dryRun=All`)

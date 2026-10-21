@@ -91,11 +91,23 @@ func cmdArgoImpact(args []string) int {
 				return 5
 			}
 		} else if *live {
-			// --namespace scopes the change envelope only.
-			// --live-namespace (optional) scopes namespaced inventory; Nodes always fetched.
+			// Inventory namespace is independent of change scope, but when the
+			// change is limited to a namespace we default inventory to that NS
+			// (plus cluster Nodes) so unrelated cluster workloads do not WARN.
+			// Nodes are always fetched cluster-wide inside K8sFromLive.
+			invNS := *liveNamespace
+			if invNS == "" && *namespace != "" {
+				for _, p := range strings.Split(*namespace, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						invNS = p
+						break
+					}
+				}
+			}
 			snap, err := collect.K8sFromLive(nil, collect.LiveOptions{
 				Cluster: *cluster, Kubeconfig: *kubeconfig, Context: *kubeContext,
-				Namespace: *liveNamespace,
+				Namespace: invNS,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "baseline live: %v\n", err)
