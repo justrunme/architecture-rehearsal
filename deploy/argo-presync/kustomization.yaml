@@ -3,5 +3,7 @@ kind: Kustomization
 # Intentionally broken: do not `kubectl apply -k deploy/argo-presync`.
 # Copy overlays/example, set namespace:, and apply that directory instead.
 # See README.md (migration from the pre-1.8.0 root path).
-resources:
-  - USE-overlays-example-NOT-this-root-SEE-README
+#
+# The unknown field below makes `kustomize build` / `kubectl apply -k` fail with a
+# clear first line (no evalsymlink noise from a missing resource path).
+Do-not-apply-this-root-copy-overlays-example-SEE-README: true

@@ -85,8 +85,8 @@ func TestNodeSelector_UnknownPoolBlocks(t *testing.T) {
 		t.Fatalf("node-pool=high-mem with no such node want BLOCK, got %s: %s", v.Status, v.Explanation)
 	}
 	joined := strings.Join(v.Evidence, " ")
-	if !strings.Contains(joined, "matches zero nodes") {
-		t.Fatalf("evidence should mention zero nodes, got %v", v.Evidence)
+	if !strings.Contains(joined, "no eligible nodes") && !strings.Contains(joined, "matches zero nodes") {
+		t.Fatalf("evidence should mention no eligible/zero nodes, got %v", v.Evidence)
 	}
 }
 
@@ -111,8 +111,8 @@ func TestScheduling_NoNodesUnchanged_PassesWithNote(t *testing.T) {
 	if v.Status != impact.Pass {
 		t.Fatalf("unchanged + no nodes want PASS, got %s: %s", v.Status, v.Explanation)
 	}
-	if !strings.Contains(v.Explanation, "does not touch scheduling") {
-		t.Fatalf("want note about untouched scheduling, got %q", v.Explanation)
+	if !strings.Contains(v.Explanation, "does not need capacity") && !strings.Contains(v.Explanation, "does not touch scheduling") {
+		t.Fatalf("want note about no capacity/scheduling need, got %q", v.Explanation)
 	}
 }
 

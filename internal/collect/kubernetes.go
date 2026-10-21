@@ -288,6 +288,9 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			attrs["labels"] = map[string]any{}
 		}
 		if spec, ok := obj["spec"].(map[string]any); ok {
+			if u, ok := spec["unschedulable"].(bool); ok && u {
+				attrs["schedulable"] = false
+			}
 			if taints, ok := spec["taints"].([]any); ok && len(taints) > 0 {
 				attrs["taints"] = taints
 			}

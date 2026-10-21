@@ -77,7 +77,7 @@ clusterResourceWhitelist:
     kind: ClusterRoleBinding
 ```
 
-If Nodes cannot be read and the sync does **not** *change* scheduling-relevant fields versus live (nodeSelector, affinity, tolerations, topologySpreadConstraints, resource requests, or replica increases), `scheduling-capacity` returns **PASS** with a note; if it does change them, **UNKNOWN** (fail closed). Unchanged affinity/requests on an env-only patch do not count. If cluster-wide Pods cannot be listed and the change needs new pod slots or higher requests, the detector returns **UNKNOWN** (never a false PASS on incomplete occupancy). Pods without requests count as **0** (scheduler semantics); new/surge pod requests are subtracted from free allocatable CPU/memory and **BLOCK** when they do not fit. **UNKNOWN** for resources only when node allocatable CPU/memory is unreadable.
+If Nodes or cluster-wide Pods cannot be read and the sync needs **new pod slots** (RollingUpdate surge on a template change, or a replica increase) or **higher requests**, `scheduling-capacity` returns **UNKNOWN** (never a false PASS/ALLOW). Env-only with `maxSurge: 0` and unchanged scheduling fields still **PASS** with a note when Nodes are absent. Unchanged affinity/requests on an env-only patch do not count as a scheduling-field change. Pods without requests count as **0** (scheduler semantics). Placement uses **per-node** free capacity on **eligible** nodes only (nodeSelector + required nodeAffinity + NoSchedule/NoExecute tolerations + not cordoned); a tainted control-plane with a roomy worker does not false-BLOCK. Pending pods (empty `nodeName`) are charged to the node with the most free CPU. New/surge pod requests **BLOCK** when they do not fit on eligible nodes. **UNKNOWN** for resources only when node allocatable CPU/memory is unreadable. A no-op sync (no template change, no replica/request increase) never **BLOCK**s on capacity.
 
 Without `last-applied-configuration` in client mode, removals cannot be predicted. The gate fails closed with a distinct reason (`cannot predict removals: live object has no last-applied-configuration …`). If the rollout strategy itself is safe, `pdb-rollout` reports **UNKNOWN** (not a false “pods to 0” BLOCK).
 
@@ -87,7 +87,7 @@ Without `last-applied-configuration` in client mode, removals cannot be predicte
 
 ### Kustomize / raw manifests
 
-See [`deploy/argo-presync/`](../deploy/argo-presync/) and `overlays/example`: copy the overlay, set `namespace:` to the Application destination, apply with `kubectl apply -k`. Provide ConfigMap `rehearsal-argo-presync-desired`. Optionally include `base/rbac-cluster.yaml` in the overlay.
+See [`deploy/argo-presync/`](../deploy/argo-presync/) and `overlays/example`: copy the overlay, set `namespace:` to the Application destination, apply with `kubectl apply -k`. Provide ConfigMap `rehearsal-argo-presync-desired`. Optionally enable Component `components/rbac-cluster` in the overlay.
 
 ### Helm
 

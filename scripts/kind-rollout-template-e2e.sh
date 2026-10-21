@@ -10,8 +10,9 @@
 #   - cross-namespace pod pressure BLOCKs scale under --namespace/--live-namespace
 #   - CPU hog in other ns BLOCKs scale (missing requests do not skip CPU check)
 #   - G: template change counts surge → BLOCK; H: plain scale no surge → PASS
+#   - M: control-plane NoSchedule taint must not false-BLOCK no-op capacity
 #   - two README-style overlays keep distinct per-ns ClusterRole + Binding
-#   - components/rbac-cluster builds; root kustomize path fails
+#   - components/rbac-cluster builds; root kustomize path fails clearly
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -555,11 +556,17 @@ echo "$cluster_built" | grep -q 'rehearsal-argo-presync-cluster-in-shop'
 echo "$cluster_built" | grep -q 'rehearsal-argo-presync-nodes-in-shop'
 kubectl apply -k "$CLUSTER_OV"
 rm -rf "$CLUSTER_OV"
-# Root path must fail loudly (migration).
-if kubectl kustomize "$ROOT/deploy/argo-presync" >/dev/null 2>&1; then
+# Root path must fail loudly with a clear first-line migration marker.
+root_err=$(kubectl kustomize "$ROOT/deploy/argo-presync" 2>&1 >/dev/null || true)
+if [[ -z "$root_err" ]]; then
   echo "FAIL: root deploy/argo-presync must not build (use overlays/example)"
   exit 1
 fi
+echo "$root_err" | head -1 | grep -q 'Do-not-apply-this-root-copy-overlays-example-SEE-README' || {
+  echo "FAIL: root kustomize error must mention Do-not-apply-this-root-copy-overlays-example-SEE-README"
+  echo "$root_err" | head -5
+  exit 1
+}
 
 echo "==> G: template change counts surge; H: plain scale does not"
 # free_cpu_millis: allocatable − Σ requests of non-terminal pods (init=max, containers=sum).
@@ -724,6 +731,42 @@ PY
 echo "H scheduling-capacity=$h_st free=$(free_cpu_millis)m"
 test "$h_st" = "PASS"
 kubectl -n other delete deploy hog --wait=false 2>/dev/null || true
+
+echo "==> M: control-plane NoSchedule must not false-BLOCK no-op capacity"
+# Restore baseline while the node is still schedulable, then re-apply the CP taint
+# (kind single-node removes it by default). Running pods stay; no-op must PASS.
+kubectl apply -f "$SAME_DIR/app.yaml"
+kubectl -n shop rollout status deploy/api --timeout=180s
+CP_NODE=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+kubectl taint nodes "$CP_NODE" node-role.kubernetes.io/control-plane=:NoSchedule --overwrite
+M_OUT="$OUT_ROOT/m-taint-noop"
+mkdir -p "$M_OUT"
+set +e
+"$BIN" argo-impact --live --desired-dir "$SAME_DIR" --namespace shop --live-namespace shop --app shop \
+  --out "$M_OUT" --quiet | tee "$M_OUT/cli.txt"
+set -e
+m_st=$(python3 - "$M_OUT/argo-impact.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for det in d.get("detectors",[]):
+  if det.get("detector")=="scheduling-capacity":
+    print(det.get("status","")); raise SystemExit
+print("MISSING")
+PY
+)
+m_expl=$(python3 - "$M_OUT/argo-impact.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for det in d.get("detectors",[]):
+  if det.get("detector")=="scheduling-capacity":
+    print(det.get("explanation","")); raise SystemExit
+print("")
+PY
+)
+echo "M scheduling-capacity=$m_st expl=$m_expl"
+test "$m_st" = "PASS"
+# Remove taint so later cleanup / host reuse is not stuck.
+kubectl taint nodes "$CP_NODE" node-role.kubernetes.io/control-plane=:NoSchedule- 2>/dev/null || true
 
 echo "OK kind-rollout-template-e2e"
 echo "identical=$SAME_OUT env=$ENV_OUT env-removed=$ENV_RM_OUT recreate=$RECREATE_OUT rbac=$RBAC_OUT ssa=$SSA_OUT xns=$XNS_OUT cpu=$CPU_OUT" | tee "$OUT_ROOT/results.txt"

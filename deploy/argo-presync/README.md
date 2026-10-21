@@ -12,7 +12,7 @@ Kubernetes manifests that run `rehearsal argo-presync` as an Argo CD **PreSync**
 
 ## Migration (1.8.0)
 
-**Do not** `kubectl apply -k deploy/argo-presync` (root). That path now **fails at build** on purpose — the old root alias produced `…-nodes-in-default` with subject `default`, so a second namespace install stole the binding and Argo `destination.namespace` left the gate without Nodes/Pods access.
+**Do not** `kubectl apply -k deploy/argo-presync` (root). That path now **fails at build** on purpose (first error line: `Do-not-apply-this-root-copy-overlays-example-SEE-README`) — the old root alias produced `…-nodes-in-default` with subject `default`, so a second namespace install stole the binding and Argo `destination.namespace` left the gate without Nodes/Pods access.
 
 **Before:** Application/path pointed at `deploy/argo-presync` (or wrapped it with only `namespace:`).  
 **After:** copy `overlays/example`, set `namespace:` to the Application destination, point Argo at that overlay directory.
@@ -51,7 +51,9 @@ Keep the `replacements` targets for `rehearsal-argo-presync-cluster-in-default` 
 
 Default ClusterRole grants **`list` only** on Nodes and Pods (no `get`/`watch`). A cluster-wide pod list returns **full pod specs**, including literal `env` values. This tool does not persist those values into snapshots (only name/namespace/phase/node/requests), but anyone who can run a pod as `rehearsal-argo-presync` can still list them via the API.
 
-**Keep the default** for capacity checks. To disable: remove the `pods` rule. Without cluster-wide pods, scale / request / surge demand fails closed as **UNKNOWN**.
+**Keep the default** for capacity checks. To disable: remove the `pods` rule. Without cluster-wide **nodes or pods**, any sync that needs new slots (surge on template change or replica increase) or higher requests fails closed as **UNKNOWN**.
+
+Pending pods (not yet bound) are charged against the node with the most free CPU when estimating per-node fit.
 
 ## AppProject `clusterResourceWhitelist`
 

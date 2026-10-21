@@ -44,38 +44,36 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 	prov := capacity.SchedulingEstimate{}
 	capRes, capErr := prov.Read(ctx.Baseline)
 	nodes := ctx.BaseIdx.ByKind[graph.KindNode]
-	hasTaints := false
 	hasZone := false
 	for _, n := range nodes {
 		if n.AttrString("zone") != "" {
 			hasZone = true
 		}
-		if _, ok := n.Attributes["taints"]; ok {
-			hasTaints = true
-		}
 	}
 
-	// No Nodes in baseline: only fail closed when this sync changes scheduling-relevant fields.
+	needsCap := changeNeedsCapacity(ctx)
+
+	// No Nodes in baseline: fail closed when slots/requests are needed OR scheduling fields change.
 	if len(nodes) == 0 {
-		if changeTouchesScheduling(ctx) {
+		if needsCap || changeTouchesScheduling(ctx) {
 			v.Status = Unknown
-			v.Explanation = "scheduling-relevant change but no Node objects in baseline"
+			v.Explanation = "scheduling capacity or scheduling-relevant change needs Node objects, but none are in baseline"
 			v.Missing = []string{"nodes"}
-			v.Evidence = []string{nodesAbsentNote(ctx)}
+			v.Evidence = []string{nodesAbsentNote(ctx), fmt.Sprintf("replica_delta=%d surge=%d requested=%d", delta, surge, requested)}
 			v.Confidence = "low"
 			return v
 		}
 		v.Status = Pass
-		v.Explanation = "no Node objects in baseline; change does not touch scheduling-relevant fields"
+		v.Explanation = "no Node objects in baseline; change does not need capacity or touch scheduling-relevant fields"
 		v.Evidence = []string{nodesAbsentNote(ctx)}
 		v.Confidence = "medium"
 		return v
 	}
 
 	// Cluster-wide pods unread: never PASS a capacity check on incomplete occupancy.
-	if changeNeedsCapacity(ctx) && clusterPodsUnreadable(ctx) {
+	if needsCap && clusterPodsUnreadable(ctx) {
 		v.Status = Unknown
-		v.Explanation = "replica or request increase needs cluster-wide pod inventory for capacity, but pods could not be listed"
+		v.Explanation = "replica, surge, or request increase needs cluster-wide pod inventory for capacity, but pods could not be listed"
 		v.Missing = []string{"pods"}
 		v.Evidence = []string{podsAbsentNote(ctx), fmt.Sprintf("replica_delta=%d surge=%d requested=%d", delta, surge, requested)}
 		v.Confidence = "low"
@@ -85,7 +83,6 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 	// Topology / affinity checks on proposed workloads.
 	topoIssues := []string{}
 	affinityIssues := []string{}
-	taintIssues := []string{}
 	for _, w := range ctx.PropIdx.ByKind[graph.KindWorkload] {
 		if w.AttrBool("hasTopologySpread") {
 			if !hasZone {
@@ -102,7 +99,7 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 				}
 			}
 		}
-		if ns, ok := w.Attributes["nodeSelector"].(map[string]any); ok && len(ns) > 0 {
+		if sel := workloadNodeSelector(w); len(sel) > 0 {
 			if !nodesHaveLabelData(nodes) {
 				v.Status = Unknown
 				v.Explanation = "nodeSelector present but node label data is absent from the snapshot"
@@ -110,22 +107,15 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 				v.Confidence = "low"
 				return v
 			}
-			match := 0
-			for _, n := range nodes {
-				if nodeMatchesSelector(n, ns) {
-					match++
-				}
-			}
-			if match == 0 {
-				affinityIssues = append(affinityIssues,
-					fmt.Sprintf("%s: nodeSelector matches zero nodes", display(ctx.PropIdx, w.ID)))
-			}
 		}
-		if hasTaints {
-			// If nodes declare taints and workload has no tolerations for them.
-			if !workloadTolerates(w, nodes) {
-				taintIssues = append(taintIssues,
-					fmt.Sprintf("%s: no toleration for node taints", display(ctx.PropIdx, w.ID)))
+		// Require ≥1 eligible node when this sync needs placement OR changes
+		// selector/affinity/tolerations. Pure no-ops never BLOCK on capacity/taints
+		// (a tainted control-plane must not fail a 3→3 with a roomy worker).
+		if workloadNeedsPlacement(ctx, w) || workloadEligibilitySpecChanged(ctx, w) {
+			elig := filterEligibleNodes(nodes, w)
+			if len(elig) == 0 {
+				affinityIssues = append(affinityIssues,
+					fmt.Sprintf("%s: no eligible nodes (nodeSelector/affinity/taints/cordon)", display(ctx.PropIdx, w.ID)))
 			}
 		}
 	}
@@ -141,16 +131,9 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 
 	if len(affinityIssues) > 0 {
 		v.Status = Block
-		v.Explanation = "affinity/nodeSelector would leave pods unschedulable"
+		v.Explanation = "no eligible nodes for new/surge pods (selector, affinity, taints, or cordon)"
 		v.Evidence = affinityIssues
 		v.Affected = componentIDs(ctx.PropIdx, affinityIssues)
-		v.Confidence = "high"
-		return v
-	}
-	if len(taintIssues) > 0 {
-		v.Status = Block
-		v.Explanation = "node taints without matching tolerations would block scheduling"
-		v.Evidence = taintIssues
 		v.Confidence = "high"
 		return v
 	}
@@ -177,8 +160,10 @@ func (d SchedulingCapacity) Evaluate(ctx Context) Verdict {
 	v.Status = Pass
 	if requested > 0 {
 		v.Explanation = fmt.Sprintf("scheduling capacity sufficient (%d new pods: delta %d + surge %d)", requested, delta, surge)
-	} else {
+	} else if needsCap {
 		v.Explanation = "scheduling capacity sufficient for resource request increase"
+	} else {
+		v.Explanation = "scheduling capacity sufficient"
 	}
 	v.Evidence = []string{capRes.Detail}
 	v.Evidence = append(v.Evidence, fit.Evidence...)
@@ -275,7 +260,7 @@ func evaluatePerNodeFit(ctx Context, nodes []*graph.Node, capRes capacity.Result
 		placed := false
 		for j := range free {
 			n := &free[j]
-			if d.Selector != nil && !nodeMatchesSelector(n.node, d.Selector) {
+			if d.Workload != nil && !nodeEligibleForWorkload(n.node, d.Workload) {
 				continue
 			}
 			if n.pods < 1 {
@@ -309,7 +294,7 @@ func evaluatePerNodeFit(ctx Context, nodes []*graph.Node, capRes capacity.Result
 
 type podDemand struct {
 	CPU, Mem int64
-	Selector map[string]any
+	Workload *graph.Node
 }
 
 func collectPodDemands(ctx Context) []podDemand {
@@ -321,12 +306,8 @@ func collectPodDemands(ctx Context) []podDemand {
 		delta, surge := workloadPodDemand(ctx, w)
 		extra := delta + surge
 		pcpu, pmem := workloadPodRequests(w)
-		var sel map[string]any
-		if ns, ok := w.Attributes["nodeSelector"].(map[string]any); ok && len(ns) > 0 {
-			sel = ns
-		}
 		for i := 0; i < extra; i++ {
-			out = append(out, podDemand{CPU: int64(pcpu), Mem: int64(pmem), Selector: sel})
+			out = append(out, podDemand{CPU: int64(pcpu), Mem: int64(pmem), Workload: w})
 		}
 		// Request increase on pods that keep running (stable replicas).
 		baseR := 0
@@ -356,7 +337,7 @@ func collectPodDemands(ctx Context) []podDemand {
 			// Model as needing to place the delta on nodes that already host
 			// those replicas — conservatively require free capacity for the increase.
 			for i := 0; i < stable; i++ {
-				out = append(out, podDemand{CPU: dCPU, Mem: dMem, Selector: sel})
+				out = append(out, podDemand{CPU: dCPU, Mem: dMem, Workload: w})
 			}
 		}
 	}
@@ -592,10 +573,9 @@ func parseMaxSurge(ms string, replicas int) int {
 	return v
 }
 
-// changeTouchesScheduling reports whether this sync CHANGES fields that need
-// Node inventory when Nodes are absent: scheduling field DIFF or replica
-// increases. Template-only changes (env) that only imply surge are not included
-// here so env-only without Nodes stays PASS-with-note.
+// changeTouchesScheduling reports whether this sync CHANGES scheduling fields
+// that need Node inventory when Nodes are absent (selector/affinity/tolerations/
+// topology/requests DIFF, replica increases, or new workloads).
 func changeTouchesScheduling(ctx Context) bool {
 	if schedulingFieldsDiffer(ctx) {
 		return true
@@ -604,7 +584,8 @@ func changeTouchesScheduling(ctx Context) bool {
 }
 
 // changeNeedsCapacity is true when the sync needs new pod slots (delta and/or
-// surge from a template change) or higher requests — used when pods are unread.
+// surge from a template change) or higher requests. Used when nodes or pods
+// cannot be read — never false-PASS/ALLOW a change that needs placement.
 func changeNeedsCapacity(ctx Context) bool {
 	if ctx.Change == nil {
 		return false
@@ -965,6 +946,19 @@ func nodesHaveLabelData(nodes []*graph.Node) bool {
 }
 
 func nodeMatchesSelector(n *graph.Node, sel map[string]any) bool {
+	labels := nodeLabels(n)
+	for k, v := range sel {
+		if fmt.Sprint(labels[k]) != fmt.Sprint(v) {
+			return false
+		}
+	}
+	return true
+}
+
+func nodeLabels(n *graph.Node) map[string]any {
+	if n == nil || n.Attributes == nil {
+		return map[string]any{}
+	}
 	labels, _ := n.Attributes["labels"].(map[string]any)
 	if labels == nil {
 		labels = map[string]any{}
@@ -975,51 +969,325 @@ func nodeMatchesSelector(n *graph.Node, sel map[string]any) bool {
 			labels["topology.kubernetes.io/zone"] = z
 		}
 	}
-	for k, v := range sel {
-		if fmt.Sprint(labels[k]) != fmt.Sprint(v) {
+	return labels
+}
+
+func workloadNeedsPlacement(ctx Context, w *graph.Node) bool {
+	if w == nil {
+		return false
+	}
+	d, s := workloadPodDemand(ctx, w)
+	if d+s > 0 {
+		return true
+	}
+	var base *graph.Node
+	if ctx.BaseIdx != nil {
+		base = ctx.BaseIdx.ByID[w.ID]
+	}
+	return requestsIncreased(w.Attributes, base)
+}
+
+func workloadEligibilitySpecChanged(ctx Context, w *graph.Node) bool {
+	if w == nil {
+		return false
+	}
+	var baseAttrs map[string]any
+	if ctx.BaseIdx != nil {
+		if bn := ctx.BaseIdx.ByID[w.ID]; bn != nil {
+			baseAttrs = bn.Attributes
+		}
+	}
+	desired := map[string]any{}
+	live := map[string]any{}
+	for _, key := range []string{"nodeSelector", "affinity", "tolerations"} {
+		if v := schedulingFingerprintField(w.Attributes, key); v != nil {
+			desired[key] = v
+		}
+		if v := schedulingFingerprintField(baseAttrs, key); v != nil {
+			live[key] = v
+		}
+	}
+	return schedulingFingerprintChanged(desired, live)
+}
+
+func schedulingFingerprintField(attrs map[string]any, key string) any {
+	if attrs == nil {
+		return nil
+	}
+	if v, ok := attrs[key]; ok {
+		return v
+	}
+	if spec := podTemplateSpec(attrs); spec != nil {
+		if v, ok := spec[key]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func filterEligibleNodes(nodes []*graph.Node, w *graph.Node) []*graph.Node {
+	var out []*graph.Node
+	for _, n := range nodes {
+		if nodeEligibleForWorkload(n, w) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// nodeEligibleForWorkload mirrors kube-scheduler predicates we model: not cordoned,
+// matches nodeSelector, matches required nodeAffinity, tolerates NoSchedule/NoExecute.
+func nodeEligibleForWorkload(n, w *graph.Node) bool {
+	if n == nil || w == nil {
+		return false
+	}
+	if !nodeIsSchedulable(n) {
+		return false
+	}
+	if sel := workloadNodeSelector(w); len(sel) > 0 {
+		if !nodeMatchesSelector(n, sel) {
+			return false
+		}
+	}
+	if !nodeMatchesRequiredAffinity(n, workloadAffinity(w)) {
+		return false
+	}
+	return nodeToleratedByWorkload(n, w)
+}
+
+func nodeIsSchedulable(n *graph.Node) bool {
+	if n == nil || n.Attributes == nil {
+		return true
+	}
+	if v, ok := n.Attributes["schedulable"]; ok {
+		switch t := v.(type) {
+		case bool:
+			return t
+		case string:
+			return !strings.EqualFold(t, "false")
+		}
+	}
+	return true
+}
+
+func workloadNodeSelector(w *graph.Node) map[string]any {
+	if w == nil {
+		return nil
+	}
+	if ns, ok := w.Attributes["nodeSelector"].(map[string]any); ok && len(ns) > 0 {
+		return ns
+	}
+	if spec := podTemplateSpec(w.Attributes); spec != nil {
+		if ns, ok := spec["nodeSelector"].(map[string]any); ok && len(ns) > 0 {
+			return ns
+		}
+	}
+	return nil
+}
+
+func workloadAffinity(w *graph.Node) map[string]any {
+	if w == nil {
+		return nil
+	}
+	if a, ok := w.Attributes["affinity"].(map[string]any); ok {
+		return a
+	}
+	if spec := podTemplateSpec(w.Attributes); spec != nil {
+		if a, ok := spec["affinity"].(map[string]any); ok {
+			return a
+		}
+	}
+	return nil
+}
+
+func workloadTolerations(w *graph.Node) []any {
+	if w == nil {
+		return nil
+	}
+	if t, ok := w.Attributes["tolerations"].([]any); ok {
+		return t
+	}
+	if spec := podTemplateSpec(w.Attributes); spec != nil {
+		if t, ok := spec["tolerations"].([]any); ok {
+			return t
+		}
+	}
+	return nil
+}
+
+func nodeMatchesRequiredAffinity(n *graph.Node, aff map[string]any) bool {
+	if len(aff) == 0 {
+		return true
+	}
+	na, _ := aff["nodeAffinity"].(map[string]any)
+	if len(na) == 0 {
+		return true
+	}
+	req, _ := na["requiredDuringSchedulingIgnoredDuringExecution"].(map[string]any)
+	if len(req) == 0 {
+		return true
+	}
+	terms, _ := req["nodeSelectorTerms"].([]any)
+	if len(terms) == 0 {
+		return true
+	}
+	labels := nodeLabels(n)
+	for _, term := range terms {
+		tm, _ := term.(map[string]any)
+		if tm == nil {
+			continue
+		}
+		if nodeSelectorTermMatches(n, labels, tm) {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeSelectorTermMatches(n *graph.Node, labels map[string]any, term map[string]any) bool {
+	exprs, _ := term["matchExpressions"].([]any)
+	for _, e := range exprs {
+		em, _ := e.(map[string]any)
+		if em == nil || !matchExpressionMatches(labels, em) {
+			return false
+		}
+	}
+	fields, _ := term["matchFields"].([]any)
+	for _, e := range fields {
+		em, _ := e.(map[string]any)
+		if em == nil {
+			return false
+		}
+		// Only metadata.name is commonly used; treat unknown fields as non-match.
+		key := fmt.Sprint(em["key"])
+		if key != "metadata.name" {
+			return false
+		}
+		name := ""
+		if n != nil {
+			name = n.Name
+		}
+		if !matchExpressionMatches(map[string]any{key: name}, map[string]any{
+			"key": key, "operator": em["operator"], "values": em["values"],
+		}) {
 			return false
 		}
 	}
 	return true
 }
 
-func workloadTolerates(w *graph.Node, nodes []*graph.Node) bool {
-	tols, _ := w.Attributes["tolerations"].([]any)
-	for _, n := range nodes {
-		raw, ok := n.Attributes["taints"].([]any)
-		if !ok || len(raw) == 0 {
-			continue
+func matchExpressionMatches(labels map[string]any, expr map[string]any) bool {
+	key := fmt.Sprint(expr["key"])
+	op := fmt.Sprint(expr["operator"])
+	vals, _ := expr["values"].([]any)
+	lv, has := labels[key]
+	ls := fmt.Sprint(lv)
+	switch op {
+	case "In":
+		if !has {
+			return false
 		}
-		for _, t := range raw {
-			tm, _ := t.(map[string]any)
-			if tm == nil {
-				continue
+		for _, v := range vals {
+			if ls == fmt.Sprint(v) {
+				return true
 			}
-			key := fmt.Sprint(tm["key"])
-			effect := fmt.Sprint(tm["effect"])
-			if effect == "" {
-				effect = "NoSchedule"
-			}
-			if effect != "NoSchedule" && effect != "NoExecute" {
-				continue
-			}
-			okTol := false
-			for _, tol := range tols {
-				tolm, _ := tol.(map[string]any)
-				if tolm == nil {
-					continue
-				}
-				if fmt.Sprint(tolm["key"]) == key {
-					okTol = true
-					break
-				}
-			}
-			if !okTol {
+		}
+		return false
+	case "NotIn":
+		if !has {
+			return true
+		}
+		for _, v := range vals {
+			if ls == fmt.Sprint(v) {
 				return false
 			}
 		}
+		return true
+	case "Exists":
+		return has
+	case "DoesNotExist":
+		return !has
+	case "Gt", "Lt":
+		if !has {
+			return false
+		}
+		li, err1 := strconv.ParseInt(ls, 10, 64)
+		if err1 != nil || len(vals) == 0 {
+			return false
+		}
+		ri, err2 := strconv.ParseInt(fmt.Sprint(vals[0]), 10, 64)
+		if err2 != nil {
+			return false
+		}
+		if op == "Gt" {
+			return li > ri
+		}
+		return li < ri
+	default:
+		return false
+	}
+}
+
+func nodeToleratedByWorkload(n, w *graph.Node) bool {
+	if n == nil {
+		return false
+	}
+	raw, ok := n.Attributes["taints"].([]any)
+	if !ok || len(raw) == 0 {
+		return true
+	}
+	tols := workloadTolerations(w)
+	for _, t := range raw {
+		tm, _ := t.(map[string]any)
+		if tm == nil {
+			continue
+		}
+		effect := fmt.Sprint(tm["effect"])
+		if effect == "" {
+			effect = "NoSchedule"
+		}
+		if effect != "NoSchedule" && effect != "NoExecute" {
+			continue
+		}
+		if !tolerationAllows(tols, tm, effect) {
+			return false
+		}
 	}
 	return true
+}
+
+func tolerationAllows(tols []any, taint map[string]any, effect string) bool {
+	tKey := fmt.Sprint(taint["key"])
+	tVal := fmt.Sprint(taint["value"])
+	for _, tol := range tols {
+		tolm, _ := tol.(map[string]any)
+		if tolm == nil {
+			continue
+		}
+		tolEffect := fmt.Sprint(tolm["effect"])
+		if tolEffect != "" && tolEffect != effect {
+			continue
+		}
+		op := fmt.Sprint(tolm["operator"])
+		if op == "" {
+			op = "Equal"
+		}
+		tolKey := fmt.Sprint(tolm["key"])
+		// Empty key + Exists → tolerate everything.
+		if tolKey == "" && strings.EqualFold(op, "Exists") {
+			return true
+		}
+		if tolKey != tKey {
+			continue
+		}
+		if strings.EqualFold(op, "Exists") {
+			return true
+		}
+		if fmt.Sprint(tolm["value"]) == tVal {
+			return true
+		}
+	}
+	return false
 }
 
 func display(idx *graph.Index, id string) string {
