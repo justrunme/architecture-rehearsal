@@ -9,7 +9,8 @@ import (
 )
 
 // ApplyLiveTemplateCompare overrides podTemplateChanged on the change envelope
-// using server-side dry-run apply against the live cluster. Dry-run failures
+// using apply dry-run against the live cluster (client-side three-way by default,
+// or SSA with argocd-controller when Mode=ApplyServerSide). Dry-run failures
 // fail closed (Changed=true).
 //
 // When dry-run reports Changed=false for a workload that was only patched for

@@ -12,31 +12,56 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// KubectlOptions controls server-side dry-run apply via kubectl.
+// ApplyMode selects how the live template dry-run mimics the sync tool.
+type ApplyMode string
+
+const (
+	// ApplyClientSide is Argo CD's default sync: client-side three-way merge
+	// using kubectl.kubernetes.io/last-applied-configuration.
+	ApplyClientSide ApplyMode = "client"
+	// ApplyServerSide is Argo CD ServerSideApply=true: SSA with Argo's manager.
+	ApplyServerSide ApplyMode = "ssa"
+)
+
+// DefaultArgoFieldManager is Argo CD's server-side apply field manager.
+const DefaultArgoFieldManager = "argocd-controller"
+
+const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
+// KubectlOptions controls dry-run apply via kubectl.
 type KubectlOptions struct {
 	Kubectl    string
 	Kubeconfig string
 	Context    string
 	Timeout    time.Duration
-	// FieldManager is passed to server-side apply (default "rehearsal").
+	// Mode defaults to ApplyClientSide (kubectl apply --dry-run=server).
+	Mode ApplyMode
+	// FieldManager is used only for ApplyServerSide (default argocd-controller).
 	FieldManager string
 }
 
-// ServerSideDryRunTemplate applies obj with --server-side --dry-run=server and
-// returns the resulting spec.template (with API defaults filled in).
-func ServerSideDryRunTemplate(ctx context.Context, obj map[string]any, opts KubectlOptions) (map[string]any, error) {
+func (o *KubectlOptions) normalize() {
+	if o.Kubectl == "" {
+		o.Kubectl = "kubectl"
+	}
+	if o.Timeout <= 0 {
+		o.Timeout = 60 * time.Second
+	}
+	if o.Mode == "" {
+		o.Mode = ApplyClientSide
+	}
+	if o.FieldManager == "" {
+		o.FieldManager = DefaultArgoFieldManager
+	}
+}
+
+// DryRunTemplate applies obj the same way the sync will, with --dry-run=server,
+// and returns the resulting spec.template.
+func DryRunTemplate(ctx context.Context, obj map[string]any, opts KubectlOptions) (map[string]any, error) {
 	if obj == nil {
 		return nil, fmt.Errorf("podtemplate: nil object for dry-run")
 	}
-	if opts.Kubectl == "" {
-		opts.Kubectl = "kubectl"
-	}
-	if opts.FieldManager == "" {
-		opts.FieldManager = "rehearsal"
-	}
-	if opts.Timeout <= 0 {
-		opts.Timeout = 60 * time.Second
-	}
+	opts.normalize()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -47,21 +72,24 @@ func ServerSideDryRunTemplate(ctx context.Context, obj map[string]any, opts Kube
 	if err != nil {
 		return nil, err
 	}
-	args := []string{
-		"apply",
-		"--server-side",
-		"--force-conflicts",
-		"--field-manager", opts.FieldManager,
-		"--dry-run=server",
-		"-o", "json",
-		"-f", "-",
+	args := []string{"apply", "--dry-run=server", "-o", "json", "-f", "-"}
+	switch opts.Mode {
+	case ApplyServerSide:
+		args = []string{
+			"apply",
+			"--server-side",
+			"--force-conflicts",
+			"--field-manager", opts.FieldManager,
+			"--dry-run=server",
+			"-o", "json",
+			"-f", "-",
+		}
+	case ApplyClientSide:
+		// default args above: client-side three-way when last-applied is present
+	default:
+		return nil, fmt.Errorf("podtemplate: unknown apply mode %q", opts.Mode)
 	}
-	if opts.Kubeconfig != "" {
-		args = append([]string{"--kubeconfig", opts.Kubeconfig}, args...)
-	}
-	if opts.Context != "" {
-		args = append([]string{"--context", opts.Context}, args...)
-	}
+	args = prependKubeArgs(args, opts)
 	cmd := exec.CommandContext(cctx, opts.Kubectl, args...)
 	cmd.Stdin = bytes.NewReader(raw)
 	var stdout, stderr bytes.Buffer
@@ -72,52 +100,27 @@ func ServerSideDryRunTemplate(ctx context.Context, obj map[string]any, opts Kube
 		if len(msg) > 400 {
 			msg = msg[:400] + "…"
 		}
-		return nil, fmt.Errorf("kubectl server-side dry-run: %w: %s", err, msg)
+		return nil, fmt.Errorf("kubectl %s dry-run: %w: %s", opts.Mode, err, msg)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		return nil, fmt.Errorf("decode dry-run result: %w", err)
-	}
-	spec, _ := out["spec"].(map[string]any)
-	if spec == nil {
-		return nil, fmt.Errorf("dry-run result missing spec")
-	}
-	tpl, _ := spec["template"].(map[string]any)
-	if tpl == nil {
-		return nil, fmt.Errorf("dry-run result missing spec.template")
-	}
-	return CloneMap(tpl), nil
+	return templateFromJSON(stdout.Bytes())
 }
 
-// LiveGetTemplate fetches the live Deployment/StatefulSet/DaemonSet template.
-func LiveGetTemplate(ctx context.Context, kind, ns, name string, opts KubectlOptions) (map[string]any, error) {
-	if opts.Kubectl == "" {
-		opts.Kubectl = "kubectl"
-	}
-	if opts.Timeout <= 0 {
-		opts.Timeout = 60 * time.Second
-	}
+// ServerSideDryRunTemplate is kept for callers; it forces ApplyServerSide.
+func ServerSideDryRunTemplate(ctx context.Context, obj map[string]any, opts KubectlOptions) (map[string]any, error) {
+	opts.Mode = ApplyServerSide
+	return DryRunTemplate(ctx, obj, opts)
+}
+
+// LiveGetObject returns the full live object JSON as a map.
+func LiveGetObject(ctx context.Context, kind, ns, name string, opts KubectlOptions) (map[string]any, error) {
+	opts.normalize()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
-	resource := strings.ToLower(kind)
-	switch resource {
-	case "deployment", "deploy":
-		resource = "deploy"
-	case "statefulset", "sts":
-		resource = "sts"
-	case "daemonset", "ds":
-		resource = "ds"
-	}
-	args := []string{"get", resource, name, "-n", ns, "-o", "json"}
-	if opts.Kubeconfig != "" {
-		args = append([]string{"--kubeconfig", opts.Kubeconfig}, args...)
-	}
-	if opts.Context != "" {
-		args = append([]string{"--context", opts.Context}, args...)
-	}
+	resource := resourceName(kind)
+	args := prependKubeArgs([]string{"get", resource, name, "-n", ns, "-o", "json"}, opts)
 	cmd := exec.CommandContext(cctx, opts.Kubectl, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -133,7 +136,16 @@ func LiveGetTemplate(ctx context.Context, kind, ns, name string, opts KubectlOpt
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		return nil, err
 	}
-	spec, _ := out["spec"].(map[string]any)
+	return out, nil
+}
+
+// LiveGetTemplate fetches the live workload pod template.
+func LiveGetTemplate(ctx context.Context, kind, ns, name string, opts KubectlOptions) (map[string]any, error) {
+	obj, err := LiveGetObject(ctx, kind, ns, name, opts)
+	if err != nil {
+		return nil, err
+	}
+	spec, _ := obj["spec"].(map[string]any)
 	if spec == nil {
 		return nil, fmt.Errorf("live object missing spec")
 	}
@@ -142,4 +154,66 @@ func LiveGetTemplate(ctx context.Context, kind, ns, name string, opts KubectlOpt
 		return nil, fmt.Errorf("live object missing spec.template")
 	}
 	return CloneMap(tpl), nil
+}
+
+// HasLastAppliedConfiguration reports whether the live object has the
+// kubectl last-applied-configuration annotation required for three-way merge.
+func HasLastAppliedConfiguration(obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	meta, _ := obj["metadata"].(map[string]any)
+	if meta == nil {
+		return false
+	}
+	ann, _ := meta["annotations"].(map[string]any)
+	if ann == nil {
+		return false
+	}
+	v, ok := ann[lastAppliedAnnotation]
+	if !ok {
+		return false
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	return s != "" && s != "<nil>"
+}
+
+func templateFromJSON(raw []byte) (map[string]any, error) {
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode dry-run result: %w", err)
+	}
+	spec, _ := out["spec"].(map[string]any)
+	if spec == nil {
+		return nil, fmt.Errorf("dry-run result missing spec")
+	}
+	tpl, _ := spec["template"].(map[string]any)
+	if tpl == nil {
+		return nil, fmt.Errorf("dry-run result missing spec.template")
+	}
+	return CloneMap(tpl), nil
+}
+
+func resourceName(kind string) string {
+	switch strings.ToLower(kind) {
+	case "deployment", "deploy":
+		return "deploy"
+	case "statefulset", "sts":
+		return "sts"
+	case "daemonset", "ds":
+		return "ds"
+	default:
+		return strings.ToLower(kind)
+	}
+}
+
+func prependKubeArgs(args []string, opts KubectlOptions) []string {
+	out := args
+	if opts.Kubeconfig != "" {
+		out = append([]string{"--kubeconfig", opts.Kubeconfig}, out...)
+	}
+	if opts.Context != "" {
+		out = append([]string{"--context", opts.Context}, out...)
+	}
+	return out
 }

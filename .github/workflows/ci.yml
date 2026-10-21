@@ -203,8 +203,9 @@ jobs:
           path: out/argo-presync-e2e/
           if-no-files-found: ignore
 
-  # Live template compare: server-side dry-run must not false-BLOCK identical desired
-  # (httpGet.scheme / configMap defaultMode / resources) and must BLOCK on env change.
+  # Live template compare: client-side apply dry-run must not false-BLOCK identical desired
+  # (httpGet.scheme / configMap defaultMode / resources), must BLOCK on env add/remove and
+  # Recreate switch, and shipped PreSync RBAC (patch) must allow the dry-run.
   argo-rollout-template-kind-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 25

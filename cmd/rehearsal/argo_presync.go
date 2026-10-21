@@ -48,7 +48,7 @@ func cmdArgoPresync(args []string) int {
 	revision := fs.String("revision", envOr("ARGOCD_APP_REVISION", ""), "target revision")
 	desiredDir := fs.String("desired-dir", "", "pre-rendered desired manifests directory")
 	baseline := fs.String("baseline", "", "baseline snapshot JSON")
-	live := fs.Bool("live", false, "collect live baseline via kubectl (read-only)")
+	live := fs.Bool("live", false, "collect live baseline via kubectl; template compare uses apply --dry-run=server (needs patch)")
 	cluster := fs.String("cluster", "cluster", "cluster name for live snapshot")
 	namespace := fs.String("namespace", "", "limit manifest scope to namespace(s), comma-separated")
 	allowRemove := fs.Bool("allow-remove", false, "allow removals within scope")
@@ -56,6 +56,7 @@ func cmdArgoPresync(args []string) int {
 	outDir := fs.String("out", "/tmp/argo-presync", "scratch output directory (emptyDir when read-only rootfs)")
 	annotationsFile := fs.String("annotations-file", "", "Application annotations JSON object (tests / offline)")
 	skipAppAnnot := fs.Bool("skip-app-annotations", false, "do not fetch Application annotations from the API")
+	serverSideApply := fs.Bool("server-side-apply", false, "use SSA dry-run with field manager argocd-controller (Argo ServerSideApply=true)")
 	timeout := fs.Duration("timeout", 120*time.Second, "maximum gate runtime (fail closed on exceed)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -70,6 +71,7 @@ func cmdArgoPresync(args []string) int {
 			cluster: *cluster, namespace: *namespace, allowRemove: *allowRemove,
 			changeID: *changeID, outDir: *outDir,
 			annotationsFile: *annotationsFile, skipAppAnnot: *skipAppAnnot,
+			serverSideApply: *serverSideApply,
 		})
 	}()
 	select {
@@ -89,6 +91,7 @@ type presyncArgs struct {
 	changeID, outDir           string
 	annotationsFile            string
 	skipAppAnnot               bool
+	serverSideApply            bool
 }
 
 func runArgoPresync(start time.Time, a presyncArgs) int {
@@ -191,7 +194,11 @@ func runArgoPresync(start time.Time, a presyncArgs) int {
 			desiredForCompare = filepath.Join(a.outDir, "work", "desired")
 		}
 		if desiredForCompare != "" {
-			if err := argo.ApplyLiveTemplateCompare(nil, ch, desiredForCompare, podtemplate.KubectlOptions{}); err != nil {
+			mode := podtemplate.ParseApplyModeFromEnv()
+			if a.serverSideApply {
+				mode = podtemplate.ApplyServerSide
+			}
+			if err := argo.ApplyLiveTemplateCompare(nil, ch, desiredForCompare, podtemplate.KubectlOptions{Mode: mode}); err != nil {
 				return fail("live template compare: " + err.Error())
 			}
 		}

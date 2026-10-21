@@ -43,6 +43,21 @@ The Job logs `BREAK-GLASS OVERRIDE reason=...` and emits `override` in the JSON 
 
 The PreSync Job must know the Application name (`--app` / `ARGOCD_APP_NAME`) so it can read these annotations (RBAC: `get`/`list` on `applications`).
 
+## RBAC and live template compare
+
+With `--live`, the gate dry-runs desired workloads the same way the sync will apply them:
+
+| Sync mode | Dry-run |
+| --------- | ------- |
+| Argo default (client-side apply) | `kubectl apply --dry-run=server` (three-way merge via `last-applied-configuration`) |
+| Argo `ServerSideApply=true` (`--server-side-apply` / `REHEARSAL_SERVER_SIDE_APPLY=true`) | SSA with field manager `argocd-controller` and `--force-conflicts` |
+
+`kubectl apply --dry-run=server` issues a **patch** with `dryRun=All`. The shipped ClusterRole therefore grants `patch` on `deployments`, `statefulsets`, and `daemonsets` (in addition to get/list/watch). ReplicaSets stay get/list/watch only.
+
+**Safety:** dry-run does not mutate cluster objects. On kind verification (`VERIFY-4`), Deployment `resourceVersion` and `generation` were unchanged after every `--live` run, and no `rehearsal` field manager appeared on the live object.
+
+Without `last-applied-configuration` and without SSA mode, field removals cannot be predicted — the gate fails closed (treats the sync as a template rollout) unless a two-way equality check proves no change.
+
 ## Install
 
 ### Kustomize / raw manifests

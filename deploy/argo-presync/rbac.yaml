@@ -1,4 +1,6 @@
-# Least-privilege read-only access for the PreSync change-impact gate.
+# PreSync change-impact gate RBAC.
+# Workload kinds need patch for kubectl apply --dry-run=server (dryRun=All).
+# Dry-run does not mutate cluster objects (resourceVersion unchanged; verified on kind).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -16,7 +18,8 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
+
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch"]

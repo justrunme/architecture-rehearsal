@@ -19,6 +19,6 @@ Asserted scenarios for `rehearsal argo-impact`:
 bash scripts/e2e_argo_impact.sh
 # Kind + Argo CD:
 bash scripts/kind-argo-impact-e2e.sh
-# Kind live template compare (server-side dry-run):
+# Kind live template compare (client-side apply dry-run):
 bash scripts/kind-rollout-template-e2e.sh
 ```

@@ -37,8 +37,9 @@ func cmdArgoImpact(args []string) int {
 	live := fs.Bool("live", false, "collect live baseline via Kubernetes API")
 	cluster := fs.String("cluster", "cluster", "cluster name for live/dump snapshot")
 	dumpDir := fs.String("dump-dir", "", "optional kubectl dump directory for baseline")
-	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path for --live / server-side dry-run")
-	kubeContext := fs.String("context", "", "kube context for --live / server-side dry-run")
+	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path for --live / apply dry-run")
+	kubeContext := fs.String("context", "", "kube context for --live / apply dry-run")
+	serverSideApply := fs.Bool("server-side-apply", false, "use SSA dry-run with field manager argocd-controller (Argo ServerSideApply=true); default is client-side three-way apply dry-run")
 	outDir := fs.String("out", "out/argo-impact", "output directory for report + evidence")
 	namespace := fs.String("namespace", "", "limit manifest scope to namespace(s), comma-separated")
 	allowRemove := fs.Bool("allow-remove", false, "allow removals within scope")
@@ -145,14 +146,18 @@ func cmdArgoImpact(args []string) int {
 		return 5
 	}
 	// When talking to a live cluster, refine template-change detection with
-	// server-side dry-run apply (API defaults applied on both sides).
+	// apply dry-run matching the sync tool (client-side three-way by default).
 	desiredForCompare := *desiredDir
 	if desiredForCompare == "" {
 		desiredForCompare = filepath.Join(wd, "desired")
 	}
 	if *live && desiredForCompare != "" {
+		mode := podtemplate.ParseApplyModeFromEnv()
+		if *serverSideApply {
+			mode = podtemplate.ApplyServerSide
+		}
 		if err := argo.ApplyLiveTemplateCompare(nil, ch, desiredForCompare, podtemplate.KubectlOptions{
-			Kubeconfig: *kubeconfig, Context: *kubeContext,
+			Kubeconfig: *kubeconfig, Context: *kubeContext, Mode: mode,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "live template compare: %v\n", err)
 			return 5

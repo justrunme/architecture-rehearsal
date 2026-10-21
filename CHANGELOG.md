@@ -13,10 +13,13 @@ Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
 - `pdb-rollout` messages state plainly that PodDisruptionBudgets do not limit Deployment rollouts (they only gate evictions)
 
 ### Fixed (rollout gate semantics)
-- `pdb-rollout` only BLOCKs when this sync will actually roll pods. With `--live`, template change is decided by **server-side dry-run apply** (`kubectl apply --server-side --dry-run=server`) comparing the returned `spec.template` to the live object (API defaults on both sides; dry-run failure fails closed). Offline/fixtures use **subset compare**: every desired field must match live; live-only server defaults are ignored (no hand-maintained default strip list)
+- `pdb-rollout` only BLOCKs when this sync will actually roll pods. With `--live`, template change is decided by **apply dry-run matching the sync tool**: default is client-side three-way `kubectl apply --dry-run=server` (uses `last-applied-configuration`); with `--server-side-apply` / `REHEARSAL_SERVER_SIDE_APPLY=true` uses SSA + field manager `argocd-controller` + force-conflicts. Comparing dry-run `spec.template` to live (API defaults on both sides; dry-run failure fails closed). Offline/fixtures use **subset compare**: every desired field must match live; live-only server defaults are ignored (no hand-maintained default strip list)
+- Field removals (e.g. deleted env var) are detected under client-side dry-run; SSA under a foreign field manager no longer false-WARNs. Without `last-applied-configuration` and SSA off, fail closed unless two-way equality holds
+- Switching `strategy.type` to `Recreate` dry-runs cleanly under client-side apply (no stale `rollingUpdate` validation failure)
 - If the template is unchanged versus live, a dangerous strategy is WARN (`existing strategy can take pods to 0 on next rollout`) so no-op Argo syncs do not fail the PreSync gate
 - When remaining available pods are > 0 but below PDB `minAvailable` (e.g. 99% → 1 left vs minAvailable=2), message reads `rollout can drop available pods to N, below the minAvailable=M your PDB declares (PDBs do not enforce this during rollouts)` and stays BLOCK when the sync triggers a rollout
-- CI kind job `argo-rollout-template-kind-e2e` (`scripts/kind-rollout-template-e2e.sh`): identical desired with probes/configMap/resources → WARN/PASS; env change → BLOCK
+- PreSync RBAC grants `patch` on deployments/statefulsets/daemonsets for `dryRun=All` only (verified: `resourceVersion` unchanged on kind)
+- CI kind job `argo-rollout-template-kind-e2e` (`scripts/kind-rollout-template-e2e.sh`): identical → WARN/PASS; env add → BLOCK; env remove → BLOCK; Recreate switch → BLOCK via client-side dry-run (not fail-closed); shipped RBAC `patch` works
 
 ### Tests
 - Positive/negative nodeSelector tests; rounding table tests for 1/2/3/4/10 replicas; C5 / fp3 / fp4 fixtures

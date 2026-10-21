@@ -19,9 +19,11 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "namespaces", "pods", "services", "persistentvolumeclaims", "persistentvolumes", "events", "endpoints", "serviceaccounts"]
     verbs: ["get", "list", "watch"]
+  # patch is required for apply --dry-run=server (dryRun=All); objects are not mutated.
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
+
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch"]

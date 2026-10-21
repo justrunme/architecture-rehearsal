@@ -7,7 +7,7 @@ Kubernetes manifests that run `rehearsal argo-presync` as an Argo CD **PreSync**
 | File | Role |
 | ---- | ---- |
 | `serviceaccount.yaml` | Non-root Job identity |
-| `rbac.yaml` | Read-only ClusterRole (inventory + Application get for break-glass) |
+| `rbac.yaml` | ClusterRole: inventory get/list/watch; `patch` on workload kinds for apply dry-run (`dryRun=All`, no mutation); Application get for break-glass |
 | `job.yaml` | `argocd.argoproj.io/hook: PreSync`, `hook-delete-policy: BeforeHookCreation` |
 | `kustomization.yaml` | Kustomize entrypoint |
 
