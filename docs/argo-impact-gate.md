@@ -177,7 +177,7 @@ gate=BLOCK detectors: PASS=3 WARN=1 BLOCK=1 UNKNOWN=0
 |----------|--------|------------|-------------|
 | `blast-radius` | **WARN** | medium | blast radius includes 1 dependent workload |
 | `networkpolicy-cut` | **PASS** | high | no NetworkPolicy changes in the proposed sync |
-| `pdb-rollout` | **BLOCK** | high | rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts |
+| `pdb-rollout` | **BLOCK** | high | rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts (WARN if template unchanged) |
 | `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
 | `scheduling-capacity` | **PASS** | high | no additional replica or surge demand vs baseline |
 

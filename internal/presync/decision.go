@@ -128,6 +128,10 @@ func FromImpact(rep *impact.Report, d time.Duration) Result {
 	}
 	for _, v := range rep.Detectors {
 		if v.Status == impact.Pass {
+			// Surface PASS-with-note (e.g. no Nodes → capacity skipped) in Job JSON/logs.
+			if note := passInformationalNote(v); note != "" {
+				out.Reasons = append(out.Reasons, note)
+			}
 			continue
 		}
 		out.RuleIDs = append(out.RuleIDs, v.Detector)
@@ -157,6 +161,29 @@ func ApplyOverride(r Result, ov *Override) Result {
 		fmt.Sprintf("break-glass override: %s", ov.Reason),
 	}, r.Reasons...)
 	return r
+}
+
+// passInformationalNote returns a Job-visible note for PASS detectors that carry
+// an informational explanation (nodes unreadable / capacity not evaluated).
+func passInformationalNote(v impact.Verdict) string {
+	if v.Explanation == "" {
+		return ""
+	}
+	if v.Detector != "scheduling-capacity" {
+		return ""
+	}
+	if !strings.Contains(v.Explanation, "no Node objects") &&
+		!strings.Contains(v.Explanation, "does not need capacity") {
+		return ""
+	}
+	note := fmt.Sprintf("%s: %s", v.Detector, v.Explanation)
+	for _, e := range v.Evidence {
+		if strings.Contains(e, "nodes collect") || strings.Contains(e, "no Node") {
+			note += "; " + e
+			break
+		}
+	}
+	return note
 }
 
 // WriteJSONLine emits a single JSON decision line (no pretty-print).

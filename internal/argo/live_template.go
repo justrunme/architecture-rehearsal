@@ -1,0 +1,91 @@
+package argo
+
+import (
+	"context"
+
+	"github.com/justrunme/architecture-rehearsal/internal/graph"
+	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
+)
+
+// ApplyLiveTemplateCompare overrides podTemplateChanged on the change envelope
+// using apply dry-run against the live cluster (client-side three-way by default,
+// or SSA with argocd-controller when Mode=ApplyServerSide). Dry-run failures
+// fail closed (Changed=true).
+//
+// When dry-run reports Changed=false for a workload that was only patched for
+// strategy reasons, the explicit false flag is written so detectors treat the
+// sync as non-rolling. When dry-run reports Changed=true for a workload that
+// subset compare missed, a patch node is added.
+func ApplyLiveTemplateCompare(ctx context.Context, ch *loader.ChangeEnvelope, desiredDir string, opts podtemplate.KubectlOptions) error {
+	if ch == nil || desiredDir == "" {
+		return nil
+	}
+	results, err := podtemplate.ResolveDesiredDir(ctx, desiredDir, opts)
+	if err != nil {
+		return err
+	}
+	byID := map[string]podtemplate.WorkloadTemplateChange{}
+	for _, r := range results {
+		byID[r.ID] = r
+	}
+
+	seen := map[string]bool{}
+	for i := range ch.PatchNodes {
+		id := ch.PatchNodes[i].ID
+		r, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if ch.PatchNodes[i].Attributes == nil {
+			ch.PatchNodes[i].Attributes = map[string]any{}
+		}
+		ch.PatchNodes[i].Attributes["podTemplateChanged"] = r.Changed
+		ch.PatchNodes[i].Attributes["podTemplateCompare"] = r.Method
+		if r.Detail != "" {
+			ch.PatchNodes[i].Attributes["podTemplateCompareDetail"] = r.Detail
+		}
+		if r.Uncertain {
+			ch.PatchNodes[i].Attributes["podTemplateUncertain"] = true
+		}
+		seen[id] = true
+	}
+	for i := range ch.AddedNodes {
+		id := ch.AddedNodes[i].ID
+		r, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if ch.AddedNodes[i].Attributes == nil {
+			ch.AddedNodes[i].Attributes = map[string]any{}
+		}
+		ch.AddedNodes[i].Attributes["podTemplateChanged"] = r.Changed
+		ch.AddedNodes[i].Attributes["podTemplateCompare"] = r.Method
+		if r.Detail != "" {
+			ch.AddedNodes[i].Attributes["podTemplateCompareDetail"] = r.Detail
+		}
+		if r.Uncertain {
+			ch.AddedNodes[i].Attributes["podTemplateUncertain"] = true
+		}
+		seen[id] = true
+	}
+	for id, r := range byID {
+		if seen[id] {
+			continue
+		}
+		if !r.Changed {
+			continue
+		}
+		attrs := map[string]any{
+			"podTemplateChanged":       true,
+			"podTemplateCompare":       r.Method,
+			"podTemplateCompareDetail": r.Detail,
+		}
+		if r.Uncertain {
+			attrs["podTemplateUncertain"] = true
+		}
+		ch.PatchNodes = append(ch.PatchNodes, graph.Node{ID: id, Attributes: attrs})
+		ch.Seeds = appendUnique(ch.Seeds, id)
+	}
+	return nil
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/justrunme/architecture-rehearsal/internal/impact"
 	"github.com/justrunme/architecture-rehearsal/internal/integrations/status"
 	"github.com/justrunme/architecture-rehearsal/internal/loader"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 	"github.com/justrunme/architecture-rehearsal/internal/rbac"
 )
 
@@ -36,6 +37,10 @@ func cmdArgoImpact(args []string) int {
 	live := fs.Bool("live", false, "collect live baseline via Kubernetes API")
 	cluster := fs.String("cluster", "cluster", "cluster name for live/dump snapshot")
 	dumpDir := fs.String("dump-dir", "", "optional kubectl dump directory for baseline")
+	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path for --live / apply dry-run")
+	kubeContext := fs.String("context", "", "kube context for --live / apply dry-run")
+	liveNamespace := fs.String("live-namespace", envOr("REHEARSAL_LIVE_NAMESPACE", ""), "limit namespaced live inventory to this namespace (Role RBAC); Nodes and Pods are still fetched cluster-wide. Distinct from --namespace (change scope only — does not narrow inventory)")
+	serverSideApply := fs.Bool("server-side-apply", false, "use SSA dry-run with field manager argocd-controller (Argo ServerSideApply=true); default is client-side three-way apply dry-run")
 	outDir := fs.String("out", "out/argo-impact", "output directory for report + evidence")
 	namespace := fs.String("namespace", "", "limit manifest scope to namespace(s), comma-separated")
 	allowRemove := fs.Bool("allow-remove", false, "allow removals within scope")
@@ -86,7 +91,14 @@ func cmdArgoImpact(args []string) int {
 				return 5
 			}
 		} else if *live {
-			snap, err := collect.K8sFromLive(nil, collect.LiveOptions{Cluster: *cluster})
+			// Inventory namespace is independent of change scope (--namespace).
+			// Only --live-namespace / REHEARSAL_LIVE_NAMESPACE narrows namespaced
+			// inventory. Nodes and Pods are always fetched cluster-wide inside
+			// K8sFromLive so scheduling-capacity sees cross-namespace pressure.
+			snap, err := collect.K8sFromLive(nil, collect.LiveOptions{
+				Cluster: *cluster, Kubeconfig: *kubeconfig, Context: *kubeContext,
+				Namespace: *liveNamespace,
+			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "baseline live: %v\n", err)
 				return 5
@@ -138,6 +150,24 @@ func cmdArgoImpact(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "argo compile: %v\n", err)
 		return 5
+	}
+	// When talking to a live cluster, refine template-change detection with
+	// apply dry-run matching the sync tool (client-side three-way by default).
+	desiredForCompare := *desiredDir
+	if desiredForCompare == "" {
+		desiredForCompare = filepath.Join(wd, "desired")
+	}
+	if *live && desiredForCompare != "" {
+		mode := podtemplate.ParseApplyModeFromEnv()
+		if *serverSideApply {
+			mode = podtemplate.ApplyServerSide
+		}
+		if err := argo.ApplyLiveTemplateCompare(nil, ch, desiredForCompare, podtemplate.KubectlOptions{
+			Kubeconfig: *kubeconfig, Context: *kubeContext, Mode: mode,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "live template compare: %v\n", err)
+			return 5
+		}
 	}
 
 	changePath := filepath.Join(*outDir, "change.json")

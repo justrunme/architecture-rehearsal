@@ -153,6 +153,7 @@ set +e
   --app demo-benign \
   --app-namespace "$ARGO_NS" \
   --namespace demo \
+  --live-namespace demo \
   --live \
   --cluster kind \
   --out "$NATIVE_OUT" \
@@ -221,6 +222,7 @@ set +e
   --app demo-risky \
   --app-namespace "$ARGO_NS" \
   --namespace risky \
+  --live-namespace risky \
   --live \
   --cluster kind \
   --out "$RISKY_OUT" \

@@ -153,6 +153,30 @@ func TestFromImpactNilFailClosed(t *testing.T) {
 	}
 }
 
+func TestFromImpact_PassNoteWhenNodesUnreadable(t *testing.T) {
+	rep := &impact.Report{
+		Verdict: impact.Pass,
+		Summary: "gate=PASS detectors: PASS=1 WARN=0 BLOCK=0 UNKNOWN=0",
+		Detectors: []impact.Verdict{{
+			Detector:    "scheduling-capacity",
+			Status:      impact.Pass,
+			Explanation: "no Node objects in baseline; change does not need capacity or touch scheduling-relevant fields",
+			Evidence:    []string{"nodes collect failed: forbidden"},
+		}},
+	}
+	r := FromImpact(rep, time.Millisecond)
+	if r.Decision != Allow {
+		t.Fatalf("decision=%s", r.Decision)
+	}
+	joined := strings.Join(r.Reasons, " | ")
+	if !strings.Contains(joined, "no Node objects") {
+		t.Fatalf("PASS note about missing nodes must appear in reasons, got %v", r.Reasons)
+	}
+	if !strings.Contains(joined, "nodes collect") {
+		t.Fatalf("nodes collect evidence must appear in reasons, got %v", r.Reasons)
+	}
+}
+
 func TestWriteJSONLine(t *testing.T) {
 	var buf bytes.Buffer
 	r := Result{Decision: Allow, Reasons: []string{"ok"}, RuleIDs: []string{}, DurationMs: 7}

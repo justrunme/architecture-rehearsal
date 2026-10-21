@@ -101,6 +101,12 @@ items:
 	if wl.AttrString("maxSurge") != "0" {
 		t.Fatalf("maxSurge=%q", wl.AttrString("maxSurge"))
 	}
+	if wl.AttrString("containerImages") != "api=nginx" {
+		t.Fatalf("containerImages=%q", wl.AttrString("containerImages"))
+	}
+	if _, ok := wl.Attributes["podTemplate"].(map[string]any); !ok {
+		t.Fatal("expected podTemplate from live collect")
+	}
 	ns, _ := wl.Attributes["nodeSelector"].(map[string]any)
 	if ns["kubernetes.io/os"] != "linux" {
 		t.Fatalf("workload nodeSelector not captured: %#v", wl.Attributes["nodeSelector"])

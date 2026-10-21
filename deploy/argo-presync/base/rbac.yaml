@@ -1,6 +1,10 @@
-# Least-privilege read-only access for the PreSync change-impact gate.
+# Default PreSync RBAC (namespaced, hook-scoped):
+#   Role + RoleBinding for inventory + patch (dryRun=All)
+# Cluster-scoped Nodes/Pods reads live in rbac-nodes.yaml (NOT PreSync hooks)
+# so AppProjects need not whitelist ClusterRole/Binding in hooks.
+# Optional Applications / namespaces / PVs: see rbac-cluster.yaml (Helm clusterRBAC).
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   annotations:
     argocd.argoproj.io/hook: PreSync
@@ -12,11 +16,11 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "namespaces", "pods", "services", "persistentvolumeclaims", "persistentvolumes", "events", "endpoints", "serviceaccounts"]
+    resources: ["pods", "services", "persistentvolumeclaims", "events", "endpoints", "serviceaccounts", "configmaps"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch"]
@@ -29,13 +33,9 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
-  # Break-glass annotations on the Argo CD Application.
-  - apiGroups: ["argoproj.io"]
-    resources: ["applications"]
-    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   annotations:
     argocd.argoproj.io/hook: PreSync
@@ -47,9 +47,9 @@ metadata:
     app.kubernetes.io/component: argo-presync-gate
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: rehearsal-argo-presync
 subjects:
   - kind: ServiceAccount
     name: rehearsal-argo-presync
-    namespace: default # kustomize/helm overlay sets destination namespace
+    namespace: default # set to Application destination namespace

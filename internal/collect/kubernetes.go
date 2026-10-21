@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/justrunme/architecture-rehearsal/internal/graph"
+	"github.com/justrunme/architecture-rehearsal/internal/podtemplate"
 	"github.com/justrunme/architecture-rehearsal/internal/validate"
 	"gopkg.in/yaml.v3"
 )
@@ -145,7 +146,8 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 	snap.Warnings = append(snap.Warnings, "Secret values are never collected (references only)")
 
 	// Scheduling capacity estimate from node allocatable pods (not real CNI IP pool).
-	// Kept under both keys for compatibility; prefer pod_scheduling_capacity_estimate.
+	// Prefer cluster-wide scheduled Pods when present so namespaced inventory still
+	// accounts for cross-namespace pressure; fall back to workload replicas.
 	alloc := 0
 	for _, n := range snap.Nodes {
 		if n.Kind == graph.KindNode {
@@ -153,12 +155,7 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		}
 	}
 	if alloc > 0 {
-		running := 0
-		for _, n := range snap.Nodes {
-			if n.Kind == graph.KindWorkload {
-				running += n.WorkloadReplicas()
-			}
-		}
+		running, model := capacityRunningCount(snap)
 		avail := alloc - running
 		if avail < 0 {
 			avail = 0
@@ -166,7 +163,8 @@ func K8sFromManifests(ctx context.Context, dir string, opts K8sOptions) (*graph.
 		snap.Meta["pod_scheduling_capacity_estimate"] = avail
 		snap.Meta["pod_ip_capacity_available"] = avail // compat alias until v0.6 CNI provider
 		snap.Meta["node_allocatable_pods_total"] = alloc
-		snap.Meta["capacity_model"] = "node_allocatable_pods_minus_desired_replicas"
+		snap.Meta["capacity_running_count"] = running
+		snap.Meta["capacity_model"] = model
 	}
 
 	// PDB list is part of the recommended kubectl dump; mark inventory complete.
@@ -264,6 +262,16 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 				if p, ok := cap["pods"]; ok {
 					attrs["allocatablePods"] = asInt(p)
 				}
+				if c, ok := cap["cpu"]; ok {
+					if m := parseCPUMillis(c); m > 0 {
+						attrs["allocatableCPUMillis"] = m
+					}
+				}
+				if m, ok := cap["memory"]; ok {
+					if b := parseMemoryBytes(m); b > 0 {
+						attrs["allocatableMemoryBytes"] = b
+					}
+				}
 			}
 		}
 		// Always record labels (even empty) so scheduling detectors can distinguish
@@ -280,6 +288,9 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			attrs["labels"] = map[string]any{}
 		}
 		if spec, ok := obj["spec"].(map[string]any); ok {
+			if u, ok := spec["unschedulable"].(bool); ok && u {
+				attrs["schedulable"] = false
+			}
 			if taints, ok := spec["taints"].([]any); ok && len(taints) > 0 {
 				attrs["taints"] = taints
 			}
@@ -307,6 +318,9 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 				replicas = asInt(v)
 			}
 			if strat, ok := spec["strategy"].(map[string]any); ok {
+				if t, ok := strat["type"].(string); ok && t != "" {
+					attrs["strategyType"] = t
+				}
 				if rs, ok := strat["rollingUpdate"].(map[string]any); ok {
 					if ms, ok := rs["maxSurge"]; ok {
 						attrs["maxSurge"] = fmt.Sprint(ms)
@@ -333,8 +347,12 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 					attrs["matchLabels"] = ml
 				}
 			}
-			// service account / scheduling
+			// service account / scheduling / full pod template (for subset compare)
 			if tpl, ok := spec["template"].(map[string]any); ok {
+				attrs["podTemplate"] = podtemplate.CloneMap(tpl)
+				for k, v := range podtemplate.EvidenceAttrs(tpl) {
+					attrs[k] = v
+				}
 				if tspec, ok := tpl["spec"].(map[string]any); ok {
 					if sa, ok := tspec["serviceAccountName"].(string); ok && sa != "" {
 						attrs["serviceAccountName"] = sa
@@ -496,6 +514,13 @@ func ingestObject(snap *graph.Snapshot, obj map[string]any, cluster string) erro
 			if nn, ok := spec["nodeName"].(string); ok {
 				nodeName = nn
 				attrs["nodeName"] = nn
+			}
+			cpuM, memB := sumContainerRequests(spec)
+			if cpuM > 0 {
+				attrs["cpuRequestMillis"] = cpuM
+			}
+			if memB > 0 {
+				attrs["memoryRequestBytes"] = memB
 			}
 		}
 		if st, ok := obj["status"].(map[string]any); ok {
@@ -1020,6 +1045,147 @@ func zoneFromNodeAffinity(nsel map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// capacityRunningCount returns occupied pod slots and the model label used.
+// When KindPod objects are present, counts non-terminal pods that occupy a slot
+// (Pending or scheduled Running/Unknown). Otherwise falls back to workload replicas.
+func capacityRunningCount(snap *graph.Snapshot) (running int, model string) {
+	pods := 0
+	for _, n := range snap.Nodes {
+		if n.Kind != graph.KindPod {
+			continue
+		}
+		phase := n.AttrString("phase")
+		if phase == "Succeeded" || phase == "Failed" {
+			continue
+		}
+		// Count pods that consume a node slot: scheduled, or Pending (queued).
+		pods++
+	}
+	if pods > 0 {
+		return pods, "node_allocatable_pods_minus_cluster_pods"
+	}
+	for _, n := range snap.Nodes {
+		if n.Kind == graph.KindWorkload {
+			running += n.WorkloadReplicas()
+		}
+	}
+	return running, "node_allocatable_pods_minus_desired_replicas"
+}
+
+// sumContainerRequests uses kube-scheduler semantics:
+// max(max(init container requests), sum(app container requests)) + overhead.
+func sumContainerRequests(spec map[string]any) (cpuMillis int, memBytes int) {
+	var maxInitCPU, maxInitMem int
+	if list, _ := spec["initContainers"].([]any); len(list) > 0 {
+		for _, c := range list {
+			cm, _ := c.(map[string]any)
+			cpu, mem := containerRequestPair(cm)
+			if cpu > maxInitCPU {
+				maxInitCPU = cpu
+			}
+			if mem > maxInitMem {
+				maxInitMem = mem
+			}
+		}
+	}
+	var sumCPU, sumMem int
+	if list, _ := spec["containers"].([]any); len(list) > 0 {
+		for _, c := range list {
+			cm, _ := c.(map[string]any)
+			cpu, mem := containerRequestPair(cm)
+			sumCPU += cpu
+			sumMem += mem
+		}
+	}
+	cpuMillis = sumCPU
+	if maxInitCPU > cpuMillis {
+		cpuMillis = maxInitCPU
+	}
+	memBytes = sumMem
+	if maxInitMem > memBytes {
+		memBytes = maxInitMem
+	}
+	if oh, ok := spec["overhead"].(map[string]any); ok {
+		cpuMillis += parseCPUMillis(oh["cpu"])
+		memBytes += parseMemoryBytes(oh["memory"])
+	}
+	return cpuMillis, memBytes
+}
+
+func containerRequestPair(cm map[string]any) (cpu, mem int) {
+	if cm == nil {
+		return 0, 0
+	}
+	res, _ := cm["resources"].(map[string]any)
+	if res == nil {
+		return 0, 0
+	}
+	req, _ := res["requests"].(map[string]any)
+	if req == nil {
+		return 0, 0
+	}
+	return parseCPUMillis(req["cpu"]), parseMemoryBytes(req["memory"])
+}
+
+func parseCPUMillis(v any) int {
+	if v == nil {
+		return 0
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return 0
+	}
+	if strings.HasSuffix(s, "m") {
+		n, _ := strconv.Atoi(strings.TrimSuffix(s, "m"))
+		return n
+	}
+	// cores as float or int
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return int(f * 1000)
+	}
+	return 0
+}
+
+func parseMemoryBytes(v any) int {
+	if v == nil {
+		return 0
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return 0
+	}
+	mult := 1
+	for _, suf := range []struct {
+		s string
+		m int
+	}{
+		{"Ei", 1024 * 1024 * 1024 * 1024 * 1024 * 1024},
+		{"Pi", 1024 * 1024 * 1024 * 1024 * 1024},
+		{"Ti", 1024 * 1024 * 1024 * 1024},
+		{"Gi", 1024 * 1024 * 1024},
+		{"Mi", 1024 * 1024},
+		{"Ki", 1024},
+		{"E", 1000 * 1000 * 1000 * 1000 * 1000 * 1000},
+		{"P", 1000 * 1000 * 1000 * 1000 * 1000},
+		{"T", 1000 * 1000 * 1000 * 1000},
+		{"G", 1000 * 1000 * 1000},
+		{"M", 1000 * 1000},
+		{"K", 1000},
+		{"k", 1000},
+	} {
+		if strings.HasSuffix(s, suf.s) {
+			s = strings.TrimSuffix(s, suf.s)
+			mult = suf.m
+			break
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int(f * float64(mult))
 }
 
 func addNode(snap *graph.Snapshot, n graph.Node) {

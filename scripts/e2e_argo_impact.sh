@@ -38,7 +38,8 @@ run benign 0
 # C5 / controls from FEASIBILITY: dangerous maxUnavailable BLOCK; maxUnavailable:1 PASS; no-PDB zero-avail BLOCK
 run c5-rollout-maxunavail 3
 run fp3-maxunavail-one 0
-run fp4-zero-avail-no-pdb 3
+# Strategy already live / template unchanged → WARN (does not fail Argo PreSync)
+run fp4-zero-avail-no-pdb 1
 
 echo "OK e2e_argo_impact"
 cat "$OUT/results.txt"

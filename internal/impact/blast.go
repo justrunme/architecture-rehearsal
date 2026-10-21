@@ -37,11 +37,17 @@ func (d BlastRadius) Evaluate(ctx Context) Verdict {
 		return v
 	}
 
-	if ctx.Proposed == nil || (len(ctx.Proposed.Edges) == 0 && (ctx.Baseline == nil || len(ctx.Baseline.Edges) == 0)) {
-		v.Status = Unknown
-		v.Explanation = "no graph edges available to compute blast radius"
-		v.Missing = []string{"edges"}
-		v.Confidence = "low"
+	hasEdges := (ctx.Proposed != nil && len(ctx.Proposed.Edges) > 0) ||
+		(ctx.Baseline != nil && len(ctx.Baseline.Edges) > 0)
+	if !hasEdges {
+		// No dependency edges to walk: blast radius is limited to the change seeds
+		// themselves (common for single-workload apps). Do not fail-closed UNKNOWN
+		// here — env/image template diffs are real changes with seeds but often
+		// have no DEPENDS_ON/ROUTES_TO edges in the live snapshot.
+		v.Status = Pass
+		v.Explanation = "no dependency edges; blast radius limited to change seeds"
+		v.Evidence = []string{fmt.Sprintf("seeds=%d", len(seeds))}
+		v.Confidence = "medium"
 		return v
 	}
 

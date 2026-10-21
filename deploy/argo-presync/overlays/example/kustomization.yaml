@@ -1,0 +1,52 @@
+# Copy this overlay (or point your Application at a fork of it) and set
+# `namespace:` to the Application destination. Building this directory yields
+# ClusterRole + ClusterRoleBinding named rehearsal-argo-presync-nodes-in-<ns>.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: default # ← change to destination namespace (e.g. shop)
+resources:
+  - ../../base
+# Optional cluster reads (namespaces/PVs/Applications) — use the Component (not a file path):
+# components:
+#   - ../../components/rbac-cluster
+replacements:
+  - source:
+      kind: ServiceAccount
+      name: rehearsal-argo-presync
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: ClusterRole
+          name: rehearsal-argo-presync-nodes-in-default
+        fieldPaths:
+          - metadata.name
+        options:
+          delimiter: "-"
+          index: 5
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-nodes-in-default
+        fieldPaths:
+          - metadata.name
+          - roleRef.name
+        options:
+          delimiter: "-"
+          index: 5
+      # When components/rbac-cluster is enabled, also rename:
+      - select:
+          kind: ClusterRole
+          name: rehearsal-argo-presync-cluster-in-default
+        fieldPaths:
+          - metadata.name
+        options:
+          delimiter: "-"
+          index: 5
+      - select:
+          kind: ClusterRoleBinding
+          name: rehearsal-argo-presync-cluster-in-default
+        fieldPaths:
+          - metadata.name
+          - roleRef.name
+        options:
+          delimiter: "-"
+          index: 5
