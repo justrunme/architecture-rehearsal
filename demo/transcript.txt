@@ -1,0 +1,157 @@
+Script started on 2026-10-22 02:28:05+02:00 [COMMAND="./run.sh" <not executed on terminal>]
+
+### 0. Versions
+Server Version: v1.33.1
+v0.8.0
+0.8.3
+Conftest: 0.71.1
+Version: 1.19.2
+rehearsal 1.8.2
+
+### 1. Deploy baseline (3 replicas, PDB minAvailable=2) and start an in-cluster prober
+namespace/checkout created
+serviceaccount/api created
+deployment.apps/api created
+service/api created
+poddisruptionbudget.policy/api created
+Waiting for deployment "api" rollout to finish: 0 of 3 updated replicas are available...
+Waiting for deployment "api" rollout to finish: 1 of 3 updated replicas are available...
+Waiting for deployment "api" rollout to finish: 2 of 3 updated replicas are available...
+deployment "api" successfully rolled out
+prober before change:      18 OK 
+
+### 2. The change (diff)
+--- manifests/baseline.yaml	2026-10-21 23:59:59.166876336 +0200
++++ manifests/change.yaml	2026-10-21 23:59:59.178876373 +0200
+@@ -26,6 +26,9 @@
+   replicas: 3
+   strategy:
+     type: RollingUpdate
++    rollingUpdate:
++      maxUnavailable: 100%   # "deploys take too long": roll all pods at once
++      maxSurge: 0
+   selector:
+     matchLabels:
+       app.kubernetes.io/name: api
+@@ -51,6 +54,9 @@
+       containers:
+         - name: api
+           image: nginxinc/nginx-unprivileged:1.27-alpine
++          env:
++            - name: FEATURE_FLAGS
++              value: "fast-checkout=on"
+           ports:
+             - name: http
+               containerPort: 8080
+
+### 3. Standard checks on the changed manifests
+$ kubeconform -strict -summary manifests/change.yaml
+Summary: 5 resources found in 1 file - Valid: 5, Invalid: 0, Errors: 0, Skipped: 0
+[exit 0]
+$ kube-linter lint manifests/change.yaml
+KubeLinter 0.8.3
+
+No lint errors found!
+[exit 0]
+$ conftest test --rego-version v0 --no-color --policy policies/conftest/bestpractices --policy policies/conftest/lib --all-namespaces manifests/change.yaml
+
+130 tests, 130 passed, 0 warnings, 0 failures, 0 exceptions
+[exit 0]
+(kyverno: 31 policies from lab corpus; disallow-default-namespace moved to policies/excluded/ - offline CLI cannot evaluate namespaceObject; manifests set namespace: checkout explicitly)
+$ kyverno apply policies/kyverno/ --resource manifests/change.yaml
+
+Applying 29 policy rule(s) to 5 resource(s)...
+
+pass: 26, fail: 0, warn: 0, error: 0, skip: 1 
+[exit 0]
+$ kubectl apply --dry-run=server -f manifests/change.yaml
+namespace/checkout unchanged (server dry run)
+serviceaccount/api unchanged (server dry run)
+deployment.apps/api configured (server dry run)
+service/api unchanged (server dry run)
+poddisruptionbudget.policy/api configured (server dry run)
+[exit 0]
+
+### 4. Change-impact gate against the live cluster (read-only)
+$ /workspace/showhn/demo/bin/rehearsal argo-impact --live --desired-dir desired --namespace checkout --app checkout --out out/gate --quiet
+verdict=BLOCK decision=block findings=1 confidence=high evidence=out/gate/argo-checkout-20261022T002825Z md=out/gate/argo-impact.md
+[exit 3]
+--- gate report (scheduling/rollout detectors)
+# Argo CD change-impact report
+
+- **Application:** `checkout`
+- **Change ID:** `argo-checkout`
+- **Gate verdict:** **BLOCK**
+- **Confidence:** high
+- **Analyze decision:** `block` (risk=high)
+- **Generated:** 2026-10-22T00:28:25Z
+
+## Summary
+
+gate=BLOCK detectors: PASS=4 WARN=0 BLOCK=1 UNKNOWN=0
+
+## Detectors
+
+| Detector | Status | Confidence | Explanation |
+|----------|--------|------------|-------------|
+| `blast-radius` | **PASS** | high | no additional workloads in blast radius beyond change seeds |
+| `networkpolicy-cut` | **PASS** | high | no NetworkPolicy changes in the proposed sync |
+| `pdb-rollout` | **BLOCK** | high | rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts |
+| `pvc-zone-conflict` | **PASS** | high | no PVCs in proposed graph |
+| `scheduling-capacity` | **PASS** | high | scheduling capacity sufficient |
+
+## Affected workloads
+
+- `pdb/checkout/api`
+- `svc/checkout/api`
+- `workload/checkout/api`
+
+## Predicted failures
+
+- [BLOCK] rollout can take available pods to 0; note: PodDisruptionBudgets do not protect against rollouts
+
+## Missing data
+
+_Required coverage present for evaluated detectors._
+
+---
+_Architecture Rehearsal explains consequences of the desired sync; it does not re-implement Argo CD diff._
+deployment before gate: rv=132664 gen=1  after gate: rv=132664 gen=1
+
+### 5. Apply it for real and watch availability
+namespace/checkout unchanged
+serviceaccount/api unchanged
+deployment.apps/api configured
+service/api unchanged
+poddisruptionbudget.policy/api configured
+02:28:25.550 availableReplicas=0 readyEndpoints=0
+02:28:26.140 availableReplicas=0 readyEndpoints=0
+02:28:26.734 availableReplicas=0 readyEndpoints=0
+02:28:27.324 availableReplicas=0 readyEndpoints=0
+02:28:27.916 availableReplicas=0 readyEndpoints=0
+02:28:28.507 availableReplicas=0 readyEndpoints=0
+02:28:29.095 availableReplicas=0 readyEndpoints=0
+02:28:29.683 availableReplicas=0 readyEndpoints=0
+02:28:30.275 availableReplicas=0 readyEndpoints=0
+02:28:30.871 availableReplicas=0 readyEndpoints=0
+02:28:31.472 availableReplicas=0 readyEndpoints=0
+02:28:32.068 availableReplicas=0 readyEndpoints=0
+02:28:32.660 availableReplicas=0 readyEndpoints=0
+02:28:33.252 availableReplicas=0 readyEndpoints=0
+02:28:33.848 availableReplicas=0 readyEndpoints=0
+02:28:34.438 availableReplicas=0 readyEndpoints=0
+02:28:35.028 availableReplicas=0 readyEndpoints=0
+02:28:35.629 availableReplicas=0 readyEndpoints=0
+02:28:36.216 availableReplicas=0 readyEndpoints=0
+02:28:36.808 availableReplicas=0 readyEndpoints=0
+02:28:37.429 availableReplicas=1 readyEndpoints=3
+02:28:38.020 availableReplicas=3 readyEndpoints=3
+deployment "api" successfully rolled out
+--- prober during rollout (in-cluster wget http://api every 0.2s, 1s timeout; prober clock is UTC)
+FAIL=10 OK=15 | first FAIL 00:28:26., last FAIL 00:28:37.
+minimum availableReplicas observed: 0 (PDB minAvailable=2)
+
+### 6. Cleanup
+namespace checkout deleted
+
+Script done on 2026-10-22 02:29:22+02:00 [COMMAND_EXIT_CODE="0"]
