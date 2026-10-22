@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 R=${REHEARSAL:-rehearsal}
 NS=checkout
 step(){ echo; echo "### $*"; }
+die(){ echo "ERROR: $*" >&2; echo "Hint: check image pulls with: kubectl -n $NS get events --sort-by=.lastTimestamp" >&2; kubectl delete ns $NS --ignore-not-found --wait >/dev/null; exit 1; }
 run(){ echo "\$ $*"; "$@"; echo "[exit $?]"; }
 
 step "0. Versions"
@@ -16,10 +17,10 @@ kubectl version 2>/dev/null | grep -i server; kubeconform -v; kube-linter versio
 step "1. Deploy baseline (3 replicas, PDB minAvailable=2) and start an in-cluster prober"
 kubectl delete ns $NS --ignore-not-found --wait >/dev/null
 kubectl apply -f manifests/baseline.yaml
-kubectl -n $NS rollout status deploy/api --timeout=180s
+kubectl -n $NS rollout status deploy/api --timeout=180s || die "baseline Deployment did not become ready; results would be meaningless"
 kubectl -n $NS run prober --image=nginxinc/nginx-unprivileged:1.27-alpine --restart=Never \
   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":101,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"prober","image":"nginxinc/nginx-unprivileged:1.27-alpine","command":["sh","-c","while true; do if wget -q -T 1 -O /dev/null http://api.checkout.svc/; then echo \"$(date +%T.%N | cut -c1-12) OK\"; else echo \"$(date +%T.%N | cut -c1-12) FAIL\"; fi; sleep 0.2; done"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' >/dev/null
-kubectl -n $NS wait --for=condition=Ready pod/prober --timeout=120s >/dev/null; sleep 3
+kubectl -n $NS wait --for=condition=Ready pod/prober --timeout=120s >/dev/null || die "prober pod did not become ready"; sleep 3
 echo "prober before change: $(kubectl -n $NS logs prober | grep -E ' (OK|FAIL)$' | awk '{print $2}' | sort | uniq -c | tr '\n' ' ')"
 
 step "2. The change (diff)"
