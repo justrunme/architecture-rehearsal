@@ -22,6 +22,7 @@ kubectl -n $NS run prober --image=nginxinc/nginx-unprivileged:1.27-alpine --rest
   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":101,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"prober","image":"nginxinc/nginx-unprivileged:1.27-alpine","command":["sh","-c","while true; do if wget -q -T 1 -O /dev/null http://api.checkout.svc/; then echo \"$(date +%T.%N | cut -c1-12) OK\"; else echo \"$(date +%T.%N | cut -c1-12) FAIL\"; fi; sleep 0.2; done"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' >/dev/null
 kubectl -n $NS wait --for=condition=Ready pod/prober --timeout=120s >/dev/null || die "prober pod did not become ready"; sleep 3
 echo "prober before change: $(kubectl -n $NS logs prober | grep -E ' (OK|FAIL)$' | awk '{print $2}' | sort | uniq -c | tr '\n' ' ')"
+kubectl -n $NS logs prober | grep -qE ' OK$' || die "prober has 0 successful probes before the change; in-cluster Service traffic to http://api.$NS.svc is not working (check kube-proxy/CNI), so outage numbers would be meaningless"
 
 step "2. The change (diff)"
 cat manifests/change.diff

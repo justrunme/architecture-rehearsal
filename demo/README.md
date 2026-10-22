@@ -25,7 +25,7 @@ A two-line Kubernetes change passes kubeconform, kube-linter, conftest, kyverno 
 | kyverno CLI, 31 policies (PSS baseline/restricted + best practices) | pass 26, fail 0, error 0 |
 | kubectl apply --dry-run=server | accepted |
 | **rehearsal argo-impact --live** | **BLOCK (exit 3)**: `rollout can take available pods to 0; PodDisruptionBudgets do not protect against rollouts` |
-| real `kubectl apply` | about 12 s at availableReplicas = 0 and 0 ready endpoints; 10 of 25 in-cluster HTTP probes failed |
+| real `kubectl apply` | availableReplicas dropped to 0, with about 11–12 s at 0 ready endpoints (reproduced on a fresh clone) |
 
 The gate is read-only: the Deployment's resourceVersion and generation are the same before and after it runs. The outage length depends on image pull and probe timing.
 
