@@ -1,0 +1,22 @@
+--- manifests/baseline.yaml	2026-10-21 23:59:59.166876336 +0200
++++ manifests/change.yaml	2026-10-21 23:59:59.178876373 +0200
+@@ -26,6 +26,9 @@
+   replicas: 3
+   strategy:
+     type: RollingUpdate
++    rollingUpdate:
++      maxUnavailable: 100%   # "deploys take too long": roll all pods at once
++      maxSurge: 0
+   selector:
+     matchLabels:
+       app.kubernetes.io/name: api
+@@ -51,6 +54,9 @@
+       containers:
+         - name: api
+           image: nginxinc/nginx-unprivileged:1.27-alpine
++          env:
++            - name: FEATURE_FLAGS
++              value: "fast-checkout=on"
+           ports:
+             - name: http
+               containerPort: 8080
