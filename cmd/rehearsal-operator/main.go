@@ -68,7 +68,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting rehearsal-operator v1.8.0 (API URL from env only)")
+	ctrl.Log.Info("starting rehearsal-operator v1.8.2 (API URL from env only)")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exit")
 		os.Exit(1)
