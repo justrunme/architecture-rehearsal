@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## [1.8.2] - 2026-10-22
+
+### Fixed
+- Release workflow smoke-tests the presync image per platform by manifest digest (the 1.8.1 run stopped there, so 1.8.1 has no release binaries and unsigned images)
+- `rehearsal version`, the Helm chart, default manifests and docs report/pin 1.8.2
+
+## [1.8.1] - 2026-10-22
+
+Superseded by 1.8.2: the release run stopped at the presync smoke test, so 1.8.1 has no release binaries and its images are unsigned.
+
+### Fixed
+- PreSync gate image (`architecture-rehearsal-presync`): the linux/arm64 image ships an arm64 `kubectl` (1.8.0 shipped x86-64); the kubectl download is checksum-verified, and the release workflow runs `rehearsal version` and `kubectl version --client` on both platforms
+- Release workflow publishes, signs and verifies the presync image (first published with 1.8.0)
+
 ## [1.8.0] - 2026-10-21
 
 Behaviour change for the Argo CD change-impact / PreSync gate (includes #52).
