@@ -1,0 +1,18 @@
+This directory contains third-party policy files, redistributed under the
+Apache License, Version 2.0. A copy of each license is in the corresponding
+directory.
+
+policies/kyverno/ (31 policies) and policies/excluded/ (1 policy)
+  Source: https://github.com/kyverno/policies
+  Commit: c3b5baab77b7675c4cf81a1bb0e25707bbbf1c42
+  Paths:  best-practices-vpol/, pod-security-vpol/baseline/, pod-security-vpol/restricted/
+  License: Apache-2.0 (policies/kyverno/LICENSE)
+  Changes: files copied unmodified and renamed with a numeric prefix.
+
+policies/conftest/ (bestpractices/ and lib/)
+  Source: https://github.com/redhat-cop/rego-policies
+  Commit: 7659eb6afe9b8465081fbd4a96a758f4cc4f41a1
+  Paths:  policy/ocp/bestpractices/, policy/lib/
+  License: Apache-2.0 (policies/conftest/LICENSE)
+  Changes: files copied unmodified; the rule
+  bestpractices/container_volumemount_inconsistent_path was removed (see README).
