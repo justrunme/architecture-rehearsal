@@ -19,8 +19,8 @@ jobs:
         env:
           initialBuckets: rehearsal-test-bucket
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
       - name: Vet
@@ -46,7 +46,7 @@ jobs:
         run: bash scripts/e2e_argo_impact.sh
       - name: Upload argo-impact e2e artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: argo-impact-e2e
           path: out/argo-impact-e2e/
@@ -108,41 +108,56 @@ jobs:
           docker build -t architecture-rehearsal-operator:ci -f Dockerfile.operator .
       - name: Helm template (operator enabled)
         run: |
-          if command -v helm >/dev/null; then
-            helm template e2e deploy/helm/architecture-rehearsal \
-              --set api.token=ci-token \
-              --set operator.enabled=true \
-              --set operator.leaderElection=true >/tmp/helm-out.yaml
-            grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
-            test -f deploy/helm/architecture-rehearsal/crds/rehearsal.io_rehearsalruns.yaml
-            ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
-            ! grep -r 'ControlPlaneURL' api/v1beta1/ --include='*.go'
-          else
-            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-            helm template e2e deploy/helm/architecture-rehearsal \
-              --set api.token=ci-token \
-              --set operator.enabled=true >/tmp/helm-out.yaml
-            grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
-            test -f deploy/helm/architecture-rehearsal/crds/rehearsal.io_rehearsalruns.yaml
+          install_helm() {
+            HELM_VERSION=v3.22.1
+            # Upstream checksum: https://get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz.sha256sum
+            HELM_SHA256=896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+            curl -fsSL -o /tmp/helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+            echo "${HELM_SHA256}  /tmp/helm.tar.gz" | sha256sum -c -
+            tar -xzf /tmp/helm.tar.gz -C /tmp
+            sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+            rm -rf /tmp/linux-amd64 /tmp/helm.tar.gz
+          }
+          if ! command -v helm >/dev/null; then
+            install_helm
           fi
+          helm template e2e deploy/helm/architecture-rehearsal \
+            --set api.token=ci-token \
+            --set operator.enabled=true \
+            --set operator.leaderElection=true >/tmp/helm-out.yaml
+          grep -q REHEARSAL_API_URL /tmp/helm-out.yaml
+          test -f deploy/helm/architecture-rehearsal/crds/rehearsal.io_rehearsalruns.yaml
+          ! grep -E 'controlPlaneURL:' config/crd/rehearsal.io_rehearsalruns.yaml
+          ! grep -r 'ControlPlaneURL' api/v1beta1/ --include='*.go'
 
   operator-kind-e2e:
     runs-on: ubuntu-latest
     # Helm install + full operator lifecycle + terminal evidence; ~10–15 min
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
       - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          KIND_VERSION=v0.27.0
+          # Upstream checksum: https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64.sha256sum
+          KIND_SHA256=a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b
+          curl -fsSL -o ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
       - name: Install helm
         run: |
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          HELM_VERSION=v3.22.1
+          # Upstream checksum: https://get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz.sha256sum
+          HELM_SHA256=896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+          curl -fsSL -o /tmp/helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  /tmp/helm.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          rm -rf /tmp/linux-amd64 /tmp/helm.tar.gz
           helm version
       - name: Kind operator Helm E2E
         run: bash scripts/kind-operator-e2e.sh
@@ -152,24 +167,28 @@ jobs:
     # Kind + Argo CD install + native CLIFetcher + fixture scenarios
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # Head SHA is on the PR branch and fetchable by Argo CD as targetRevision.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
       - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          KIND_VERSION=v0.27.0
+          # Upstream checksum: https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64.sha256sum
+          KIND_SHA256=a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b
+          curl -fsSL -o ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
       - name: Kind Argo CD impact E2E
         run: bash scripts/kind-argo-impact-e2e.sh
       - name: Upload kind argo-impact artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kind-argo-impact-e2e
           path: out/argo-e2e/
@@ -180,24 +199,28 @@ jobs:
     # Kind + pinned Argo CD + real PreSync hook (safe/risky/fail-closed/break-glass)
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # Head SHA is on the PR/push branch and fetchable by Argo CD as targetRevision.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
       - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          KIND_VERSION=v0.27.0
+          # Upstream checksum: https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64.sha256sum
+          KIND_SHA256=a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b
+          curl -fsSL -o ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
       - name: Kind Argo CD PreSync gate E2E
         run: bash scripts/kind-argo-presync-e2e.sh
       - name: Upload kind argo-presync artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kind-argo-presync-e2e
           path: out/argo-presync-e2e/
@@ -209,20 +232,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
       - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          KIND_VERSION=v0.27.0
+          # Upstream checksum: https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64.sha256sum
+          KIND_SHA256=a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b
+          curl -fsSL -o ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
       - name: Kind rollout template compare E2E
         run: bash scripts/kind-rollout-template-e2e.sh
       - name: Upload kind rollout-template artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kind-rollout-template-e2e
           path: out/rollout-template-e2e/
@@ -245,8 +272,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
       - name: Postgres contract (Open + CreateRun + ClaimJob)
