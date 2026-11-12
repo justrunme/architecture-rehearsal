@@ -48,6 +48,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 5
           name: argo-impact-e2e
           path: out/argo-impact-e2e/
           if-no-files-found: ignore
@@ -190,6 +191,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 5
           name: kind-argo-impact-e2e
           path: out/argo-e2e/
           if-no-files-found: ignore
@@ -222,6 +224,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 5
           name: kind-argo-presync-e2e
           path: out/argo-presync-e2e/
           if-no-files-found: ignore
@@ -251,6 +254,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 5
           name: kind-rollout-template-e2e
           path: out/rollout-template-e2e/
           if-no-files-found: ignore
