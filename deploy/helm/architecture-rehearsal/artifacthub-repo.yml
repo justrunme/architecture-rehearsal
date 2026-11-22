@@ -1,0 +1,6 @@
+repositoryID:
+# The repository ID will be provided by Artifact Hub after initial registration.
+# Leave empty during first setup. After registering the repository on artifacthub.io,
+# update this file with the assigned ID and push a new chart version.
+owners:
+  - name: Andrey Lesnikov

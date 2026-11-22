@@ -5,10 +5,35 @@ type: application
 version: 1.8.2
 appVersion: "1.8.2"
 home: https://github.com/justrunme/architecture-rehearsal
+sources:
+  - https://github.com/justrunme/architecture-rehearsal
 keywords:
   - platform
   - gitops
   - reliability
   - kubernetes
+  - deployment
+  - testing
+  - verification
+  - policy
 maintainers:
-  - name: justrunme
+  - name: Andrey Lesnikov
+    url: https://justrunme.com/
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Website
+      url: https://justrunme.com/
+    - name: Source
+      url: https://github.com/justrunme/architecture-rehearsal
+  artifacthub.io/category: integration-delivery
+  artifacthub.io/changes: |
+    - kind: added
+      description: Artifact Hub metadata and chart distribution
+  artifacthub.io/images: |
+    - name: architecture-rehearsal
+      image: ghcr.io/justrunme/architecture-rehearsal:1.8.2
+    - name: architecture-rehearsal-operator
+      image: ghcr.io/justrunme/architecture-rehearsal-operator:1.8.2
+    - name: architecture-rehearsal-presync
+      image: ghcr.io/justrunme/architecture-rehearsal-presync:1.8.2
