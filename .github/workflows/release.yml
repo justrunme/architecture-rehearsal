@@ -181,3 +181,41 @@ jobs:
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
               "$img"
           done
+      - name: Install Helm
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: v3.22.1
+      - name: Package and push Helm chart
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          OWNER="${{ github.repository_owner }}"
+          CHART_REPO="ghcr.io/${OWNER}/charts"
+          
+          cd deploy/helm
+          helm package architecture-rehearsal --version "${VER}" --app-version "${VER}"
+          helm push "architecture-rehearsal-${VER}.tgz" "oci://${CHART_REPO}"
+          
+          echo "Chart pushed to oci://${CHART_REPO}/architecture-rehearsal:${VER}"
+      - name: Install ORAS
+        run: |
+          set -euo pipefail
+          ORAS_VERSION=1.2.2
+          curl -fsSL -o /tmp/oras.tar.gz \
+            "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/oras.tar.gz -C /tmp
+          sudo mv /tmp/oras /usr/local/bin/oras
+          rm /tmp/oras.tar.gz
+          oras version
+      - name: Push Artifact Hub metadata
+        run: |
+          set -euo pipefail
+          OWNER="${{ github.repository_owner }}"
+          CHART_REPO="ghcr.io/${OWNER}/charts/architecture-rehearsal"
+          
+          cd deploy/helm/architecture-rehearsal
+          oras push "${CHART_REPO}:artifacthub.io" \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+          
+          echo "Artifact Hub metadata pushed to ${CHART_REPO}:artifacthub.io"
