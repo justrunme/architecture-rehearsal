@@ -1,6 +1,3 @@
-repositoryID:
-# The repository ID will be provided by Artifact Hub after initial registration.
-# Leave empty during first setup. After registering the repository on artifacthub.io,
-# update this file with the assigned ID and push a new chart version.
+repositoryID: 6e8d4d53-dee7-4c5a-8a57-b6357a3b4e33
 owners:
-  - name: Andrey Lesnikov
+  - name: justrunme
