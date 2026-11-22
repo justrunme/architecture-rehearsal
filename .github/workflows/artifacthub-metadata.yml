@@ -1,0 +1,48 @@
+name: Push Artifact Hub Metadata
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - deploy/helm/architecture-rehearsal/artifacthub-repo.yml
+
+permissions:
+  contents: read
+
+jobs:
+  push-metadata:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install ORAS
+        run: |
+          set -euo pipefail
+          ORAS_VERSION=1.2.2
+          curl -fsSL -o /tmp/oras.tar.gz \
+            "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/oras.tar.gz -C /tmp
+          sudo mv /tmp/oras /usr/local/bin/oras
+          rm /tmp/oras.tar.gz
+          oras version
+      - name: Push Artifact Hub metadata
+        run: |
+          set -euo pipefail
+          OWNER="${{ github.repository_owner }}"
+          CHART_REPO="ghcr.io/${OWNER}/charts/architecture-rehearsal"
+          
+          cd deploy/helm/architecture-rehearsal
+          oras push "${CHART_REPO}:artifacthub.io" \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+          
+          echo "Artifact Hub metadata pushed to ${CHART_REPO}:artifacthub.io"
