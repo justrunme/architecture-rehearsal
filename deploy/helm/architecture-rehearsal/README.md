@@ -18,7 +18,7 @@ Architecture Rehearsal helps platform teams know what breaks before deploying in
 
 ```bash
 helm upgrade --install rehearsal oci://ghcr.io/justrunme/charts/architecture-rehearsal \
-  --version 1.8.2 \
+  --version 1.8.3 \
   --set api.token="$(openssl rand -hex 32)"
 ```
 
@@ -28,7 +28,7 @@ helm upgrade --install rehearsal oci://ghcr.io/justrunme/charts/architecture-reh
 
 ```bash
 helm upgrade --install rehearsal oci://ghcr.io/justrunme/charts/architecture-rehearsal \
-  --version 1.8.2 \
+  --version 1.8.3 \
   --set api.token="$(openssl rand -hex 32)" \
   --set persistence.enabled=true \
   --set persistence.size=10Gi
@@ -38,7 +38,7 @@ helm upgrade --install rehearsal oci://ghcr.io/justrunme/charts/architecture-reh
 
 ```bash
 helm upgrade --install rehearsal oci://ghcr.io/justrunme/charts/architecture-rehearsal \
-  --version 1.8.2 \
+  --version 1.8.3 \
   --set api.token="$(openssl rand -hex 32)" \
   --set operator.enabled=true
 ```
@@ -49,7 +49,7 @@ The CRD is automatically installed from the chart's `crds/` directory during `he
 
 ```bash
 helm upgrade --install rehearsal oci://ghcr.io/justrunme/charts/architecture-rehearsal \
-  --version 1.8.2 \
+  --version 1.8.3 \
   --set api.token="$(openssl rand -hex 32)" \
   --set argoPresync.enabled=true \
   --set argoPresync.appName="my-application" \
@@ -107,7 +107,7 @@ operator:
   leaderElection: true
   image:
     repository: ghcr.io/justrunme/architecture-rehearsal-operator
-    tag: "1.8.2"
+    tag: "1.8.3"
 ```
 
 The operator communicates with the control plane API using the same token configured for the API.
@@ -137,7 +137,7 @@ See [docs/argo-presync-gate.md](https://github.com/justrunme/architecture-rehear
 |-----------|-------------|---------|
 | `replicaCount` | Number of control plane replicas | `1` |
 | `image.repository` | Control plane image repository | `ghcr.io/justrunme/architecture-rehearsal` |
-| `image.tag` | Control plane image tag | `1.8.2` |
+| `image.tag` | Control plane image tag | `1.8.3` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `8080` |
@@ -163,7 +163,7 @@ See [docs/argo-presync-gate.md](https://github.com/justrunme/architecture-rehear
 | `operator.replicas` | Number of operator replicas | `2` |
 | `operator.leaderElection` | Enable leader election | `true` |
 | `operator.image.repository` | Operator image repository | `ghcr.io/justrunme/architecture-rehearsal-operator` |
-| `operator.image.tag` | Operator image tag | `1.8.2` |
+| `operator.image.tag` | Operator image tag | `1.8.3` |
 | `operator.controlPlaneURL` | Override control plane URL | `""` |
 | `operator.existingSecret` | Use existing secret for token | `""` |
 | `operator.networkPolicy.enabled` | Enable NetworkPolicy | `false` |
@@ -176,7 +176,7 @@ See [docs/argo-presync-gate.md](https://github.com/justrunme/architecture-rehear
 | `argoPresync.appNamespace` | Argo CD namespace | `argocd` |
 | `argoPresync.timeout` | PreSync timeout | `90s` |
 | `argoPresync.image.repository` | PreSync image repository | `ghcr.io/justrunme/architecture-rehearsal-presync` |
-| `argoPresync.image.tag` | PreSync image tag | `1.8.2` |
+| `argoPresync.image.tag` | PreSync image tag | `1.8.3` |
 | `resources.requests.cpu` | CPU request | `50m` |
 | `resources.requests.memory` | Memory request | `64Mi` |
 | `resources.limits.cpu` | CPU limit | `500m` |
@@ -189,9 +189,9 @@ See [docs/argo-presync-gate.md](https://github.com/justrunme/architecture-rehear
 
 All images are multi-arch (`linux/amd64` + `linux/arm64`):
 
-- Control plane: `ghcr.io/justrunme/architecture-rehearsal:1.8.2`
-- Operator: `ghcr.io/justrunme/architecture-rehearsal-operator:1.8.2`
-- PreSync gate: `ghcr.io/justrunme/architecture-rehearsal-presync:1.8.2`
+- Control plane: `ghcr.io/justrunme/architecture-rehearsal:1.8.3`
+- Operator: `ghcr.io/justrunme/architecture-rehearsal-operator:1.8.3`
+- PreSync gate: `ghcr.io/justrunme/architecture-rehearsal-presync:1.8.3`
 
 Images are signed with Cosign and include SBOM attestations.
 
