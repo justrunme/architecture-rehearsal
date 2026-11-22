@@ -21,8 +21,8 @@ runs:
     - shell: bash
       run: |
         set -euo pipefail
-        go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v1.8.2 || {
-          git clone --depth 1 --branch v1.8.2 https://github.com/justrunme/architecture-rehearsal.git /tmp/ar
+        go install github.com/justrunme/architecture-rehearsal/cmd/rehearsal@v1.8.3 || {
+          git clone --depth 1 --branch v1.8.3 https://github.com/justrunme/architecture-rehearsal.git /tmp/ar
           (cd /tmp/ar && go build -o "$GITHUB_WORKSPACE/rehearsal" ./cmd/rehearsal)
           export PATH="$GITHUB_WORKSPACE:$PATH"
         }

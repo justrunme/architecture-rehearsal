@@ -14,6 +14,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	rehearsalv1beta1 "github.com/justrunme/architecture-rehearsal/api/v1beta1"
+	"github.com/justrunme/architecture-rehearsal/internal/analyze"
 	"github.com/justrunme/architecture-rehearsal/internal/controller"
 )
 
@@ -68,7 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting rehearsal-operator v1.8.2 (API URL from env only)")
+	ctrl.Log.Info("starting rehearsal-operator", "version", analyze.Version, "note", "API URL from env only")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exit")
 		os.Exit(1)

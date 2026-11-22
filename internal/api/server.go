@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/justrunme/architecture-rehearsal/internal/analyze"
 	"github.com/justrunme/architecture-rehearsal/internal/authn"
 	"github.com/justrunme/architecture-rehearsal/internal/authz"
 	"github.com/justrunme/architecture-rehearsal/internal/calibrate"
@@ -133,7 +134,7 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"version":       "1.8.2",
+		"version":       analyze.Version,
 		"apiVersion":    contract.APIVersionV1,
 		"product":       "architecture-rehearsal",
 		"schemaVersion": s.Backend.SchemaVersion(),

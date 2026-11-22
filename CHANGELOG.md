@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [1.8.3] - 2026-11-22
+
+### Changed
+- Helm chart published to ghcr.io/justrunme/charts with Artifact Hub metadata
+
 ## [1.8.2] - 2026-10-22
 
 ### Fixed
