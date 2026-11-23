@@ -2,8 +2,20 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/justrunme/architecture-rehearsal
-  tag: "1.8.3"
+  tag: "1.8.4"
   pullPolicy: IfNotPresent
+
+# Optional image pull secrets for private registries (default off).
+imagePullSecrets: []
+
+# Optional node selector for control plane pods (default off).
+nodeSelector: {}
+
+# Optional affinity rules for control plane pods (default off).
+affinity: {}
+
+# Optional tolerations for control plane pods (default off).
+tolerations: []
 
 # Optional extra volumes/mounts (e.g. fixture ConfigMaps for Kind E2E).
 extraVolumes: []
@@ -42,6 +54,18 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# Optional PodDisruptionBudget for control plane (default off).
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+  # maxUnavailable: 1
+
+# Optional NetworkPolicy for control plane (default off).
+networkPolicy:
+  enabled: false
+  # ingressRules: []
+  # egressRules: []
+
 objectStorage:
   enabled: false
   endpoint: ""
@@ -53,7 +77,7 @@ postgresql:
   host: ""
   database: rehearsal
 
-# controller-runtime operator (v1.8.3). API URL is deployment-only (no CR override).
+# controller-runtime operator (v1.8.4). API URL is deployment-only (no CR override).
 # CRD is installed from chart crds/ on helm install.
 operator:
   enabled: false
@@ -61,12 +85,25 @@ operator:
   leaderElection: true
   image:
     repository: ghcr.io/justrunme/architecture-rehearsal-operator
-    tag: "1.8.3"
+    tag: "1.8.4"
     pullPolicy: IfNotPresent
   # controlPlaneURL is the in-cluster URL set on the operator Deployment only.
   # Never expose this as a CR field.
   controlPlaneURL: "" # empty → http://{{fullname}}:{{service.port}}
   existingSecret: "" # empty → use chart api secret
+  # Optional image pull secrets for operator (default off).
+  imagePullSecrets: []
+  # Optional node selector for operator pods (default off).
+  nodeSelector: {}
+  # Optional affinity rules for operator pods (default off).
+  affinity: {}
+  # Optional tolerations for operator pods (default off).
+  tolerations: []
+  # Optional PodDisruptionBudget for operator (default off).
+  podDisruptionBudget:
+    enabled: false
+    # minAvailable: 1
+    # maxUnavailable: 1
   # Disabled by default: without kube API CIDRs, NetworkPolicy blocks CR watch/status.
   # Enable only after setting kubeAPIServerCIDRs (or rely on CNI allowing API).
   networkPolicy:
@@ -102,8 +139,10 @@ argoPresync:
   timeout: 90s
   image:
     repository: ghcr.io/justrunme/architecture-rehearsal-presync
-    tag: "1.8.3"
+    tag: "1.8.4"
     pullPolicy: IfNotPresent
+  # Optional image pull secrets for PreSync (default off).
+  imagePullSecrets: []
   resources:
     requests:
       cpu: 50m

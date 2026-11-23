@@ -186,6 +186,7 @@ jobs:
         with:
           version: v3.22.1
       - name: Package and push Helm chart
+        id: helm-push
         run: |
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
@@ -194,9 +195,40 @@ jobs:
           
           cd deploy/helm
           helm package architecture-rehearsal --version "${VER}" --app-version "${VER}"
-          helm push "architecture-rehearsal-${VER}.tgz" "oci://${CHART_REPO}"
+          OUTPUT=$(helm push "architecture-rehearsal-${VER}.tgz" "oci://${CHART_REPO}")
+          echo "$OUTPUT"
           
+          # Extract digest from helm push output
+          DIGEST=$(echo "$OUTPUT" | grep -oP 'Digest: \K[a-f0-9:]+' || echo "")
+          if [ -z "$DIGEST" ]; then
+            echo "Failed to extract chart digest"
+            exit 1
+          fi
+          echo "chart_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "chart_ref=${CHART_REPO}/architecture-rehearsal:${VER}" >> "$GITHUB_OUTPUT"
           echo "Chart pushed to oci://${CHART_REPO}/architecture-rehearsal:${VER}"
+          echo "Chart digest: ${DIGEST}"
+      - name: Sign Helm chart
+        run: |
+          set -euo pipefail
+          CHART_REF="${{ steps.helm-push.outputs.chart_ref }}"
+          CHART_DIGEST="${{ steps.helm-push.outputs.chart_digest }}"
+          
+          cosign sign --yes --registry-referrers-mode=legacy "${CHART_REF}@${CHART_DIGEST}"
+          
+          echo "Chart signed: ${CHART_REF}@${CHART_DIGEST}"
+      - name: Verify signed chart
+        run: |
+          set -euo pipefail
+          CHART_REF="${{ steps.helm-push.outputs.chart_ref }}"
+          CHART_DIGEST="${{ steps.helm-push.outputs.chart_digest }}"
+          
+          cosign verify \
+            --certificate-identity-regexp="^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            "${CHART_REF}@${CHART_DIGEST}"
+          
+          echo "Chart signature verified"
       - name: Install ORAS
         run: |
           set -euo pipefail

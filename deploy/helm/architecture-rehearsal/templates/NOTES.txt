@@ -1,0 +1,148 @@
+Thank you for installing {{ .Chart.Name }} version {{ .Chart.Version }}.
+
+Your release is named {{ .Release.Name }}.
+
+{{- if .Values.api.enabled }}
+
+🔑 AUTHENTICATION
+-----------------
+The API requires a bearer token for authentication.
+{{- if and (not .Values.api.token) (not .Values.api.existingSecret) }}
+
+⚠️  WARNING: No token configured! Set api.token or api.existingSecret.
+{{- else }}
+Token is configured {{ if .Values.api.existingSecret }}from secret "{{ .Values.api.existingSecret }}"{{ else }}via chart values{{ end }}.
+{{- end }}
+
+🌐 ACCESSING THE API
+--------------------
+The control plane API is available at:
+
+  Service: {{ include "architecture-rehearsal.fullname" . }}
+  Port: {{ .Values.service.port }}
+{{- if eq .Values.service.type "ClusterIP" }}
+
+  # From within the cluster:
+  export REHEARSAL_API_URL="http://{{ include "architecture-rehearsal.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+  export REHEARSAL_API_TOKEN="<your-token>"
+
+  # Port forward for local access:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "architecture-rehearsal.fullname" . }} 8080:{{ .Values.service.port }}
+  export REHEARSAL_API_URL="http://localhost:8080"
+{{- else if eq .Values.service.type "NodePort" }}
+
+  # Get the NodePort:
+  export NODE_PORT=$(kubectl get -n {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "architecture-rehearsal.fullname" . }})
+  export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "API available at http://$NODE_IP:$NODE_PORT"
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+  # Wait for LoadBalancer IP:
+  kubectl get svc -n {{ .Release.Namespace }} {{ include "architecture-rehearsal.fullname" . }} -w
+
+  # Once assigned:
+  export SERVICE_IP=$(kubectl get svc -n {{ .Release.Namespace }} {{ include "architecture-rehearsal.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  export REHEARSAL_API_URL="http://$SERVICE_IP:{{ .Values.service.port }}"
+{{- end }}
+
+  # Test the API:
+  curl -H "Authorization: Bearer $REHEARSAL_API_TOKEN" $REHEARSAL_API_URL/v1/version
+{{- end }}
+
+{{- if .Values.operator.enabled }}
+
+🤖 KUBERNETES OPERATOR
+----------------------
+The operator is enabled and managing RehearsalRun custom resources.
+
+  # Create a rehearsal run:
+  kubectl apply -f - <<EOF
+  apiVersion: rehearsal.io/v1beta1
+  kind: RehearsalRun
+  metadata:
+    name: example-run
+    namespace: {{ .Release.Namespace }}
+  spec:
+    baselineRef: "examples/baseline.json"
+    changeRef: "examples/change.json"
+  EOF
+
+  # Check status:
+  kubectl get rehearsalrun -n {{ .Release.Namespace }} example-run
+  kubectl describe rehearsalrun -n {{ .Release.Namespace }} example-run
+
+{{- if .Values.operator.leaderElection }}
+Operator replicas: {{ .Values.operator.replicas }} (with leader election)
+{{- end }}
+{{- end }}
+
+{{- if .Values.argoPresync.enabled }}
+
+🛡️  ARGO CD PRESYNC GATE
+------------------------
+The Argo CD PreSync gate is enabled. This blocks risky syncs before they reach the cluster.
+
+  RBAC: {{ if .Values.argoPresync.clusterRBAC }}cluster-level (Applications/namespaces/PVs){{ else }}namespaced + minimal Nodes access{{ end }}
+{{- if .Values.argoPresync.appName }}
+  Application: {{ .Values.argoPresync.appName }} (namespace: {{ .Values.argoPresync.appNamespace }})
+{{- end }}
+
+  # Break-glass annotation (audit only):
+  kubectl annotate application/<name> -n {{ .Values.argoPresync.appNamespace }} \
+    rehearsal.io/presync-override="true" \
+    rehearsal.io/presync-override-reason="emergency-fix-incident-123"
+
+See: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/argo-presync-gate.md
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+
+💾 PERSISTENCE
+--------------
+{{- if .Values.persistence.existingClaim }}
+Using existing PVC: {{ .Values.persistence.existingClaim }}
+{{- else }}
+PVC created: {{ include "architecture-rehearsal.fullname" . }}
+Size: {{ .Values.persistence.size }}
+{{- if .Values.persistence.storageClass }}
+StorageClass: {{ .Values.persistence.storageClass }}
+{{- else }}
+StorageClass: (default)
+{{- end }}
+{{- end }}
+
+{{- if .Values.postgresql.enabled }}
+Backend: PostgreSQL ({{ .Values.postgresql.host }}/{{ .Values.postgresql.database }})
+{{- else }}
+Backend: SQLite (in PVC)
+{{- end }}
+{{- end }}
+
+📚 DOCUMENTATION
+----------------
+- Repository: https://github.com/justrunme/architecture-rehearsal
+- Operator guide: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/operator.md
+- API reference: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/api.md
+- Argo CD PreSync: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/argo-presync-gate.md
+- Evidence chain: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/EVIDENCE.md
+
+🔒 SECURITY
+-----------
+- Operator trust boundary: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/operator-security.md
+- Threat model: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/threat-model.md
+
+💬 SUPPORT
+----------
+- GitHub Issues: https://github.com/justrunme/architecture-rehearsal/issues
+- Case Study: https://justrunme.com/cases/architecture-rehearsal/
+
+{{- if .Values.objectStorage.enabled }}
+
+☁️  OBJECT STORAGE
+------------------
+S3-compatible storage is enabled.
+Endpoint: {{ .Values.objectStorage.endpoint }}
+Bucket: {{ .Values.objectStorage.bucket }}
+{{- end }}
+
+Happy rehearsing! 🎭

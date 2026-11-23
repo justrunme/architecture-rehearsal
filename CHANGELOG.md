@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## [1.8.4] - 2026-11-23
+
+### Security
+- Updated kubectl in PreSync image from v1.32.3 to v1.33.3 (built with go1.24.4), addressing Go stdlib CVEs and providing modern security patches
+- Bumped `golang.org/x/text` to v0.43.0 (from v0.40.0) and `golang.org/x/net` to v0.62.0 (from v0.57.0) for security fixes
+- Updated Alpine base image to 3.24.4 (from 3.24) for reduced vulnerability findings
+
+### Added
+- Helm chart `values.schema.json` for type validation of all chart values without breaking existing `--set` usage
+- Helm chart `templates/NOTES.txt` with post-install instructions: API access, authentication requirements, operator usage, Argo PreSync gate, persistence, documentation links, and support channels
+- Optional PodDisruptionBudget for control plane (default disabled; set `podDisruptionBudget.enabled=true`)
+- Optional PodDisruptionBudget for operator (default disabled; set `operator.podDisruptionBudget.enabled=true`)
+- Optional NetworkPolicy for control plane (default disabled; set `networkPolicy.enabled=true`)
+- Optional `imagePullSecrets`, `nodeSelector`, `affinity`, and `tolerations` for control plane, operator, and Argo PreSync (default disabled/empty)
+- Helm lint CI step next to existing helm template check; validates chart with default values and with optional toggles enabled
+
+### Changed
+- Chart.yaml: added `kubeVersion: ">=1.30.0-0"` (consistent with docs/slo.md Kubernetes 1.30+ floor)
+- Chart.yaml: added support link to GitHub issues and documentation link to repo docs
+- Chart.yaml: added platforms (linux/amd64, linux/arm64) to `artifacthub.io/images` entries
+- Chart.yaml: added `artifacthub.io/crds` and `crdsExamples` for RehearsalRun v1beta1
+- Chart.yaml: set `artifacthub.io/containsSecurityUpdates: "true"`
+- Chart.yaml: replaced `artifacthub.io/changes` with accurate 1.8.4 entries
+- Release workflow: chart OCI artifact is now signed keylessly with cosign after `helm push`, using the same identity/permissions as images
+- Chart README: added "Verifying the signed chart" section with `cosign verify` instructions
+
 ## [1.8.3] - 2026-11-22
 
 ### Changed

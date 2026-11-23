@@ -57,6 +57,22 @@ spec:
         app.kubernetes.io/name: rehearsal-operator
     spec:
       serviceAccountName: {{ include "architecture-rehearsal.fullname" . }}-operator
+      {{- with .Values.operator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -145,5 +161,25 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- end }}
+---
+{{- if .Values.operator.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "architecture-rehearsal.fullname" . }}-operator
+  labels:
+    app.kubernetes.io/name: rehearsal-operator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rehearsal-operator
+  {{- if .Values.operator.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.operator.podDisruptionBudget.minAvailable }}
+  {{- else if .Values.operator.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.operator.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: 1
+  {{- end }}
 {{- end }}
 {{- end }}

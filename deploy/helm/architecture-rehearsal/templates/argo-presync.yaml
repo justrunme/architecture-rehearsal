@@ -140,6 +140,10 @@ spec:
         app.kubernetes.io/component: argo-presync-gate
     spec:
       serviceAccountName: {{ include "architecture-rehearsal.fullname" . }}-argo-presync
+      {{- with .Values.argoPresync.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true

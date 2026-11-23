@@ -2,8 +2,9 @@ apiVersion: v2
 name: architecture-rehearsal
 description: Deterministic pre-deploy failure simulation and post-deploy verification control plane
 type: application
-version: 1.8.3
-appVersion: "1.8.3"
+version: 1.8.4
+appVersion: "1.8.4"
+kubeVersion: ">=1.30.0-0"
 home: https://github.com/justrunme/architecture-rehearsal
 sources:
   - https://github.com/justrunme/architecture-rehearsal
@@ -26,14 +27,62 @@ annotations:
       url: https://justrunme.com/
     - name: Source
       url: https://github.com/justrunme/architecture-rehearsal
+    - name: Documentation
+      url: https://github.com/justrunme/architecture-rehearsal/blob/main/docs/README.md
+    - name: Support
+      url: https://github.com/justrunme/architecture-rehearsal/issues
   artifacthub.io/category: integration-delivery
+  artifacthub.io/containsSecurityUpdates: "true"
   artifacthub.io/changes: |
+    - kind: security
+      description: Updated kubectl to v1.33.3 (built with go1.24.4) fixing Go stdlib CVEs
+    - kind: security
+      description: Bumped golang.org/x/text to v0.43.0 and golang.org/x/net to v0.62.0
+    - kind: security
+      description: Updated Alpine base to 3.24.4 for reduced vulnerability findings
     - kind: added
-      description: Helm chart published to ghcr.io/justrunme/charts with Artifact Hub metadata
+      description: Added values.schema.json for type validation of all chart values
+    - kind: added
+      description: Added templates/NOTES.txt with API access, operator, and documentation hints
+    - kind: added
+      description: Optional PodDisruptionBudget for api and operator (default off)
+    - kind: added
+      description: Optional NetworkPolicy for API (default off)
+    - kind: added
+      description: Optional imagePullSecrets, nodeSelector, affinity, tolerations (default off)
+    - kind: added
+      description: Added helm lint CI step next to existing helm template check
+    - kind: changed
+      description: Chart now signs OCI artifact keylessly with cosign after helm push
   artifacthub.io/images: |
     - name: architecture-rehearsal
-      image: ghcr.io/justrunme/architecture-rehearsal:1.8.3
+      image: ghcr.io/justrunme/architecture-rehearsal:1.8.4
+      platforms:
+        - linux/amd64
+        - linux/arm64
     - name: architecture-rehearsal-operator
-      image: ghcr.io/justrunme/architecture-rehearsal-operator:1.8.3
+      image: ghcr.io/justrunme/architecture-rehearsal-operator:1.8.4
+      platforms:
+        - linux/amd64
+        - linux/arm64
     - name: architecture-rehearsal-presync
-      image: ghcr.io/justrunme/architecture-rehearsal-presync:1.8.3
+      image: ghcr.io/justrunme/architecture-rehearsal-presync:1.8.4
+      platforms:
+        - linux/amd64
+        - linux/arm64
+  artifacthub.io/crds: |
+    - kind: RehearsalRun
+      version: v1beta1
+      name: rehearsalruns.rehearsal.io
+      displayName: Rehearsal Run
+      description: Drives a control-plane run for pre-deploy impact analysis and post-deploy verification
+  artifacthub.io/crdsExamples: |
+    - apiVersion: rehearsal.io/v1beta1
+      kind: RehearsalRun
+      metadata:
+        name: example-run
+        namespace: default
+      spec:
+        baselineRef: "examples/baseline.json"
+        changeRef: "examples/change.json"
+        clusterName: "prod-cluster"

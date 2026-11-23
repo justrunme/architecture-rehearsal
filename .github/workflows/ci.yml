@@ -71,7 +71,7 @@ jobs:
             --out out/verify.json
           test "$(python3 -c 'import json; print(json.load(open("out/verify.json"))["outcome"])')" = "verified"
       - name: Version stamp
-        run: ./bin/rehearsal version | grep -q '1.8.3'
+        run: ./bin/rehearsal version | grep -q '1.8.4'
       - name: Schemas + calibrate smoke
         run: |
           ./bin/rehearsal schemas >/dev/null
@@ -91,7 +91,7 @@ jobs:
           curl -sf http://127.0.0.1:18080/readyz
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer viewer-token" http://127.0.0.1:18080/v1/runs)
           test "$code" = "401"
-          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.8.3
+          curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/version | grep -q 1.8.4
           curl -sf -H "Authorization: Bearer $REHEARSAL_API_TOKEN" http://127.0.0.1:18080/v1/metrics | grep -q rehearsal_queue_depth
           # create run + job list + audit
           curl -sf -X POST -H "Authorization: Bearer $REHEARSAL_API_TOKEN" -H "Content-Type: application/json" \
@@ -107,7 +107,7 @@ jobs:
         run: |
           docker build -t architecture-rehearsal:ci -f Dockerfile .
           docker build -t architecture-rehearsal-operator:ci -f Dockerfile.operator .
-      - name: Helm template (operator enabled)
+      - name: Helm lint and template (operator enabled)
         run: |
           install_helm() {
             HELM_VERSION=v3.22.1
@@ -122,6 +122,15 @@ jobs:
           if ! command -v helm >/dev/null; then
             install_helm
           fi
+          # Lint with default values
+          helm lint deploy/helm/architecture-rehearsal
+          # Lint with optional toggles enabled
+          helm lint deploy/helm/architecture-rehearsal \
+            --set api.token=ci-token \
+            --set operator.enabled=true \
+            --set podDisruptionBudget.enabled=true \
+            --set operator.podDisruptionBudget.enabled=true
+          # Template with operator enabled
           helm template e2e deploy/helm/architecture-rehearsal \
             --set api.token=ci-token \
             --set operator.enabled=true \
