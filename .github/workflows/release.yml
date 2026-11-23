@@ -198,8 +198,8 @@ jobs:
           OUTPUT=$(helm push "architecture-rehearsal-${VER}.tgz" "oci://${CHART_REPO}")
           echo "$OUTPUT"
           
-          # Extract digest from helm push output
-          DIGEST=$(echo "$OUTPUT" | grep -oP 'Digest: \K[a-f0-9:]+' || echo "")
+          # Extract digest from helm push output (must allow 's'/'h' in sha256:...)
+          DIGEST=$(echo "$OUTPUT" | grep -oP 'Digest: \K\S+' || echo "")
           if [ -z "$DIGEST" ]; then
             echo "Failed to extract chart digest"
             exit 1
